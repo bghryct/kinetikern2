@@ -1,0 +1,679 @@
+//! A solve: Pass 1, Pass 2 over the pair scope (glyph pairs or classes),
+//! thresholding, exception compression and the pair budget.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
+
+use rayon::prelude::*;
+
+use crate::engine::{Context, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, NONE};
+use crate::job::{pool, Cancelled, JobError, Progress};
+use crate::pass2::{
+    Fields, Kernel, Knobs, PairOut, Probes, Scratch, Solver, Verify, Windows, PAIR_BOUNDED, PAIR_CLEARANCE, PAIR_CREVICE,
+    PAIR_FALLBACK, PAIR_SATURATED, PAIR_WINDOW,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Every glyph pair on its own (v1's output; reference and tools).
+    Pairs,
+    /// Class pairs plus exceptions.
+    Classes,
+}
+
+pub const KIND_GLYPH_GLYPH: u8 = 0;
+pub const KIND_CLASS_CLASS: u8 = 1;
+pub const KIND_GLYPH_CLASS: u8 = 2;
+pub const KIND_CLASS_GLYPH: u8 = 3;
+
+/// Most class pairs a class-mode solve takes on. Each costs about 70 bytes
+/// while the solve runs (its pair, representative result and exception list)
+/// and a full solve; Arial has 0.8 million. A font with ten thousand distinct
+/// shapes in one script (a CJK font) would have 10^8: the solve fails with a
+/// message instead of filling the memory of the application it runs in.
+pub const MAX_CLASS_PAIRS: u64 = 10_000_000;
+
+#[derive(Clone, Debug)]
+pub struct Params {
+    pub options: SolveOptions,
+    pub mode: Mode,
+    pub solver: Solver,
+    /// Pairs only within one script (plus Common/Inherited).
+    pub scope_scripts: bool,
+    /// Results with |value| below this are dropped (font units).
+    pub threshold: f64,
+    /// Maximum entries written; 0 = unlimited.
+    pub budget: usize,
+    /// Classes: a member's difference from its representative matters within
+    /// this many rest gaps of the partner's ink.
+    pub radius_ratio: f64,
+    pub threads: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Entry {
+    pub kind: u8,
+    /// Glyph or class indices, depending on `kind`.
+    pub left: u32,
+    pub right: u32,
+    pub value: f64,
+    pub importance: f64,
+    /// Exceptions: index of the class pair they refine (internal), else NONE.
+    pub parent: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RunStats {
+    pub pass2_ms: f64,
+    pub prune_ms: f64,
+    pub threads: u32,
+    pub kern_glyphs: u64,
+    pub probe_glyphs: u64,
+    pub pairs_in_scope: u64,
+    pub class_pairs: u64,
+    pub member_pairs: u64,
+    pub inherited: u64,
+    pub verified: u64,
+    pub verified_within: u64,
+    pub solved: u64,
+    pub force_evaluations: u64,
+    pub merged_rays: u64,
+    pub active_rays: u64,
+    pub clearance_hits: u64,
+    pub crevice_hits: u64,
+    pub saturated: u64,
+    pub window_hits: u64,
+    pub bound_hits: u64,
+    pub fallbacks: u64,
+    pub entries_before_budget: u64,
+    pub class_entries: u64,
+    pub exception_entries: u64,
+    pub dropped_by_budget: u64,
+}
+
+pub struct Outcome {
+    pub pass1: Pass1,
+    pub mode: Mode,
+    pub entries: Vec<Entry>,
+    pub kern: Vec<bool>,
+    pub stats: RunStats,
+}
+
+#[inline]
+fn script_ok(a: &PreparedGlyph, b: &PreparedGlyph, on: bool) -> bool {
+    !on || a.script == 0 || b.script == 0 || a.script == b.script
+}
+
+fn tally(stats: &mut RunStats, out: &PairOut) {
+    stats.force_evaluations += out.evals as u64;
+    stats.merged_rays += out.rays as u64;
+    stats.active_rays += out.active as u64;
+    if out.flags & PAIR_CLEARANCE != 0 {
+        stats.clearance_hits += 1;
+    }
+    if out.flags & PAIR_CREVICE != 0 {
+        stats.crevice_hits += 1;
+    }
+    if out.flags & PAIR_SATURATED != 0 {
+        stats.saturated += 1;
+    }
+    if out.flags & PAIR_WINDOW != 0 {
+        stats.window_hits += 1;
+    }
+    if out.flags & PAIR_FALLBACK != 0 {
+        stats.fallbacks += 1;
+    }
+    if out.flags & PAIR_BOUNDED != 0 {
+        stats.bound_hits += 1;
+    }
+}
+
+fn merge_stats(a: &mut RunStats, b: &RunStats) {
+    a.pairs_in_scope += b.pairs_in_scope;
+    a.force_evaluations += b.force_evaluations;
+    a.merged_rays += b.merged_rays;
+    a.active_rays += b.active_rays;
+    a.clearance_hits += b.clearance_hits;
+    a.crevice_hits += b.crevice_hits;
+    a.saturated += b.saturated;
+    a.window_hits += b.window_hits;
+    a.bound_hits += b.bound_hits;
+    a.fallbacks += b.fallbacks;
+    a.inherited += b.inherited;
+    a.verified += b.verified;
+    a.verified_within += b.verified_within;
+    a.solved += b.solved;
+    a.member_pairs += b.member_pairs;
+}
+
+/// Statistics of one rayon work split, added to a shared total when the
+/// split ends: per-item work keeps no statistics of its own.
+struct LocalStats<'a> {
+    stats: RunStats,
+    total: &'a Mutex<RunStats>,
+}
+
+impl<'a> LocalStats<'a> {
+    fn new(total: &'a Mutex<RunStats>) -> Self {
+        LocalStats { stats: RunStats::default(), total }
+    }
+}
+
+impl Drop for LocalStats<'_> {
+    fn drop(&mut self) {
+        merge_stats(&mut self.total.lock().unwrap_or_else(|e| e.into_inner()), &self.stats);
+    }
+}
+
+/// Runs a solve. `mask[i] != 0` selects glyph `i` for kerning (None: all).
+/// Progress phases: 2/3 evaluating pairs, 3/3 grouping and pruning. Fails
+/// (rather than runs) when a class-mode solve exceeds MAX_CLASS_PAIRS.
+pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) -> Result<Outcome, JobError> {
+    let pass1 = ctx.pass1(&p.options);
+    let n = ctx.glyphs.len();
+    let kern: Vec<bool> = (0..n)
+        .map(|i| {
+            let g = &ctx.glyphs[i];
+            g.kernable() && g.flags & GLYPH_RTL == 0 && mask.map_or(true, |m| m.get(i).copied().unwrap_or(0) != 0)
+        })
+        .collect();
+    let mut stats = RunStats { threads: pool(p.threads).current_num_threads() as u32, ..RunStats::default() };
+    stats.kern_glyphs = kern.iter().filter(|&&k| k).count() as u64;
+    if p.options.coupling <= 0.0 || stats.kern_glyphs == 0 {
+        progress.begin(3, 3, 1);
+        progress.add(1);
+        return Ok(Outcome { pass1, mode: p.mode, entries: Vec::new(), kern, stats });
+    }
+    let t2 = Instant::now();
+    let pool = pool(p.threads);
+    let fields = Fields::new(ctx, &p.options);
+    let knobs = Knobs::new(&p.options, ctx.upm, p.threshold);
+    let entries = pool.install(|| match p.mode {
+        Mode::Pairs => run_pairs(ctx, p, &pass1, &kern, &fields, knobs, progress, &mut stats).map_err(JobError::from),
+        Mode::Classes => run_classes(ctx, p, &pass1, &kern, &fields, knobs, progress, &mut stats),
+    })?;
+    stats.pass2_ms = t2.elapsed().as_secs_f64() * 1000.0;
+    let t3 = Instant::now();
+    let entries = prune(entries, p.budget, &mut stats);
+    stats.prune_ms = t3.elapsed().as_secs_f64() * 1000.0;
+    progress.add(1);
+    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats })
+}
+
+/// Probes and window extremes for every glyph in `needed`, against every
+/// rhythm group among them.
+fn probes_for(
+    ctx: &Context,
+    fields: &Fields,
+    needed: &[bool],
+    progress: &Progress,
+    unit: u64,
+) -> Result<(Probes, Windows), Cancelled> {
+    let mut partners = vec![false; fields.ng];
+    for (i, g) in ctx.glyphs.iter().enumerate() {
+        if needed[i] && g.valid {
+            partners[g.group] = true;
+        }
+    }
+    let probes = Probes::compute(ctx, fields, needed, &partners, progress, unit)?;
+    Ok((probes, Windows::compute(ctx, fields, needed, &partners)))
+}
+
+fn importance(value: f64, white: f64, upm: f64) -> f64 {
+    value.abs() / (white.max(0.0) + 0.05 * upm)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_pairs(
+    ctx: &Context,
+    p: &Params,
+    pass1: &Pass1,
+    kern: &[bool],
+    fields: &Fields,
+    knobs: Knobs,
+    progress: &Progress,
+    stats: &mut RunStats,
+) -> Result<Vec<Entry>, Cancelled> {
+    let glyphs = &ctx.glyphs;
+    let k: Vec<usize> = (0..glyphs.len()).filter(|&i| kern[i]).collect();
+    let rays = |i: usize, right: bool| {
+        (if right { glyphs[i].right.rays.len() } else { glyphs[i].left.rays.len() }) as u64
+    };
+    // work estimate: probes, then every pair's rays
+    let right_sum: u64 = k.iter().map(|&i| rays(i, true)).sum();
+    let left_sum: u64 = k.iter().map(|&i| rays(i, false)).sum();
+    let probe_work = 40 * k.len() as u64;
+    progress.begin(2, 3, probe_work + k.len() as u64 * (right_sum + left_sum) / 2 + 1);
+    let (probes, windows) = probes_for(ctx, fields, kern, progress, 40)?;
+    let kernel = Kernel {
+        ctx,
+        fields,
+        probes: &probes,
+        windows: &windows,
+        lsb: &pass1.lsb,
+        rsb: &pass1.rsb,
+        knobs,
+        solver: p.solver,
+    };
+    let upm = ctx.upm;
+    let rows: Vec<Option<(Vec<Entry>, RunStats)>> = k
+        .par_iter()
+        .map_init(Scratch::default, |sc, &ia| {
+            let mut out = Vec::new();
+            let mut st = RunStats::default();
+            let mut work = 0u64;
+            for &ib in &k {
+                if progress.cancelled() {
+                    return None;
+                }
+                if !script_ok(&glyphs[ia], &glyphs[ib], p.scope_scripts) {
+                    continue;
+                }
+                st.member_pairs += 1;
+                let r = kernel.solve(ia, ib, sc);
+                tally(&mut st, &r);
+                st.solved += 1;
+                if r.value.abs() >= knobs.threshold {
+                    out.push(Entry {
+                        kind: crate::run::KIND_GLYPH_GLYPH,
+                        left: ia as u32,
+                        right: ib as u32,
+                        value: r.value,
+                        importance: importance(r.value, r.white, upm),
+                        parent: NONE,
+                    });
+                }
+                work += (rays(ia, true) + rays(ib, false)) / 2;
+                if work > 4096 {
+                    progress.add(work);
+                    work = 0;
+                }
+            }
+            progress.add(work);
+            Some((out, st))
+        })
+        .collect();
+    progress.begin(3, 3, 2);
+    progress.add(1);
+    let mut entries = Vec::new();
+    for row in rows {
+        let (e, st) = row.ok_or(Cancelled)?;
+        entries.extend(e);
+        merge_stats(stats, &st);
+    }
+    stats.pairs_in_scope = stats.member_pairs;
+    stats.probe_glyphs = k.len() as u64;
+    Ok(entries)
+}
+
+/// A class pair's representative result.
+#[derive(Clone, Copy, Debug, Default)]
+struct RepOut {
+    value: f64,
+    pre: f64,
+    white: f64,
+    flags: u32,
+}
+
+/// One member pair whose value differs from its class pair's.
+#[derive(Clone, Copy, Debug)]
+struct Exception {
+    pair: u32,
+    m: u32,
+    n: u32,
+    value: f64,
+    importance: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_classes(
+    ctx: &Context,
+    p: &Params,
+    pass1: &Pass1,
+    kern: &[bool],
+    fields: &Fields,
+    knobs: Knobs,
+    progress: &Progress,
+    stats: &mut RunStats,
+) -> Result<Vec<Entry>, JobError> {
+    let glyphs = &ctx.glyphs;
+    let (rc, lc) = (&ctx.classes.right, &ctx.classes.left);
+    let upm = ctx.upm;
+    let t = knobs.threshold;
+
+    // members of every class inside the kern set
+    let in_k = |members: &Vec<u32>| -> Vec<u32> { members.iter().copied().filter(|&g| kern[g as usize]).collect() };
+    let r_members: Vec<Vec<u32>> = rc.members.iter().map(in_k).collect();
+    let l_members: Vec<Vec<u32>> = lc.members.iter().map(in_k).collect();
+    // scripts of every class (sorted), and whether it holds Common glyphs
+    let scripts_of = |members: &Vec<u32>| -> (Vec<u32>, bool) {
+        let mut s: Vec<u32> = members.iter().map(|&g| glyphs[g as usize].script).filter(|&s| s != 0).collect();
+        s.sort_unstable();
+        s.dedup();
+        let common = members.iter().any(|&g| glyphs[g as usize].script == 0);
+        (s, common)
+    };
+    let r_scripts: Vec<(Vec<u32>, bool)> = r_members.iter().map(scripts_of).collect();
+    let l_scripts: Vec<(Vec<u32>, bool)> = l_members.iter().map(scripts_of).collect();
+    let class_scope = |pi: usize, qi: usize| -> bool {
+        if !p.scope_scripts {
+            return true;
+        }
+        let ((ps, pc), (qs, qc)) = (&r_scripts[pi], &l_scripts[qi]);
+        *pc || *qc || ps.iter().any(|s| qs.binary_search(s).is_ok())
+    };
+    let active_r: Vec<usize> = (0..rc.len()).filter(|&k| !r_members[k].is_empty()).collect();
+    let active_l: Vec<usize> = (0..lc.len()).filter(|&k| !l_members[k].is_empty()).collect();
+    // counted before anything is allocated for them
+    let mut count = 0u64;
+    for &pi in &active_r {
+        if progress.cancelled() {
+            return Err(JobError::Cancelled);
+        }
+        count += active_l.iter().filter(|&&qi| class_scope(pi, qi)).count() as u64;
+    }
+    if count > MAX_CLASS_PAIRS {
+        return Err(JobError::Failed(format!(
+            "{} right classes × {} left classes make {} class pairs, more than the {} one solve takes on. \
+             Kern the glyphs of the sample text, or a smaller set of glyphs, instead of the whole font.",
+            active_r.len(),
+            active_l.len(),
+            count,
+            MAX_CLASS_PAIRS
+        )));
+    }
+    let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(count as usize);
+    for &pi in &active_r {
+        if progress.cancelled() {
+            return Err(JobError::Cancelled);
+        }
+        pairs.extend(active_l.iter().filter(|&&qi| class_scope(pi, qi)).map(|&qi| (pi as u32, qi as u32)));
+    }
+    stats.class_pairs = pairs.len() as u64;
+
+    // probes: every kerned glyph and every representative in play
+    let mut needed = kern.to_vec();
+    for &pi in &active_r {
+        needed[rc.rep[pi] as usize] = true;
+    }
+    for &qi in &active_l {
+        needed[lc.rep[qi] as usize] = true;
+    }
+    stats.probe_glyphs = needed.iter().filter(|&&b| b).count() as u64;
+
+    // work estimate: probes, representative pairs (full solves), member pairs
+    let member_count: u64 =
+        pairs.iter().map(|&(pi, qi)| (r_members[pi as usize].len() * l_members[qi as usize].len()) as u64).sum();
+    const REP_WORK: u64 = 16;
+    const PROBE_WORK: u64 = 24;
+    let probe_work = PROBE_WORK * stats.probe_glyphs;
+    progress.begin(2, 3, probe_work + REP_WORK * pairs.len() as u64 + member_count + 1);
+    let (probes, windows) = probes_for(ctx, fields, &needed, progress, PROBE_WORK)?;
+    let kernel = Kernel {
+        ctx,
+        fields,
+        probes: &probes,
+        windows: &windows,
+        lsb: &pass1.lsb,
+        rsb: &pass1.rsb,
+        knobs,
+        solver: p.solver,
+    };
+
+    // Statistics go to per-split accumulators, not to every item: a class
+    // pair keeps only its result. A cancelled item leaves a placeholder; the
+    // flag is checked once the collect is done (it never clears).
+    let total = Mutex::new(RunStats::default());
+
+    // 1. representative pairs
+    let rep_out: Vec<RepOut> = pairs
+        .par_iter()
+        .with_min_len(16)
+        .map_init(
+            || (Scratch::default(), LocalStats::new(&total)),
+            |(sc, local), &(pi, qi)| {
+                if progress.cancelled() {
+                    return RepOut::default();
+                }
+                let (rp, rq) = (rc.rep[pi as usize] as usize, lc.rep[qi as usize] as usize);
+                let r = kernel.solve(rp, rq, sc);
+                tally(&mut local.stats, &r);
+                local.stats.solved += 1;
+                progress.add(REP_WORK);
+                RepOut { value: r.value, pre: r.pre, white: r.white, flags: r.flags }
+            },
+        )
+        .collect();
+    if progress.cancelled() {
+        return Err(JobError::Cancelled);
+    }
+
+    // 2. member pairs: inherit, verify, or solve
+    // A member shares its class value unevaluated only where its evaluation
+    // would be the representative's: the same rays near the partner and the
+    // same probes (a probe a fraction of a unit off moves a value sitting at
+    // the threshold across it).
+    let eps_probe = 1e-9 * upm;
+    let ratio = p.radius_ratio.max(0.0);
+    let results: Vec<Vec<Exception>> = (0..pairs.len())
+        .into_par_iter()
+        .with_min_len(8)
+        .map_init(
+            || (Scratch::default(), LocalStats::new(&total)),
+            |(sc, local), idx| {
+                let (pi, qi) = (pairs[idx].0 as usize, pairs[idx].1 as usize);
+                let (rp, rq) = (rc.rep[pi] as usize, lc.rep[qi] as usize);
+                let rep = rep_out[idx];
+                let v_eff = if rep.value.abs() >= t { rep.value } else { 0.0 };
+                let mut exc = Vec::new();
+                let st = &mut local.stats;
+                let mut work = 0u64;
+                for &m in &r_members[pi] {
+                    let m = m as usize;
+                    for &nn in &l_members[qi] {
+                        let nn = nn as usize;
+                        work += 1;
+                        if !script_ok(&glyphs[m], &glyphs[nn], p.scope_scripts) {
+                            continue;
+                        }
+                        st.pairs_in_scope += 1;
+                        if m == rp && nn == rq {
+                            continue; // the representative pair itself
+                        }
+                        if progress.cancelled() {
+                            return Vec::new();
+                        }
+                        st.member_pairs += 1;
+                        let f = fields.get(glyphs[m].group, glyphs[nn].group);
+                        let radius = ratio * f.g_ref;
+                        let (gm, gn) = (&glyphs[m], &glyphs[nn]);
+                        let same_m = m == rp
+                            || (!rc.diff[m].hits(gn.ink_left.0 - radius, gn.ink_left.1 + radius)
+                                && (probes.right(m, gn.group) - probes.right(rp, gn.group) - rc.shift[m]).abs()
+                                    <= eps_probe);
+                        let same_n = nn == rq
+                            || (!lc.diff[nn].hits(gm.ink_right.0 - radius, gm.ink_right.1 + radius)
+                                && (probes.left(nn, gm.group) - probes.left(rq, gm.group) - lc.shift[nn]).abs()
+                                    <= eps_probe);
+                        let shareable = rep.flags & PAIR_FALLBACK == 0;
+                        let value = if same_m && same_n && shareable {
+                            st.inherited += 1;
+                            kernel.finish(m, nn, rep.pre).0
+                        } else {
+                            st.verified += 1;
+                            let (v, evals, bounded) = if shareable {
+                                kernel.verify(m, nn, rep.pre, sc)
+                            } else {
+                                (Verify::Differs, 0, false)
+                            };
+                            st.force_evaluations += evals as u64;
+                            if bounded {
+                                st.bound_hits += 1;
+                            }
+                            if v == Verify::Within {
+                                st.verified_within += 1;
+                                kernel.finish(m, nn, rep.pre).0
+                            } else {
+                                st.solved += 1;
+                                let r = kernel.solve(m, nn, sc);
+                                tally(st, &r);
+                                r.value
+                            }
+                        };
+                        let value = if value.abs() >= t { value } else { 0.0 };
+                        if (value - v_eff).abs() >= t {
+                            exc.push(Exception {
+                                pair: idx as u32,
+                                m: m as u32,
+                                n: nn as u32,
+                                value,
+                                importance: importance(value - v_eff, rep.white, upm),
+                            });
+                        }
+                    }
+                }
+                progress.add(work);
+                exc
+            },
+        )
+        .collect();
+    if progress.cancelled() {
+        return Err(JobError::Cancelled);
+    }
+    progress.begin(3, 3, 2);
+    merge_stats(stats, &total.into_inner().unwrap_or_else(|e| e.into_inner()));
+    let mut exceptions = Vec::with_capacity(results.iter().map(Vec::len).sum());
+    for e in results {
+        exceptions.extend(e);
+    }
+
+    // 3. entries: class pairs, then exceptions compressed to glyph–class /
+    //    class–glyph where every partner in the class agrees
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut class_entry_of = vec![NONE; pairs.len()];
+    for (idx, &(pi, qi)) in pairs.iter().enumerate() {
+        let rep = rep_out[idx];
+        if rep.value.abs() >= t {
+            let coverage = (r_members[pi as usize].len() * l_members[qi as usize].len()) as f64;
+            class_entry_of[idx] = entries.len() as u32;
+            entries.push(Entry {
+                kind: crate::run::KIND_CLASS_CLASS,
+                left: pi,
+                right: qi,
+                value: rep.value,
+                importance: importance(rep.value, rep.white, upm) * coverage.sqrt(),
+                parent: NONE,
+            });
+        }
+    }
+    // partners of glyph m in class Q (in scope), and of glyph n in class P
+    let partners_in = |g: usize, members: &Vec<u32>| -> usize {
+        members.iter().filter(|&&o| script_ok(&glyphs[g], &glyphs[o as usize], p.scope_scripts)).count()
+    };
+    let rounded = |v: f64| v.round() as i64;
+    let mut by_mq: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut by_pn: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (k, e) in exceptions.iter().enumerate() {
+        let (pi, qi) = pairs[e.pair as usize];
+        by_mq.entry((e.m, qi)).or_default().push(k);
+        by_pn.entry((pi, e.n)).or_default().push(k);
+    }
+    let mut covered = vec![false; exceptions.len()];
+    let uniform = |ks: &Vec<usize>| ks.iter().all(|&k| rounded(exceptions[k].value) == rounded(exceptions[ks[0]].value));
+    let mut keys: Vec<_> = by_mq.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let ks = &by_mq[&key];
+        let (m, qi) = key;
+        if ks.len() >= 2 && ks.len() == partners_in(m as usize, &l_members[qi as usize]) && uniform(ks) {
+            let e0 = exceptions[ks[0]];
+            let imp: f64 = ks.iter().map(|&k| exceptions[k].importance).fold(0.0, f64::max);
+            entries.push(Entry {
+                kind: crate::run::KIND_GLYPH_CLASS,
+                left: m,
+                right: qi,
+                value: e0.value,
+                importance: imp * (ks.len() as f64).sqrt(),
+                parent: class_entry_of[e0.pair as usize],
+            });
+            for &k in ks {
+                covered[k] = true;
+            }
+        }
+    }
+    let mut keys: Vec<_> = by_pn.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let ks = &by_pn[&key];
+        let (pi, nn) = key;
+        if ks.len() >= 2
+            && ks.iter().any(|&k| !covered[k])
+            && ks.len() == partners_in(nn as usize, &r_members[pi as usize])
+            && uniform(ks)
+        {
+            let e0 = exceptions[ks[0]];
+            let imp: f64 = ks.iter().map(|&k| exceptions[k].importance).fold(0.0, f64::max);
+            entries.push(Entry {
+                kind: crate::run::KIND_CLASS_GLYPH,
+                left: pi,
+                right: nn,
+                value: e0.value,
+                importance: imp * (ks.len() as f64).sqrt(),
+                parent: class_entry_of[e0.pair as usize],
+            });
+            for &k in ks {
+                covered[k] = true;
+            }
+        }
+    }
+    for (k, e) in exceptions.iter().enumerate() {
+        if !covered[k] {
+            entries.push(Entry {
+                kind: crate::run::KIND_GLYPH_GLYPH,
+                left: e.m,
+                right: e.n,
+                value: e.value,
+                importance: e.importance,
+                parent: class_entry_of[e.pair as usize],
+            });
+        }
+    }
+    Ok(entries)
+}
+
+/// Applies the budget: keeps the most important entries; an exception goes
+/// with the class pair it refines.
+fn prune(mut entries: Vec<Entry>, budget: usize, stats: &mut RunStats) -> Vec<Entry> {
+    stats.entries_before_budget = entries.len() as u64;
+    if budget > 0 && entries.len() > budget {
+        let mut order: Vec<usize> = (0..entries.len()).collect();
+        order.sort_by(|&a, &b| entries[b].importance.total_cmp(&entries[a].importance).then(a.cmp(&b)));
+        let mut keep = vec![false; entries.len()];
+        for &i in order.iter().take(budget) {
+            keep[i] = true;
+        }
+        // exceptions of dropped class pairs go too
+        for i in 0..entries.len() {
+            let parent = entries[i].parent;
+            if keep[i] && parent != NONE && !keep[parent as usize] {
+                keep[i] = false;
+            }
+        }
+        let mut kept = Vec::with_capacity(budget);
+        for (i, e) in entries.drain(..).enumerate() {
+            if keep[i] {
+                kept.push(Entry { parent: NONE, ..e });
+            }
+        }
+        stats.dropped_by_budget = stats.entries_before_budget - kept.len() as u64;
+        entries = kept;
+    } else {
+        for e in entries.iter_mut() {
+            e.parent = NONE;
+        }
+    }
+    stats.class_entries = entries.iter().filter(|e| e.kind == KIND_CLASS_CLASS).count() as u64;
+    stats.exception_entries = entries.len() as u64 - stats.class_entries;
+    entries
+}
