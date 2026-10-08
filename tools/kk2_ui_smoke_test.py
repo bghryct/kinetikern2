@@ -947,8 +947,8 @@ class EngineWatch(object):
         def watched_prepare(engine, *args, **kwargs):
             return watch._started(prepare(engine, *args, **kwargs), "prepare")
 
-        def watched_solve(engine, context, params, kern_mask=None):
-            job = solve(engine, context, params, kern_mask)
+        def watched_solve(engine, context, params, kern_mask=None, **kwargs):
+            job = solve(engine, context, params, kern_mask, **kwargs)
             return watch._started(job, "whole" if kern_mask is None else "preview")
 
         def watched_free(job):
@@ -1939,6 +1939,10 @@ class SmokeTest(object):
             rep.check(res.entry_count <= budget, "the whole-font run keeps to Max pairs",
                       "%d entries of at most %d (%d before the budget, %d dropped)"
                       % (res.entry_count, budget, st["entries_before_budget"], st["dropped_by_budget"]))
+            if st["dropped_by_budget"] and win.result is res:
+                text = win._result_status()
+                rep.check("dropped by the {:,}-pair budget".format(budget) in text,
+                          "the whole-font status says what the budget dropped", text[:200])
             rep.info("whole-font run + apply %.1f s: %d kerned glyphs, %d pairs in scope, %d class pairs solved, "
                      "%d entries (%d class pairs, %d exceptions), %d threads"
                      % (seconds, st["kern_glyphs"], st["pairs_in_scope"], st["class_pairs"], res.entry_count,

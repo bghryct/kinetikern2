@@ -1,0 +1,255 @@
+3.5.1 2026-10-06 12:55:30.00 -0400
+exception {'codes': '0x0000000000000001, 0x5f1e549b175e8fa1', 'rawCodes': [1, 6854008707993210785], 'type': 'EXC_BAD_ACCESS', 'signal': 'SIGSEGV', 'subtype': 'KERN_INVALID_ADDRESS at 0x5f1e549b175e8fa1 -> 0x0000549b175e8fa1 (possible pointer authentication failure)'}
+termination None
+vmregion 0x549b175e8fa1 is not in any region.  Bytes after previous region: 92544052400034  Bytes before following region: 12528027529311
+      REGION TYPE                    START - END         [ VSIZE] PRT/MAX SHRMOD  REGION DETAIL
+      commpage (reserved)        1000000000-7000000000   [384.0G] ---/--- SM=NUL  reserved VM address space (unallocated)
+--->  GAP OF 0x5f9000000000 BYTES
+      MALLOC_NANO              600000000000-600020000000 [512.0M] rw-/rwx SM=PRV  
+faultingThread 0
+--- thread 0  com.apple.main-thread TRIGGERED
+state {"x": [{"value": 5732304432}, {"value": 4428649280}, {"value": 4428649280}, {"value": 6130815568}, {"value": 0}, {"value": 2103731261}, {"value": 125}, {"value": 1952}, {"value": 6854008707993210616}, {"value": 85}, {"value": 1}, {"value": 0}, {"value": 4912044856, "symbolLocation": 59720, "symbol": "_PyRuntime"}, {"value": 4912044848, "symbolLocation": 59712, "symbol": "_PyRuntime"}, {"value": 4912044824, "symbolLocation": 59688, "symbol": "_PyRuntime"}, {"value": 13393453552}, {"value": 13393453552}, {"value": 2103731261}, {"value": 0}, {"value": 4428649280}, {"value": 4909230392, "symbolLocation": 0, "symbol": "visit_decref"}, {"value": 5505340856}, {"value": 64}, {"value": 2}, {"value": 4912044848, "symbolLocation": 59712, "symbol": "_PyRuntime"}, {"value": 4912044848, "symbolLocation": 59712, "symbol": "_PyRuntime"}, {"value": 4909230392, "symbolLocation": 0, "symbol": "visit_decref"}, {"value": 4922886836, "symbolLocation": 0, "symbol": "call_NSBezierPath_elementAtIndex_associatedPoints_"}, {"value": 13112004912}], "flavor": "ARM_THREAD_STATE64", "lr": {"value": 4907691544}, "cpsr": {"value": 536875008}, "fp": {"value": 6130815216}, "sp": {"value": 6130815200}, "esr": {"value": 1442840704, "description": " Address size fault"}, "pc": {"value": 4909230408, "matchesCrashFrame": 1}, "far": {"value": 0}}
+    Python                                   visit_decref+16  off=0x252948
+    Python                                   dict_traverse+100  off=0xdae18
+    Python                                   gc_collect_main+244  off=0x2512b8
+    Python                                   _PyObject_GC_Link+316  off=0x2531e4
+    Python                                   _PyObject_GC_New+108  off=0x253268
+    _objc.cpython-311-darwin.so              PyObjC_CreateRegisteredStruct+140  off=0x7a194
+    _objc.cpython-311-darwin.so              pythonify_c_value+1488  off=0x6b35c
+    _objc.cpython-311-darwin.so              PyObjC_CArrayToPython+216  off=0x70db0
+    _AppKit.cpython-311-darwin.so            call_NSBezierPath_elementAtIndex_associatedPoints_+440  off=0x4c6c
+    _objc.cpython-311-darwin.so              objcsel_vectorcall+436  off=0x76a00
+    Python                                   _PyEval_EvalFrameDefault+53096  off=0x1b6d14
+    Python                                   _PyEval_Vector+156  off=0x1bc7b8
+    Python                                   _PyObject_FastCallDictTstate+96  off=0x8f65c
+    Python                                   slot_tp_init+180  off=0x11cbb0
+    Python                                   type_call+136  off=0x113530
+    Python                                   _PyObject_MakeTpCall+128  off=0x8f33c
+    Python                                   _PyEval_EvalFrameDefault+54032  off=0x1b70bc
+    Python                                   _PyEval_Vector+156  off=0x1bc7b8
+    Python                                   method_vectorcall+164  off=0x93654
+    Python                                   _PyEval_EvalFrameDefault+64356  off=0x1b9910
+    Python                                   _PyEval_Vector+156  off=0x1bc7b8
+    Python                                   PyObject_Vectorcall+76  off=0x903e8
+    _objc.cpython-311-darwin.so              method_stub+1400  off=0x4ec98
+    libffi.dylib                             ffi_closure_SYSV_inner+820  off=0x10f30
+    libffi.dylib                             ffi_closure_SYSV+56  off=0x81e8
+    Foundation                               __NSFireDelayedPerform+372  off=0x795e0
+    CoreFoundation                           __CFRUNLOOP_IS_CALLING_OUT_TO_A_TIMER_CALLBACK_FUNCTION__+32  off=0x9a498
+    CoreFoundation                           __CFRunLoopDoTimer+972  off=0x9a13c
+    CoreFoundation                           __CFRunLoopDoTimers+356  off=0x99c74
+    CoreFoundation                           __CFRunLoopRun+1856  off=0x7d0ac
+    CoreFoundation                           CFRunLoopRunSpecific+608  off=0x7c314
+    HIToolbox                                RunCurrentEventLoopInMode+292  off=0x3319c
+    HIToolbox                                ReceiveNextEventCommon+648  off=0x32fd8
+    HIToolbox                                _BlockUntilNextEventMatchingListInModeWithFilter+76  off=0x32d30
+    AppKit                                   _DPSNextEvent+660  off=0x39de8
+    AppKit                                   -[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:]+700  off=0x830600
+    AppKit                                   -[NSApplication run]+476  off=0x2d11c
+    AppKit                                   NSApplicationMain+880  off=0x4360
+    Glyphs 3                                 +  off=0xa480
+    dyld                                     start+2476  off=0x6154
+--- thread 1 com.apple.CFSocket.private  
+    libsystem_kernel.dylib                   __select+8  off=0xbf48
+    CoreFoundation                           __CFSocketManager+640  off=0xa7814
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 2   
+    libsystem_kernel.dylib                   mach_msg2_trap+8  off=0xe54
+    libsystem_kernel.dylib                   mach_msg2_internal+80  off=0x135dc
+    libsystem_kernel.dylib                   mach_msg_overwrite+476  off=0x9a24
+    libsystem_kernel.dylib                   mach_msg+24  off=0x11d8
+    CoreFoundation                           __CFRunLoopServiceMachPort+160  off=0x7e560
+    CoreFoundation                           __CFRunLoopRun+1208  off=0x7ce24
+    CoreFoundation                           CFRunLoopRunSpecific+608  off=0x7c314
+    CoreFoundation                           CFRunLoopRun+64  off=0xfa33c
+    DiscRecording                            DRWorkLoop::WorkLoop()+264  off=0x5770
+    DiscRecording                            DRWorkLoop::WorkLoopEntry(DRWorkLoop*)+16  off=0x5650
+    DiscRecording                            DRThreadObject::StartRoutine(DRThreadObject*)+92  off=0x51e4
+    DiscRecording                            DRThreadObject::SymbolRoutine(DRThreadObject*)+16  off=0x50a8
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 3 com.apple.NSURLConnectionLoader  
+    libsystem_kernel.dylib                   mach_msg2_trap+8  off=0xe54
+    libsystem_kernel.dylib                   mach_msg2_internal+80  off=0x135dc
+    libsystem_kernel.dylib                   mach_msg_overwrite+476  off=0x9a24
+    libsystem_kernel.dylib                   mach_msg+24  off=0x11d8
+    CoreFoundation                           __CFRunLoopServiceMachPort+160  off=0x7e560
+    CoreFoundation                           __CFRunLoopRun+1208  off=0x7ce24
+    CoreFoundation                           CFRunLoopRunSpecific+608  off=0x7c314
+    CFNetwork                                +  off=0x25d6f4
+    Foundation                               __NSThread__start__+716  off=0x54bf0
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 4   
+    libsystem_kernel.dylib                   mach_msg2_trap+8  off=0xe54
+    libsystem_kernel.dylib                   mach_msg2_internal+80  off=0x135dc
+    libsystem_kernel.dylib                   mach_msg_overwrite+476  off=0x9a24
+    libsystem_kernel.dylib                   mach_msg+24  off=0x11d8
+    CoreMIDI                                 XServerMachPort::ReceiveMessage(int&, void*, int&)+104  off=0x35094
+    CoreMIDI                                 MIDIProcess::MIDIInPortThread::Run()+156  off=0x4657c
+    CoreMIDI                                 CADeprecated::XThread::RunHelper(void*)+48  off=0x43908
+    CoreMIDI                                 CADeprecated::CAPThread::Entry(CADeprecated::CAPThread*)+92  off=0x455cc
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 5 network_thread 0x0x1567c3b70  
+    libsystem_kernel.dylib                   __select+8  off=0xbf48
+    WebRTC                                   rtc::PhysicalSocketServer::WaitSelect(int, bool)+720  off=0x1087d8
+    WebRTC                                   rtc::PhysicalSocketServer::Wait(int, bool)+28  off=0x1084f8
+    WebRTC                                   rtc::Thread::Get(rtc::Message*, int, bool)+712  off=0x10b4b4
+    WebRTC                                   rtc::Thread::ProcessMessages(int)+232  off=0x10a4ac
+    WebRTC                                   rtc::Thread::PreRun(void*)+96  off=0x10c138
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 6 worker_thread 0x0x1567b8ff0  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    WebRTC                                   +  off=0x100ca4
+    WebRTC                                   rtc::NullSocketServer::Wait(int, bool)+20  off=0x105284
+    WebRTC                                   rtc::Thread::Get(rtc::Message*, int, bool)+712  off=0x10b4b4
+    WebRTC                                   rtc::Thread::ProcessMessages(int)+232  off=0x10a4ac
+    WebRTC                                   rtc::Thread::PreRun(void*)+96  off=0x10c138
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 7 signaling_thread 0x0x1567b3d20  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    WebRTC                                   +  off=0x100ca4
+    WebRTC                                   rtc::NullSocketServer::Wait(int, bool)+20  off=0x105284
+    WebRTC                                   rtc::Thread::Get(rtc::Message*, int, bool)+712  off=0x10b4b4
+    WebRTC                                   rtc::Thread::ProcessMessages(int)+232  off=0x10a4ac
+    WebRTC                                   rtc::Thread::PreRun(void*)+96  off=0x10c138
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 8 caulk.messenger.shared:17  
+    libsystem_kernel.dylib                   semaphore_wait_trap+8  off=0xdd0
+    caulk                                    caulk::semaphore::timed_wait(double)+212  off=0x2624
+    caulk                                    caulk::concurrent::details::worker_thread::run()+36  off=0x24d8
+    caulk                                    void* caulk::thread_proxy<std::__1::tuple<caulk::thread::attributes, void (caulk::concurrent::details::worker_thread::*)(), std::__1::tuple<caulk::concurrent::details::worker_thread*>>>(void*)+96  off=0x21d8
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 9 caulk.messenger.shared:high  
+    libsystem_kernel.dylib                   semaphore_wait_trap+8  off=0xdd0
+    caulk                                    caulk::semaphore::timed_wait(double)+212  off=0x2624
+    caulk                                    caulk::concurrent::details::worker_thread::run()+36  off=0x24d8
+    caulk                                    void* caulk::thread_proxy<std::__1::tuple<caulk::thread::attributes, void (caulk::concurrent::details::worker_thread::*)(), std::__1::tuple<caulk::concurrent::details::worker_thread*>>>(void*)+96  off=0x21d8
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 10 KSCrash Exception Handler (Secondary)  
+    libsystem_kernel.dylib                   mach_msg2_trap+8  off=0xe54
+    libsystem_kernel.dylib                   mach_msg2_internal+80  off=0x135dc
+    libsystem_kernel.dylib                   mach_msg_overwrite+476  off=0x9a24
+    libsystem_kernel.dylib                   mach_msg+24  off=0x11d8
+    Bugsnag                                  ksmachexc_i_handleExceptions+152  off=0x32cdc
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 11 com.bugsnag.app-hang-detector  
+    libsystem_kernel.dylib                   semaphore_timedwait_trap+8  off=0xde8
+    libdispatch.dylib                        _dispatch_sema4_timedwait+64  off=0x4a00
+    libdispatch.dylib                        _dispatch_semaphore_wait_slow+76  off=0x4ffc
+    Bugsnag                                  -[BSGAppHangDetector detectAppHangs]+180  off=0x36ed8
+    Bugsnag                                  DetectAppHangs+12  off=0x36e18
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 12 com.apple.NSEventThread  
+    libsystem_kernel.dylib                   _kernelrpc_mach_vm_deallocate_trap+8  off=0xcc8
+    libsystem_kernel.dylib                   mach_vm_deallocate+88  off=0x2918
+    SkyLight                                 CGSDatagramReadStream::VMData::~VMData()+48  off=0x3ab7dc
+    SkyLight                                 CGSDatagramReadStream::VMData::release()+48  off=0x3ab790
+    SkyLight                                 CGSSnarfAndDispatchDatagrams+2836  off=0xa674
+    SkyLight                                 SLSGetNextEventRecordInternal+340  off=0x3a68b4
+    SkyLight                                 SLEventCreateNextEvent+16  off=0x13f8b8
+    HIToolbox                                PullEventsFromWindowServerOnConnection(unsigned int, unsigned char, __CFMachPortBoost*)+304  off=0x3e750
+    HIToolbox                                MessageHandler(__CFMachPort*, void*, long, void*)+60  off=0x3e5e4
+    CoreFoundation                           __CFMachPortPerform+248  off=0xade74
+    CoreFoundation                           __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__+60  off=0x7e94c
+    CoreFoundation                           __CFRunLoopDoSource1+524  off=0x7e86c
+    CoreFoundation                           __CFRunLoopRun+2244  off=0x7d230
+    CoreFoundation                           CFRunLoopRunSpecific+608  off=0x7c314
+    AppKit                                   _NSEventThread+144  off=0x1643a0
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 13 kinetic-kerning-0  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 14 kinetic-kerning-1  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 15 kinetic-kerning-2  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 16 kinetic-kerning-3  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 17 kinetic-kerning-4  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 18 kinetic-kerning-5  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 19 kinetic-kerning-6  
+    libsystem_kernel.dylib                   __psynch_cvwait+8  off=0x464c
+    libsystem_pthread.dylib                  _pthread_cond_wait+1228  off=0x7504
+    libkinetic_kerning.dylib                 rayon_core::sleep::Sleep::sleep::h0820cc8305197276+504  off=0x60b98
+    libkinetic_kerning.dylib                 rayon_core::registry::WorkerThread::wait_until_cold::he5a5e60475064541+208  off=0x60534
+    libkinetic_kerning.dylib                 std::sys::backtrace::__rust_begin_short_backtrace::h87e8b1b6cf9cca92+304  off=0x314a8
+    libkinetic_kerning.dylib                 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hbf5c8c41f6af87b4+148  off=0x310b4
+    libkinetic_kerning.dylib                 std::sys::thread::unix::Thread::new::thread_start::hc15809c760ef2f27+488  off=0x53a7c
+    libsystem_pthread.dylib                  _pthread_start+136  off=0x6f3c
+    libsystem_pthread.dylib                  thread_start+8  off=0x1d24
+--- thread 20   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10
+--- thread 21   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10
+--- thread 22   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10
+--- thread 23   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10
+--- thread 24   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10
+--- thread 25   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10
+--- thread 26   
+    libsystem_pthread.dylib                  start_wqthread+0  off=0x1d10

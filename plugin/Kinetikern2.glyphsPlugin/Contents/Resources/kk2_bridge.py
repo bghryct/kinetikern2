@@ -23,6 +23,9 @@ ABI_VERSION = 1
 DYLIB_NAME = "libkinetikern2.dylib"
 NONE = 0xFFFFFFFF
 EXISTING = 1 << 31
+# class origin of a frozen glyph without a kerning group: written with the
+# glyph's name, never given a group (low bits: the glyph index)
+GLYPH_KEYED = 1 << 30
 
 NODE_KINDS = {"line": 0, "curve": 1, "offcurve": 2, "qcurve": 3}
 
@@ -40,6 +43,14 @@ PARAM_SKIP_PASS2 = 1
 PARAM_CLASSES = 2
 PARAM_WINDOW = 4
 PARAM_SCOPE_SCRIPTS = 8
+PARAM_FIT_FROZEN = 16
+
+GLYPHOPT_FROZEN = 1
+
+# kk2_features() bits
+FEATURE_GLYPH_OPTS = 1
+FEATURE_MEASURE = 2
+FEATURE_HARNESS = 4
 
 STATE_RUNNING, STATE_DONE, STATE_FAILED, STATE_CANCELLED = 0, 1, 2, 3
 PHASE_NAMES = {1: "Analyzing SDFs", 2: "Evaluating pairs", 3: "Grouping & pruning"}
@@ -113,8 +124,38 @@ class KK2Ray(Structure):
     _fields_ = [("y", c_double), ("x", c_double), ("tier", c_uint32), ("reserved", c_uint32)]
 
 
+class KK2Harness(Structure):
+    _fields_ = [("struct_size", c_uint32), ("glyph_count", c_uint32), ("sides", c_void_p), ("pairs", c_void_p),
+                ("pair_count", c_uint32), ("reserved", c_uint32)]
+
+
+class KK2HarnessPair(Structure):
+    _fields_ = [("left", c_uint32), ("right", c_uint32), ("value", c_double)]
+
+
+class KK2GlyphOpt(Structure):
+    """Per-solve options of one glyph: its spacing group."""
+    _fields_ = [("flags", c_uint32), ("reserved", c_uint32), ("looseness", c_double), ("intensity", c_double)]
+
+
+class KK2KernIn(Structure):
+    """One entry of the font's current kerning (class sides are group ids)."""
+    _fields_ = [("kind", c_uint32), ("left", c_uint32), ("right", c_uint32), ("value", c_float)]
+
+
+class KK2PairOut(Structure):
+    _fields_ = [("left", c_uint32), ("right", c_uint32), ("current", c_float), ("model", c_float),
+                ("residual", c_float), ("reserved", c_uint32)]
+
+
+class KK2MeasureStats(Structure):
+    _fields_ = [("pairs", c_uint64), ("offset", c_double), ("mae", c_double), ("rms", c_double),
+                ("loosest_count", c_uint32), ("tightest_count", c_uint32)]
+
+
 _SIZES = {KK2Point: 24, KK2Glyph: 104, KK2Params: 152, KK2Progress: 40, KK2Metrics: 64, KK2Entry: 24,
-          KK2Stats: 352, KK2Result: 464, KK2Ray: 24}
+          KK2Stats: 352, KK2Result: 464, KK2Ray: 24, KK2GlyphOpt: 24, KK2KernIn: 16, KK2PairOut: 24,
+          KK2MeasureStats: 40, KK2Harness: 32, KK2HarnessPair: 16}
 _POINT = struct.Struct("<ddII")
 _ENTRY = struct.Struct("<IIffII")
 
@@ -228,12 +269,24 @@ class InputPacker(object):
         return arr, len(self.glyphs), (pts, lens)
 
 
+def pack_glyph_opts(opts):
+    """[(frozen, looseness offset, intensity multiplier)] → a KK2GlyphOpt array."""
+    arr = (KK2GlyphOpt * max(len(opts), 1))()
+    for k, o in enumerate(opts):
+        frozen, loose, inten = (tuple(o) + (False, 0.0, 1.0))[:3]
+        arr[k].flags = GLYPHOPT_FROZEN if frozen else 0
+        arr[k].looseness = float(loose or 0.0)
+        arr[k].intensity = 1.0 if inten is None else float(inten)
+    return arr
+
+
 def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=True, scope_scripts=True,
-                threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, **tuning):
+                threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False, **tuning):
     p = KK2Params()
     p.struct_size = sizeof(KK2Params)
     p.flags = ((PARAM_CLASSES if classes else 0) | (PARAM_WINDOW if window else 0) |
-               (PARAM_SCOPE_SCRIPTS if scope_scripts else 0) | (PARAM_SKIP_PASS2 if skip_pass2 else 0))
+               (PARAM_SCOPE_SCRIPTS if scope_scripts else 0) | (PARAM_SKIP_PASS2 if skip_pass2 else 0) |
+               (PARAM_FIT_FROZEN if fit_frozen else 0))
     p.spring, p.repulsion, p.coupling = float(spring), float(repulsion), float(coupling)
     for name in ("white_credit", "depth_ratio", "rhythm_weight", "width_coupling", "min_clearance",
                  "crevice_pressure", "max_negative_kern", "max_positive_kern", "min_kern", "field_cap",
@@ -284,6 +337,25 @@ class Engine(object):
             fn = getattr(lib, name)
             fn.argtypes = args
             fn.restype = res
+        # optional (newer engines): spacing groups, the frozen-glyph fit, measuring
+        optional = {
+            "kk2_features": ([], c_uint32),
+            "kk2_solve_start2": ([c_void_p, POINTER(KK2Params), c_void_p, c_uint32, c_void_p, c_uint32], c_void_p),
+            "kk2_solve_start3": ([c_void_p, POINTER(KK2Params), c_void_p, c_uint32, c_void_p, c_uint32,
+                                  POINTER(KK2Harness)], c_void_p),
+            "kk2_result_fitted_looseness": ([c_void_p], c_double),
+            "kk2_fit_looseness": ([c_void_p, POINTER(KK2Params), c_void_p, c_uint32], c_double),
+            "kk2_measure": ([c_void_p, c_void_p, c_void_p, c_uint32, c_void_p, c_uint32, c_uint32, c_void_p, c_void_p,
+                             c_uint32, POINTER(KK2MeasureStats)], c_uint64),
+        }
+        self.features = 0
+        for name, (args, res) in optional.items():
+            fn = getattr(lib, name, None)
+            if fn is not None:
+                fn.argtypes = args
+                fn.restype = res
+        if getattr(lib, "kk2_features", None) is not None:
+            self.features = lib.kk2_features()
         if lib.kk2_abi_version() != ABI_VERSION:
             raise EngineError("engine ABI %d, plugin expects %d" % (lib.kk2_abi_version(), ABI_VERSION))
         self.lib = lib
@@ -304,18 +376,95 @@ class Engine(object):
             raise EngineError(self.last_error())
         return Job(self, ptr, "prepare", names=[g[4].name for g in packer.glyphs])
 
-    def solve(self, context, params, kern_mask=None):
-        """Starts Phases 2–3. `kern_mask`: bytes (one per glyph) or None."""
+    def solve(self, context, params, kern_mask=None, glyph_opts=None, harness=None):
+        """Starts Phases 2–3. `kern_mask`: bytes (one per glyph) or None.
+        `glyph_opts`: one (frozen, looseness offset, intensity multiplier)
+        per glyph (spacing groups), or None. `harness`: (sides, pairs) of the
+        designer harness (kk2_harness.Plan.engine_arg), or None."""
         if context.ptr is None:
             raise EngineError("context is closed")
+        mask_ptr, mask_len, keep = None, 0, None
         if kern_mask is not None:
-            buf = (c_uint8 * len(kern_mask)).from_buffer_copy(bytes(kern_mask))
-            ptr = self.lib.kk2_solve_start(context.ptr, byref(params), ctypes.addressof(buf), len(kern_mask))
+            keep = (c_uint8 * len(kern_mask)).from_buffer_copy(bytes(kern_mask))
+            mask_ptr, mask_len = ctypes.addressof(keep), len(kern_mask)
+        if harness is not None:
+            if not self.features & FEATURE_HARNESS:
+                raise EngineError("this engine build has no designer harness (kk2_solve_start3)")
+            sides, pairs = harness
+            side_arr = (c_double * max(2 * len(sides), 1))()
+            for k, (dl, dr) in enumerate(sides):
+                side_arr[2 * k] = float(dl)
+                side_arr[2 * k + 1] = float(dr)
+            pair_arr = (KK2HarnessPair * max(len(pairs), 1))()
+            for k, (a, b, v) in enumerate(pairs):
+                pair_arr[k].left, pair_arr[k].right, pair_arr[k].value = int(a), int(b), float(v)
+            h = KK2Harness()
+            h.struct_size = sizeof(KK2Harness)
+            h.glyph_count = len(sides)
+            h.sides = ctypes.addressof(side_arr) if sides else None
+            h.pairs = ctypes.addressof(pair_arr) if pairs else None
+            h.pair_count = len(pairs)
+            opts = pack_glyph_opts(glyph_opts) if glyph_opts is not None else None
+            ptr = self.lib.kk2_solve_start3(context.ptr, byref(params), mask_ptr, mask_len,
+                                            ctypes.addressof(opts) if opts is not None else None,
+                                            len(glyph_opts) if glyph_opts is not None else 0, byref(h))
+            del side_arr, pair_arr, opts  # the engine copied them
+        elif glyph_opts is not None:
+            if not self.features & FEATURE_GLYPH_OPTS:
+                raise EngineError("this engine build has no spacing groups (kk2_solve_start2)")
+            opts = pack_glyph_opts(glyph_opts)
+            ptr = self.lib.kk2_solve_start2(context.ptr, byref(params), mask_ptr, mask_len, ctypes.addressof(opts),
+                                            len(glyph_opts))
         else:
-            ptr = self.lib.kk2_solve_start(context.ptr, byref(params), None, 0)
+            ptr = self.lib.kk2_solve_start(context.ptr, byref(params), mask_ptr, mask_len)
+        del keep
         if not ptr:
             raise EngineError(self.last_error())
         return Job(self, ptr, "solve", names=context.names)
+
+    def fit_looseness(self, context, params, which=None):
+        """Looseness offset (slider units, relative to `params`) at which Pass 1
+        gives the glyphs flagged in `which` (bytes/list of 0/1; None = all)
+        the sidebearings they have now; None if it cannot fit. Synchronous
+        (Pass 1 only: milliseconds)."""
+        if not self.features & FEATURE_GLYPH_OPTS:
+            return None
+        if which is None:
+            v = self.lib.kk2_fit_looseness(context.ptr, byref(params), None, 0)
+        else:
+            buf = (c_uint8 * len(which)).from_buffer_copy(bytes(bytearray(1 if x else 0 for x in which)))
+            v = self.lib.kk2_fit_looseness(context.ptr, byref(params), ctypes.addressof(buf), len(which))
+        return None if v != v else float(v)
+
+    def measure(self, context, result, current, mask=None, scope_scripts=True, cap=100):
+        """The font's spacing as it is against `result`: for every pair of
+        glyphs in `mask` (None = the glyphs the solve kerned), the visible gap
+        now (current sidebearings + `current` kerning: (kind, left, right,
+        value) with group ids on class sides) and the model's. Returns
+        (stats dict, loosest, tightest) with (left, right, current, model,
+        residual) tuples, most extreme first; residual = current − model −
+        offset (positive: looser than the font's own rhythm). Synchronous;
+        call it off the main thread for whole fonts."""
+        if not self.features & FEATURE_MEASURE:
+            raise EngineError("this engine build cannot measure (kk2_measure)")
+        n = len(current)
+        cur = (KK2KernIn * max(n, 1))()
+        for k, (kind, left, right, value) in enumerate(current):
+            cur[k].kind, cur[k].left, cur[k].right, cur[k].value = int(kind), int(left), int(right), float(value)
+        if mask is not None:
+            mbuf = (c_uint8 * len(mask)).from_buffer_copy(bytes(bytearray(1 if x else 0 for x in mask)))
+            mptr, mlen = ctypes.addressof(mbuf), len(mask)
+        else:
+            mptr, mlen = None, 0
+        loose = (KK2PairOut * max(cap, 1))()
+        tight = (KK2PairOut * max(cap, 1))()
+        st = KK2MeasureStats()
+        self.lib.kk2_measure(context.ptr, result.ptr, ctypes.addressof(cur), n, mptr, mlen, 1 if scope_scripts else 0,
+                             ctypes.addressof(loose), ctypes.addressof(tight), int(cap), byref(st))
+        row = lambda p: (p.left, p.right, p.current, p.model, p.residual)
+        stats = {"pairs": st.pairs, "offset": st.offset, "mae": st.mae, "rms": st.rms}
+        return (stats, [row(loose[k]) for k in range(st.loosest_count)],
+                [row(tight[k]) for k in range(st.tightest_count)])
 
 
 class Job(object):
@@ -436,6 +585,15 @@ class Result(object):
         self.stats = dict((n, getattr(s, n)) for n, _ in KK2Stats._fields_ if n not in ("rest_gap", "rhythm_scale"))
         self.stats["rest_gap"] = list(s.rest_gap)
         self.stats["rhythm_scale"] = list(s.rhythm_scale)
+
+    @property
+    def fitted_looseness(self):
+        """Looseness offset the solve moved to (PARAM_FIT_FROZEN), else None."""
+        fn = getattr(self.engine.lib, "kk2_result_fitted_looseness", None)
+        if fn is None or not self.ptr:
+            return None
+        v = fn(self.ptr)
+        return None if v != v else float(v)
 
     def iter_entries(self):
         """(kind, left, right, value, importance) tuples, unpacked in C."""

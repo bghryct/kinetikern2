@@ -19,7 +19,7 @@
 //! descender hook or an f's ascender hook may overhang the advance width the
 //! way designers draw them. Pass 2 always sees the whole outline.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use rayon::prelude::*;
 
@@ -51,6 +51,40 @@ pub const NONE: u32 = u32::MAX;
 /// 0.8 of the raw field, the value that matched designers best on the Google
 /// Fonts benchmark (v1 tools/benchmark.py).
 pub const COUPLING_CALIBRATION: f64 = 0.8;
+
+/// The Looseness slider (−1 tight … +1 loose, 0 = the tuned default) moves
+/// the spring and the bounding repulsion in opposite directions by
+/// e^{∓GAIN·t}; at 0 their ratio is `LOOSENESS_RATIO`, the median best fit to
+/// the 30 most popular Google Fonts families. The plugin's sliders and every
+/// tool use this one mapping.
+pub const LOOSENESS_GAIN: f64 = 0.55;
+pub const LOOSENESS_RATIO: f64 = 3.86;
+
+/// (spring, repulsion) for a Looseness slider position.
+pub fn physics_for_looseness(t: f64) -> (f64, f64) {
+    ((-LOOSENESS_GAIN * t).exp(), LOOSENESS_RATIO * (LOOSENESS_GAIN * t).exp())
+}
+
+/// Per-solve options of one glyph: the spacing group it was painted into.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphOpt {
+    /// Keep the glyph's current sidebearings, and never kern a pair of two
+    /// frozen glyphs: only the rest of the font is spaced, around it.
+    pub frozen: bool,
+    /// Looseness offset of the glyph's group, in slider units (0 = the
+    /// solve's own): figures, fractions or a script spaced looser or tighter
+    /// than the rest of the font.
+    pub looseness: f64,
+    /// Kerning force of the glyph's group as a multiple of the solve's
+    /// intensity (1 = the same). A pair kerns with the mean of its two glyphs'.
+    pub intensity: f64,
+}
+
+impl Default for GlyphOpt {
+    fn default() -> Self {
+        GlyphOpt { frozen: false, looseness: 0.0, intensity: 1.0 }
+    }
+}
 
 /// How one sidebearing is decided.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -207,6 +241,16 @@ pub struct SolveOptions {
 }
 
 impl SolveOptions {
+    /// The same options with the Looseness moved by `dt` slider units.
+    pub fn shifted(&self, dt: f64) -> SolveOptions {
+        let mut o = self.clone();
+        if dt.is_finite() && dt != 0.0 {
+            o.spring *= (-LOOSENESS_GAIN * dt).exp();
+            o.repulsion *= (LOOSENESS_GAIN * dt).exp();
+        }
+        o
+    }
+
     /// Tuned on the 30 most popular Google Fonts families, selected on the next
     /// 13 and tested on 30 macOS system families (v1 tools/benchmark.py).
     pub fn defaults(upm: f64) -> Self {
@@ -256,6 +300,17 @@ pub struct Pass1 {
     pub ms: f64,
     pub rest_gap: [f64; MAX_GROUPS as usize],
     pub rhythm_scale: [f64; MAX_GROUPS as usize],
+}
+
+/// Pass 1's own result before section offsets and rules.
+struct FreeSpacing {
+    zone_sb: Vec<(f64, f64)>,
+    omegas: Vec<(f64, f64)>,
+    white_credit: f64,
+    lsb: Vec<f64>,
+    rsb: Vec<f64>,
+    iterations: u32,
+    residual: f64,
 }
 
 fn median(mut v: Vec<f64>) -> Option<f64> {
@@ -452,10 +507,16 @@ impl Context {
 
     /// Pass 1 over every valid glyph, then the per-side rules.
     pub fn pass1(&self, o: &SolveOptions) -> Pass1 {
+        self.pass1_with(o, None)
+    }
+
+    /// Pass 1 with per-glyph options: section Looseness offsets move a
+    /// section's sidebearings by half the change of its rest gap per side (a
+    /// gap inside the section changes by the whole difference, a gap to the
+    /// rest of the font by half of it); frozen glyphs keep the sidebearings
+    /// they have.
+    pub fn pass1_with(&self, o: &SolveOptions, opts: Option<&[GlyphOpt]>) -> Pass1 {
         let t1 = Instant::now();
-        let upm = self.upm;
-        let s = upm / 1000.0;
-        let n = self.glyphs.len();
         let spring = o.spring.max(1e-9);
         let repulsion = o.repulsion.max(0.0);
         let mut rest = [f64::NAN; MAX_GROUPS as usize];
@@ -464,6 +525,150 @@ impl Context {
             scale[id as usize] = self.rhythm_scale[k];
             rest[id as usize] = rest_gap(self.rhythm_scale[k], spring, repulsion);
         }
+        let free = self.free_sidebearings(o);
+        let (zone_sb, omegas, white_credit) = (&free.zone_sb, &free.omegas, free.white_credit);
+        let mut lsb = free.lsb.clone();
+        let mut rsb = free.rsb.clone();
+        if let Some(opts) = opts {
+            for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid && !g.fixed_advance) {
+                let dt = opts.get(i).map_or(0.0, |x| x.looseness);
+                if dt.is_finite() && dt != 0.0 {
+                    let shifted = o.shifted(dt);
+                    let lam = self.rhythm_scale[g.group];
+                    let d = 0.5
+                        * (rest_gap(lam, shifted.spring.max(1e-9), shifted.repulsion.max(0.0))
+                            - rest_gap(lam, spring, repulsion));
+                    lsb[i] += d;
+                    rsb[i] += d;
+                }
+            }
+        }
+        let ruled = self.apply_rules(&mut lsb, &mut rsb, opts);
+
+        let metrics: Vec<GlyphMetrics> = self
+            .glyphs
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                if !g.valid {
+                    return GlyphMetrics { advance: g.advance, lsb: f64::NAN, rsb: f64::NAN, ..GlyphMetrics::default() };
+                }
+                let (lz, rz) = zone_sb[i];
+                GlyphMetrics {
+                    lsb: lsb[i],
+                    rsb: rsb[i],
+                    advance: if g.fixed_advance { g.advance } else { lsb[i] + g.bbox.width() + rsb[i] },
+                    bbox: [g.bbox.x0, g.bbox.x1, g.bbox.y0, g.bbox.y1],
+                    optical_left: lz + white_credit * omegas[i].0,
+                    optical_right: rz + white_credit * omegas[i].1,
+                    valid: true,
+                    flags: ruled[i],
+                }
+            })
+            .collect();
+        Pass1 {
+            lsb,
+            rsb,
+            metrics,
+            iterations: free.iterations,
+            residual: free.residual,
+            ms: t1.elapsed().as_secs_f64() * 1000.0,
+            rest_gap: rest,
+            rhythm_scale: scale,
+        }
+    }
+
+    /// The Looseness offset (slider units, relative to `o`) at which Pass 1
+    /// gives the glyphs flagged in `which`, on average, the sidebearings they
+    /// have now: the tightness the designer chose, read off the glyphs whose
+    /// spacing is final. None with fewer than three such glyphs. Pass 1 only,
+    /// a few milliseconds per evaluation.
+    pub fn fit_looseness(&self, o: &SolveOptions, which: &[bool]) -> Option<f64> {
+        let idx: Vec<usize> = (0..self.glyphs.len())
+            .filter(|&i| {
+                let g = &self.glyphs[i];
+                which.get(i).copied().unwrap_or(false)
+                    && g.valid
+                    && !g.fixed_advance
+                    && g.cur_lsb.is_finite()
+                    && g.cur_rsb.is_finite()
+            })
+            .collect();
+        if idx.len() < 3 {
+            return None;
+        }
+        let target = idx.iter().map(|&i| self.glyphs[i].cur_lsb + self.glyphs[i].cur_rsb).sum::<f64>() / idx.len() as f64;
+        // model minus current, mean over the glyphs: grows with the looseness
+        let f = |dt: f64| -> f64 {
+            let free = self.free_sidebearings(&o.shifted(dt));
+            idx.iter().map(|&i| free.lsb[i] + free.rsb[i]).sum::<f64>() / idx.len() as f64 - target
+        };
+        let tol = 0.05 * self.upm / 1000.0;
+        let (mut a, mut fa): (f64, f64) = (0.0, f(0.0));
+        if !fa.is_finite() {
+            return None;
+        }
+        if fa.abs() <= tol {
+            return Some(0.0);
+        }
+        // bracket: step away from zero in the direction that shrinks the gap
+        let dir = if fa > 0.0 { -1.0 } else { 1.0 };
+        let mut b: f64 = a;
+        let mut fb: f64 = fa;
+        let mut step: f64 = 0.5;
+        while fb.signum() == fa.signum() {
+            b += dir * step;
+            if b.abs() > 6.0 {
+                return Some(b.clamp(-6.0, 6.0));
+            }
+            fb = f(b);
+            if !fb.is_finite() {
+                return None;
+            }
+            if fb.signum() == fa.signum() {
+                a = b;
+                fa = fb;
+            }
+            step *= 1.5;
+        }
+        // Illinois on [a, b]
+        let mut side = 0i32;
+        for _ in 0..40 {
+            let c = (a * fb - b * fa) / (fb - fa);
+            let fc = f(c);
+            if !fc.is_finite() {
+                break;
+            }
+            if fc.abs() <= tol || (b - a).abs() < 1e-4 {
+                return Some(c);
+            }
+            if fc.signum() == fb.signum() {
+                b = c;
+                fb = fc;
+                if side == -1 {
+                    fa *= 0.5;
+                }
+                side = -1;
+            } else {
+                a = c;
+                fa = fc;
+                if side == 1 {
+                    fb *= 0.5;
+                }
+                side = 1;
+            }
+        }
+        Some(0.5 * (a + b))
+    }
+
+    /// Pass 1's own sidebearings (before section offsets and rules), the zone
+    /// sidebearings and margin white they came from.
+    fn free_sidebearings(&self, o: &SolveOptions) -> FreeSpacing {
+        let upm = self.upm;
+        let s = upm / 1000.0;
+        let n = self.glyphs.len();
+        let spring = o.spring.max(1e-9);
+        let repulsion = o.repulsion.max(0.0);
 
         let free: Vec<usize> = (0..n).filter(|&i| self.glyphs[i].valid && !self.glyphs[i].fixed_advance).collect();
         let omegas: Vec<(f64, f64)> =
@@ -516,50 +721,39 @@ impl Context {
             lsb[i] = lz - ol;
             rsb[i] = rz - or;
         }
-        let ruled = self.apply_rules(&mut lsb, &mut rsb);
-
-        let metrics: Vec<GlyphMetrics> = self
-            .glyphs
-            .iter()
-            .enumerate()
-            .map(|(i, g)| {
-                if !g.valid {
-                    return GlyphMetrics { advance: g.advance, lsb: f64::NAN, rsb: f64::NAN, ..GlyphMetrics::default() };
-                }
-                let (lz, rz) = zone_sb[i];
-                GlyphMetrics {
-                    lsb: lsb[i],
-                    rsb: rsb[i],
-                    advance: if g.fixed_advance { g.advance } else { lsb[i] + g.bbox.width() + rsb[i] },
-                    bbox: [g.bbox.x0, g.bbox.x1, g.bbox.y0, g.bbox.y1],
-                    optical_left: lz + p1.white_credit * omegas[i].0,
-                    optical_right: rz + p1.white_credit * omegas[i].1,
-                    valid: true,
-                    flags: ruled[i],
-                }
-            })
-            .collect();
-        Pass1 {
+        FreeSpacing {
+            zone_sb,
+            omegas,
+            white_credit: p1.white_credit,
             lsb,
             rsb,
-            metrics,
             iterations: res.iterations,
             residual: res.residual,
-            ms: t1.elapsed().as_secs_f64() * 1000.0,
-            rest_gap: rest,
-            rhythm_scale: scale,
         }
     }
 
     /// Applies Fixed / Follow rules (chains resolved in up to 8 rounds; a rule
-    /// that cannot resolve keeps the glyph's current sidebearing).
-    fn apply_rules(&self, lsb: &mut [f64], rsb: &mut [f64]) -> Vec<u32> {
+    /// that cannot resolve keeps the glyph's current sidebearing). A frozen
+    /// glyph keeps both of its current sidebearings, whatever its rules say.
+    fn apply_rules(&self, lsb: &mut [f64], rsb: &mut [f64], opts: Option<&[GlyphOpt]>) -> Vec<u32> {
         let n = self.glyphs.len();
         let mut flags = vec![0u32; n];
         let free_l: Vec<f64> = lsb.to_vec();
         let free_r: Vec<f64> = rsb.to_vec();
+        let frozen = |i: usize| opts.and_then(|o| o.get(i)).is_some_and(|x| x.frozen);
         let mut pending: Vec<(usize, bool)> = Vec::new();
-        for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid && !g.fixed_advance) {
+        for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid) {
+            if frozen(i) {
+                if g.cur_lsb.is_finite() && g.cur_rsb.is_finite() {
+                    lsb[i] = g.cur_lsb;
+                    rsb[i] = g.cur_rsb;
+                    flags[i] |= METRIC_LSB_RULED | METRIC_RSB_RULED;
+                }
+                continue;
+            }
+            if g.fixed_advance {
+                continue;
+            }
             for (left, rule, cur) in [(true, g.lsb_rule, g.cur_lsb), (false, g.rsb_rule, g.cur_rsb)] {
                 match rule {
                     SideRule::Free => {}

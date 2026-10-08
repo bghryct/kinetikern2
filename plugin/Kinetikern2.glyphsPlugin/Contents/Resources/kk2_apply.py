@@ -378,6 +378,10 @@ class ApplyPlan(object):
     sync           glyphs following others (keys, aligned components),
                    targets first; follow {glyph: [targets]}
     removals       [(left key, right key)] existing entries Replace removes
+    groups_to_move {glyph: (left group or None, right group or None)}: sides
+                   that leave a group they shared with frozen glyphs for a
+                   class of their own (spacing groups)
+    frozen         glyphs Apply leaves alone (frozen spacing groups)
     counts         for the confirmation dialog (contract keys, plus
                    "joining_existing" and "other_masters")
     details        a finer breakdown
@@ -394,6 +398,8 @@ class ApplyPlan(object):
         self.sync = []
         self.follow = {}
         self.removals = []
+        self.groups_to_move = {}
+        self.frozen = set()
         self.right_class_names = []
         self.left_class_names = []
         self.counts = {}
@@ -414,6 +420,9 @@ def _class_names(origins, group_names, names, taken):
             if gid >= len(group_names):
                 raise ValueError("class origin names group %d of %d" % (gid, len(group_names)))
             out.append(group_names[gid])
+            continue
+        if origin & kb.GLYPH_KEYED:
+            out.append(None)  # a frozen glyph without a group: written with its own key
             continue
         name = names[origin]
         if name in taken:
@@ -499,10 +508,10 @@ class Planner(_Stepper):
     never saw. The result must stay open until the planner is done.
     """
 
-    def __init__(self, snapshot, result, replace, metrics_names=None, scope_scripts=True):
+    def __init__(self, snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None):
         _Stepper.__init__(self)
         self.plan = None
-        self._args = (snapshot, result, replace, metrics_names, scope_scripts)
+        self._args = (snapshot, result, replace, metrics_names, scope_scripts, frozen)
         self.text = "Planning"
 
     def _finished(self, value):
@@ -510,7 +519,7 @@ class Planner(_Stepper):
         value.ms = self.busy_ms
 
     def _work(self):
-        snapshot, result, replace, metrics_names, scope_scripts = self._args
+        snapshot, result, replace, metrics_names, scope_scripts, frozen_names = self._args
         self._args = None
         names = list(snapshot.names)
         n = len(names)
@@ -531,6 +540,12 @@ class Planner(_Stepper):
         rclass = result.glyph_right_class[:] if len(result.glyph_right_class) == n else none
         lclass = result.glyph_left_class[:] if len(result.glyph_left_class) == n else none
         right_groups, left_groups = snapshot.right_group_names, snapshot.left_group_names
+        frozen_names = set(frozen_names or ())
+        frozen = bytearray(n)
+        for i, name in enumerate(names):
+            if name in frozen_names:
+                frozen[i] = 1
+        p.frozen = set(name for name in names if name in frozen_names)
         yield
 
         # 1. the master's kerning as it is (keys only), and the group names
@@ -571,8 +586,11 @@ class Planner(_Stepper):
         self.phase = "kerning"
         right_names = _class_names(result.right_class_origin[:], right_groups, names, set(right_groups) | kern_right)
         left_names = _class_names(result.left_class_origin[:], left_groups, names, set(left_groups) | kern_left)
-        rkeys = [LEFT_PREFIX + s for s in right_names]
-        lkeys = [RIGHT_PREFIX + s for s in left_names]
+        r_origins, l_origins = result.right_class_origin[:], result.left_class_origin[:]
+        rkeys = [LEFT_PREFIX + s if s is not None else gkey[r_origins[c] & ~kb.GLYPH_KEYED]
+                 for c, s in enumerate(right_names)]
+        lkeys = [RIGHT_PREFIX + s if s is not None else gkey[l_origins[q] & ~kb.GLYPH_KEYED]
+                 for q, s in enumerate(left_names)]
         yield
 
         # 3. kerning: every entry; class pairs that round to zero say nothing,
@@ -622,27 +640,39 @@ class Planner(_Stepper):
         self.phase = "groups"
         origins_r, origins_l = result.right_class_origin, result.left_class_origin
         groups = {}
+        moves = {}
         group_sides = joining = 0
         for i in range(n):
             if not i & 1023:
                 yield
-            if not kern[i]:
-                continue
+            if not kern[i] or frozen[i]:
+                continue  # a frozen glyph keeps its groups
             spec = specs[i]
             left = right = None
+            move_l = move_r = None
             joins = False
             q = lclass[i]
-            if spec.left_group == kb.NONE and q != kb.NONE and used_l[q]:
-                left = left_names[q]
-                joins = bool(origins_l[q] & kb.EXISTING)
+            if q != kb.NONE and used_l[q] and left_names[q] is not None:
+                if spec.left_group == kb.NONE:
+                    left = left_names[q]
+                    joins = bool(origins_l[q] & kb.EXISTING)
+                elif frozen_names and not origins_l[q] & kb.EXISTING and \
+                        left_groups[spec.left_group] != left_names[q]:
+                    move_l = left_names[q]  # it left a group it shared with frozen glyphs
             c = rclass[i]
-            if spec.right_group == kb.NONE and c != kb.NONE and used_r[c]:
-                right = right_names[c]
-                joins = joins or bool(origins_r[c] & kb.EXISTING)
+            if c != kb.NONE and used_r[c] and right_names[c] is not None:
+                if spec.right_group == kb.NONE:
+                    right = right_names[c]
+                    joins = joins or bool(origins_r[c] & kb.EXISTING)
+                elif frozen_names and not origins_r[c] & kb.EXISTING and \
+                        right_groups[spec.right_group] != right_names[c]:
+                    move_r = right_names[c]
             if left is not None or right is not None:
                 groups[names[i]] = (left, right)
                 group_sides += (left is not None) + (right is not None)
                 joining += joins
+            if move_l is not None or move_r is not None:
+                moves[names[i]] = (move_l, move_r)
         new_groups = (sum(1 for c in range(len(right_names)) if used_r[c] and not origins_r[c] & kb.EXISTING) +
                       sum(1 for q in range(len(left_names)) if used_l[q] and not origins_l[q] & kb.EXISTING))
 
@@ -695,6 +725,18 @@ class Planner(_Stepper):
             return not scope_scripts or a[1] or b[1] or not a[0].isdisjoint(b[0])
 
         self.phase = "removals"
+        # keys that belong to frozen glyphs: their glyph keys, and the groups
+        # any frozen glyph is in (what lies between two of them stays)
+        frozen_keys = set()
+        if frozen_names:
+            for i in range(n):
+                if frozen[i]:
+                    frozen_keys.add(gkey[i])
+                    spec = specs[i]
+                    if spec.right_group != kb.NONE:
+                        frozen_keys.add(LEFT_PREFIX + right_groups[spec.right_group])
+                    if spec.left_group != kb.NONE:
+                        frozen_keys.add(RIGHT_PREFIX + left_groups[spec.left_group])
         removals = []
         overriding = 0
         existing_set = set(existing)
@@ -707,7 +749,8 @@ class Planner(_Stepper):
                     yield
             if replace:
                 for k, pair in enumerate(existing):
-                    if pair not in written and covered(*pair):
+                    if pair not in written and covered(*pair) and not (
+                            pair[0] in frozen_keys and pair[1] in frozen_keys):
                         removals.append(pair)
                     if not k & 2047:
                         yield
@@ -743,11 +786,14 @@ class Planner(_Stepper):
         # a side that follows another glyph (a metrics key, an aligned component)
         # lands where that glyph's new spacing puts it: the glyphs followed are
         # re-spaced too (Ntilde in the sample text moves N)
+        for i in range(n):
+            if frozen[i]:
+                in_scope[i] = False  # frozen: its sidebearings stay
         stack = [i for i in range(n) if in_scope[i]]
         while stack:
             spec = specs[stack.pop()]
             for rule, t in ((spec.lsb_rule, spec.lsb_glyph), (spec.rsb_rule, spec.rsb_glyph)):
-                if rule in _FOLLOW and t < n and not in_scope[t]:
+                if rule in _FOLLOW and t < n and not in_scope[t] and not frozen[t]:
                     in_scope[t] = True
                     stack.append(t)
         yield
@@ -794,6 +840,9 @@ class Planner(_Stepper):
         self.phase = "followers"
         index_of = dict((name, i) for i, name in enumerate(names))
         sync, follow = _followers(specs, names, [index_of[name] for name in metrics])
+        if frozen_names:
+            sync = [name for name in sync if name not in frozen_names]
+            follow = dict((k, v) for k, v in follow.items() if k not in frozen_names)
 
         # big temporaries go a slice at a time (freeing them at once would
         # take as long as building them)
@@ -806,6 +855,7 @@ class Planner(_Stepper):
         p.sync = sync
         p.follow = follow
         p.removals = removals
+        p.groups_to_move = moves
         p.right_class_names = right_names
         p.left_class_names = left_names
         p.counts = {
@@ -818,6 +868,8 @@ class Planner(_Stepper):
             "overriding": overriding,
             "joining_existing": joining,
             "other_masters": len(masters) - 1,
+            "frozen": len(p.frozen),
+            "group_moves": len(moves),
         }
         p.details = {
             "kerning": len(kerning), "class_pairs": cc, "glyph_class": gc, "class_glyph": cg, "glyph_glyph": gg,
@@ -845,9 +897,9 @@ def _release(*containers):
                 yield
 
 
-def plan(snapshot, result, replace, metrics_names=None, scope_scripts=True):
+def plan(snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None):
     """The ApplyPlan of applying `result` (see Planner), in one call."""
-    return Planner(snapshot, result, replace, metrics_names, scope_scripts).run().plan
+    return Planner(snapshot, result, replace, metrics_names, scope_scripts, frozen).run().plan
 
 
 # --------------------------------------------------------------- revert
@@ -1298,6 +1350,7 @@ class Applier(_Stepper):
         self.text = "Applying: preparing"
         names = set(p.metrics)
         names.update(p.groups_to_set)
+        names.update(getattr(p, "groups_to_move", {}))
         names.update(p.sync)
         users = {}
         if p.metrics:
@@ -1359,6 +1412,18 @@ class Applier(_Stepper):
                         self._examples.append(("group conflict", name, side, now, want))
             done += 1
             self.fraction = done / total
+            yield
+        # glyphs leaving a group they shared with frozen glyphs (spacing groups)
+        for name, (left, right) in getattr(p, "groups_to_move", {}).items():
+            glyph = _glyph(font, name)
+            if glyph is None:
+                detail["missing_glyphs"] += 1
+                continue
+            self._undo.add(glyph)
+            for side, want in (("leftKerningGroup", left), ("rightKerningGroup", right)):
+                if want is not None and _text(getattr(glyph, side)) != want:
+                    setattr(glyph, side, want)
+                    counts["groups"] += 1
             yield
 
         # 4. sidebearings
@@ -1607,8 +1672,14 @@ def describe_plan(plan):
     if not plan.replace and c.get("overriding"):
         lines.append("%s existing glyph pairs keep overriding new class pairs (Replace would remove them)."
                      % _n(c["overriding"]))
+    if c.get("frozen"):
+        lines.append("%s frozen glyphs are left as they are (sidebearings, groups and the kerning between them)."
+                     % _n(c["frozen"]))
     if c.get("groups"):
         lines.append("%s glyphs join kerning groups (only sides without a group)." % _n(c["groups"]))
+    if c.get("group_moves"):
+        lines.append("%s glyphs leave a kerning group they shared with frozen glyphs for a group of their own."
+                     % _n(c["group_moves"]))
     if c.get("joining_existing") and c.get("other_masters"):
         lines.append("%s of them join existing groups. Groups belong to the glyph, not the master: in the other "
                      "%s, these glyphs take on the kerning of the groups they join."

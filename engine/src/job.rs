@@ -7,11 +7,10 @@
 //! says so. Nothing ever calls back into Python. Cancelling sets a flag that
 //! every work item checks, so a running job stops within one pair's time.
 
-use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use crate::clock::Instant;
 
 /// Returned by work that noticed the cancel flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +117,10 @@ fn below_main_thread() {}
 
 /// The rayon pool for a thread count (0 = auto). Pools are built once per
 /// count and shared by all jobs.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pool(threads: usize) -> Arc<rayon::ThreadPool> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
     static POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
     let n = if threads == 0 { default_threads() } else { threads.min(256) };
     let mut map = POOLS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
@@ -134,6 +136,23 @@ pub fn pool(threads: usize) -> Arc<rayon::ThreadPool> {
             )
         })
         .clone()
+}
+
+/// WebAssembly has no threads: one pool whose only worker is the calling
+/// thread itself (so `install` and every parallel iterator run inline, and
+/// rayon's global pool is never needed).
+#[cfg(target_arch = "wasm32")]
+pub fn pool(_threads: usize) -> Arc<rayon::ThreadPool> {
+    thread_local! {
+        static POOL: Arc<rayon::ThreadPool> = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .use_current_thread()
+                .build()
+                .expect("rayon pool on the current thread"),
+        );
+    }
+    POOL.with(|p| p.clone())
 }
 
 /// What a finished job hands back.

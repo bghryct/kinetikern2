@@ -8,6 +8,8 @@
 #   ./build.sh --verify [font]  then run the in-Glyphs self-test (kk2_selftest) in a
 #                               temporary second Glyphs 3 instance; default font:
 #                               /System/Library/Fonts/Supplemental/Arial.ttf
+#   ./build.sh --verify --groups  the self-test also runs its spacing-groups stage
+#                               (frozen capitals, looser figures, the Pairs window)
 #
 # The library is replaced atomically (built into a staging file, signed, then renamed
 # over the old one), so a Glyphs or a tool that has the old one loaded keeps it.
@@ -34,17 +36,19 @@ UNIVERSAL=0
 INSTALL=0
 TEST=0
 VERIFY=0
+SPACING_GROUPS=0
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 while [ $# -gt 0 ]; do
   case "$1" in
     --universal) UNIVERSAL=1 ;;
     --install) INSTALL=1 ;;
     --test) TEST=1 ;;
+    --groups) SPACING_GROUPS=1 ;;
     --verify)
       VERIFY=1
       # an optional font path follows (anything not starting with "-")
       if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then FONT="$2"; shift; fi ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -57,7 +61,9 @@ PY="$GPY"
 if [ "$VERIFY" = 1 ]; then
   # Fail before the build, not ten minutes into the test.
   [ -e "$FONT" ] || { echo "font not found: $FONT" >&2; exit 2; }
-  FONT="$(cd "$(dirname "$FONT")" && pwd)/$(basename "$FONT")"  # Glyphs resolves nothing relative
+  # Glyphs resolves nothing relative, and it hangs opening a file whose path
+  # runs through a relative symlink (/tmp -> private/tmp): pass the physical path
+  FONT="$(cd "$(dirname "$FONT")" && pwd -P)/$(basename "$FONT")"
   [ -d "$GLYPHS_APP" ] || { echo "Glyphs 3 not found at $GLYPHS_APP (set GLYPHS_APP)" >&2; exit 2; }
   [ -n "$PY" ] || { echo "--verify needs python3 to read the results" >&2; exit 2; }
 fi
@@ -163,13 +169,16 @@ RESULTS="$(mktemp -d "${TMP%/}/kk2-verify.XXXXXX")"
 REPORT="$RESULTS/selftest.json"
 # the results folder is unique, so it identifies this run's instance
 PATTERN="$KEY\.selfTestOut $(printf '%s' "$RESULTS" | sed 's/[][\.*^$?+(){}|]/\\&/g')"
+EXTRA=""
+[ "$SPACING_GROUPS" = 1 ] && EXTRA="-$KEY.selfTestGroups"
 echo "self-test: $(basename "$FONT") in a temporary Glyphs 3 (results in $RESULTS)"
 open -n -a "$GLYPHS_APP" --args -ApplePersistenceIgnoreState YES \
   "-$KEY.selfTestFont" "$FONT" \
   "-$KEY.selfTestOut" "$RESULTS" \
   "-$KEY.selfTestQuit" YES \
   "-$KEY.selfTestWhole" YES \
-  "-$KEY.selfTestCancel" YES
+  "-$KEY.selfTestCancel" YES \
+  ${EXTRA:+"$EXTRA" YES}
 
 START=$(date +%s)
 PID=""
@@ -207,7 +216,9 @@ if [ -n "$PID" ]; then
   fi
 fi
 
-[ -f "$RESULTS/window.png" ] && echo "window image: $RESULTS/window.png"
+for image in window groups pairs; do
+  [ -f "$RESULTS/$image.png" ] && echo "$image image: $RESULTS/$image.png"
+done
 echo "report: $REPORT"
 "$PY" - "$REPORT" <<'EOF'
 import json, sys

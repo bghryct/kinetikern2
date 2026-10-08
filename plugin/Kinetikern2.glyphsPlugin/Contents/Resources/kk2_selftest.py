@@ -26,6 +26,12 @@ come to the front, not a second one).
                      and check that the master's kerning and the spacing
                      glyphs' groups and sidebearings are exactly as before
     selfTestMaxStall longest tolerated main-thread stall in ms (default 500)
+    selfTestGroups   after the Revert: spacing groups — freeze the capitals, space
+                     the figures looser with half the kerning force, open the
+                     Spacing Groups and Pairs windows, run the whole font,
+                     apply, check that the frozen glyphs, their groups and the
+                     kerning between them did not change, measure the pairs,
+                     revert and check that the font is as before
 
 Then it saves window.png and selftest.json into selfTestOut, closes the window
 and the font without saving and, with selfTestQuit, quits Glyphs.
@@ -85,6 +91,7 @@ QUIT_KEY = PREFIX + "selfTestQuit"
 WHOLE_KEY = PREFIX + "selfTestWhole"
 CANCEL_KEY = PREFIX + "selfTestCancel"
 MAX_STALL_KEY = PREFIX + "selfTestMaxStall"
+GROUPS_KEY = PREFIX + "selfTestGroups"
 
 DEFAULT_OUT = os.path.expanduser("~/Desktop/Kinetikern2-selftest")
 DEFAULT_MAX_STALL_MS = 500.0
@@ -102,7 +109,10 @@ SAMPLE_METRICS = "HOnoAVTL."
 OPEN, PREVIEW, AGAIN = "open window", "preview", "menu again"
 CANCELLED_RUN, WHOLE_RUN = "cancelled run", "whole-font run"
 APPLY, REVERT, CLOSE = "apply", "revert", "close"
-JUDGED = (PREVIEW, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT)
+GROUPS = "spacing groups"
+GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not judged
+HARNESS = "designer harness"
+JUDGED = (PREVIEW, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS)
 BUSY_STATES = ("reading", "preparing", "previewing", "solving", "applying")
 
 PHASE_TEXT = re.compile(r"Phase\s*(\d+)\s*/\s*(\d+).*?\[\s*(\d+(?:\.\d+)?)\s*%\s*\]")
@@ -412,12 +422,13 @@ class SelfTest(object):
         self.quit = kk2_args.flag(_argument(QUIT_KEY))
         self.whole = kk2_args.flag(_argument(WHOLE_KEY))
         self.cancel = kk2_args.flag(_argument(CANCEL_KEY))
+        self.groups_test = kk2_args.flag(_argument(GROUPS_KEY))
         self.max_stall = kk2_args.number(_argument(MAX_STALL_KEY), DEFAULT_MAX_STALL_MS)
         self.t0 = time.time()
         self.report = {
             "ok": False, "font": self.font_path, "out": self.out,
             "glyphs_version": "%s (%s)" % (Glyphs.versionString, Glyphs.buildNumber),
-            "options": {"whole": self.whole, "cancel": self.cancel, "quit": self.quit,
+            "options": {"whole": self.whole, "cancel": self.cancel, "quit": self.quit, "groups": self.groups_test,
                         "max_stall_limit_ms": self.max_stall},
             "steps": [], "states": [], "summary": [], "errors": [], "warnings": []}
         self.heartbeat = Heartbeat(self.on_tick, self.window_doing)
@@ -515,7 +526,9 @@ class SelfTest(object):
         """The window's state; raises when it reports an error."""
         state = getattr(self.win, "state", None)
         if state == "error":
-            raise RuntimeError("the window reports an error %s: %s" % (what, self.window_text()))
+            detail = getattr(self.win, "last_error", None)
+            raise RuntimeError("the window reports an error %s: %s%s" % (
+                what, self.window_text(), ("\n" + detail) if detail else ""))
         return state
 
     def nswindow(self):
@@ -638,7 +651,9 @@ class SelfTest(object):
                 self.fail()
 
     def open_font(self):
-        path = self.font_path
+        # the physical path: Glyphs 3 hangs opening a file whose path runs
+        # through a relative symlink (/tmp -> private/tmp)
+        path = os.path.realpath(self.font_path)
         if not os.path.exists(path):
             raise RuntimeError("font not found: %s" % path)
         opened = path
@@ -975,6 +990,626 @@ class SelfTest(object):
             self.error("after Revert %d glyph values differ from before Apply, e.g. %s"
                        % (len(glyph_diff), glyph_diff[:5]))
         self.before = None
+        if self.win.harness_available():
+            self.later(0.3, self.harness_step)
+        else:
+            self.note("designer harness: not in this engine build, not tested")
+            self.after_harness()
+
+    def after_harness(self):
+        if self.groups_test:
+            self.later(0.3, self.groups_step)
+        else:
+            self.finish()
+
+    # --- the designer harness -----------------------------------------------
+
+    def _result_harness_strength(self):
+        key = self.win._result_key
+        return key[-1] if key else None
+
+    def _preview_with(self, strength):
+        win = self.win
+        return (self.window_state("waiting for the harness preview") == "ready" and win._result_kind == "preview"
+                and self._result_harness_strength() == strength and win.result is not None)
+
+    def harness_step(self):
+        """Open the Designer Harness window (its pairs join the preview) and
+        wait for a preview without the harness."""
+        win = self.win
+        self.heartbeat.stage(HARNESS)
+        if win.w.harness.get():
+            win.w.harness.set(False)
+            win.harnessChanged(None)
+        t = time.perf_counter()
+        hw = self.call_window(HARNESS, win.openHarness)
+        self.harness_open_ms = (time.perf_counter() - t) * 1000.0
+        if win.harness_window is None:
+            raise RuntimeError("the Designer Harness window did not open")
+        self.wait(lambda: self._preview_with(0.0) and self._covers(win.harness_window.pairs[:20]),
+                  self.harness_off_ready, 120.0, "the preview of the harness pairs, without the harness")
+
+    def _covers(self, pairs):
+        res = self.win.result
+        if res is None or res.ptr is None or not pairs:
+            return False
+        for a, b, _d in pairs:
+            v = res.value(a, b)
+            if v != v:
+                return False
+        return True
+
+    def _metrics(self):
+        return [(m.lsb, m.rsb, m.advance) for m in self.win.result.metrics]
+
+    def harness_off_ready(self):
+        win = self.win
+        hw = win.harness_window
+        self.harness_pairs = list(hw.pairs[:20])
+        self.harness_m0 = self._metrics()
+        self.harness_v0 = dict(((a, b), float(win.result.value(a, b))) for a, b, _ in self.harness_pairs)
+        self.harness_rows = len(hw.pairs)
+        # on, as a user does it: the checkbox of the harness window
+        hw.w.on.set(True)
+        self.call_window(HARNESS, hw.onChanged, None)
+        self.wait(lambda: self._preview_with(1.0) and self._covers(self.harness_pairs), self.harness_on_ready,
+                  120.0, "the preview with the harness")
+
+    def harness_on_ready(self):
+        win = self.win
+        snap = win.snapshot
+        plan = win._result_harness
+        per = 1000.0 / snap.upm
+        if plan is None:
+            raise RuntimeError("the preview with the harness has no harness plan")
+        m1 = self._metrics()
+        side_bad = []
+        for i, ((l0, r0, a0), (l1, r1, a1)) in enumerate(zip(self.harness_m0, m1)):
+            dl, dr = plan.sides[i]
+            if abs((l1 - l0) - dl) > 1e-3 or abs((r1 - r0) - dr) > 1e-3 or abs((a1 - a0) - dl - dr) > 1e-3:
+                side_bad.append([snap.names[i], round(l1 - l0, 2), round(dl, 2), round(r1 - r0, 2), round(dr, 2)])
+        pair_bad = []
+        examples = []
+        for a, b, d in self.harness_pairs:
+            v1 = float(win.result.value(a, b))
+            want = plan.pair_value.get((a, b), 0.0)
+            got = v1 - self.harness_v0[(a, b)]
+            if abs(got - want) > 1e-3:
+                pair_bad.append([snap.names[a], snap.names[b], round(got, 2), round(want, 2)])
+            gap0 = self.harness_m0[a][1] + self.harness_v0[(a, b)] + self.harness_m0[b][0]
+            gap1 = m1[a][1] + v1 + m1[b][0]
+            examples.append("%s %s %+.0f" % (snap.names[a], snap.names[b], (gap1 - gap0) * per))
+            if abs((gap1 - gap0) - d) > 1e-3:
+                pair_bad.append([snap.names[a], snap.names[b], "gap", round(gap1 - gap0, 2), round(d, 2)])
+        moved = sum(1 for s in plan.sides if abs(s[0]) >= 0.5 or abs(s[1]) >= 0.5)
+        biggest = max((abs(x) for s in plan.sides for x in s), default=0.0) * per
+        hw = win.harness_window
+        model = win.model_pair(self.harness_pairs[0][0], self.harness_pairs[0][1]) if self.harness_pairs else None
+        self.log("harness on", stem=plan.stem_measured, looseness=plan.looseness, sides_moved=moved,
+                 pairs=len(plan.pairs), biggest_side_shift_per_1000=round(biggest, 1), rows=self.harness_rows,
+                 top=examples[:10], side_differences=side_bad[:10], pair_differences=pair_bad[:10],
+                 window_open_ms=round(self.harness_open_ms, 1), model_pair=model is not None)
+        self.note("designer harness: %d glyph sides and %d pairs corrected (stem %s, largest side shift %.0f per "
+                  "1000 em); the preview moved every side and pair exactly as planned%s; the Designer Harness "
+                  "window lists %d pairs, e.g. %s; opened in %.0f ms"
+                  % (moved, len(plan.pairs), "%.0f" % plan.stem_measured if plan.stem_measured else "—", biggest,
+                     "" if not (side_bad or pair_bad) else " EXCEPT %d sides and %d pairs" % (
+                         len(side_bad), len(pair_bad)), self.harness_rows, ", ".join(examples[:4]),
+                     self.harness_open_ms))
+        if side_bad:
+            self.error("with the harness %d glyphs' sidebearings moved other than planned, e.g. %s"
+                       % (len(side_bad), side_bad[:5]))
+        if pair_bad:
+            self.error("with the harness %d pairs moved other than planned, e.g. %s" % (len(pair_bad), pair_bad[:5]))
+        if not self.harness_rows:
+            self.error("the Designer Harness window lists no pairs")
+        if model is None:
+            self.error("the Designer Harness window cannot draw its first pair (no model spacing)")
+        try:
+            hw.preview.display()
+            self.log("harness image", source=self.capture_png("harness.png", hw.w.getNSWindow()))
+        except Exception:
+            self.warn(traceback.format_exc())
+        # the Letters filter, as a user picks it
+        hw.w.which.set(1)
+        self.call_window(HARNESS, hw.whichChanged, None)
+        not_letters = [(snap.names[a], snap.names[b]) for a, b, _ in hw.pairs
+                       if not (plan.is_letter(a) and plan.is_letter(b))
+                       or (plan.key[a].islower() and plan.key[b].isupper())]
+        letter_rows = [r["pair"] for r in hw.w.list.get()[:8]]
+        self.log("harness letters", rows=len(hw.pairs), first=letter_rows, not_letters=not_letters[:5])
+        if not hw.pairs or not_letters:
+            self.error("the Letters filter of the Designer Harness window lists %d pairs, %d of them not two "
+                       "letters" % (len(hw.pairs), len(not_letters)))
+        else:
+            self.note("Designer Harness window, Letters: %d pairs, e.g. %s" % (
+                len(hw.pairs), ", ".join(r.split("   ")[0] for r in letter_rows[:6])))
+        # the screen catches up with the new list before the capture
+        self.later(0.8, self.harness_capture_letters)
+
+    def harness_capture_letters(self):
+        hw = self.win.harness_window
+        try:
+            hw.preview.display()
+            self.log("harness letters image", source=self.capture_png("harness-letters.png", hw.w.getNSWindow()))
+        except Exception:
+            self.warn(traceback.format_exc())
+        self.later(0.2, self.harness_apply)
+
+    def harness_apply(self):
+        """Apply the preview with the harness: the glyphs it shifted must reach
+        the font as the preview shows them."""
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        plan = win._result_harness
+        self.before = self.font_state(snap.names, snap.master_id)
+        self.harness_written = []
+        for name in sorted(win.plan_names(res) or ()):
+            i = snap.index.get(name)
+            if i is None or not res.metrics[i].valid:
+                continue
+            s = plan.sides[i]
+            if abs(s[0]) >= 1.0 or abs(s[1]) >= 1.0:
+                self.harness_written.append((name, res.metrics[i].lsb, res.metrics[i].rsb, tuple(s)))
+        previous = win.last_apply
+        if not self.call_window(HARNESS, win._apply, res, False):
+            raise RuntimeError("the window did not apply the preview with the harness")
+        self.wait(lambda: win.last_apply is not previous and self.window_state("during the harness Apply") != "applying",
+                  self.harness_applied, 120.0, "applying with the harness")
+
+    def harness_applied(self):
+        win = self.win
+        snap = win.snapshot
+        per = 1000.0 / snap.upm
+        bad = []
+        for name, lsb_want, rsb_want, _s in self.harness_written:
+            glyph = self.font.glyphs[name]
+            layer = glyph.layers[snap.master_id] if glyph is not None else None
+            lsb, rsb, _w = ink_metrics(layer) if layer is not None else (None, None, None)
+            if lsb is None:
+                continue
+            if max(abs(lsb - lsb_want), abs(rsb - rsb_want)) > 1.01:
+                bad.append([name, round(lsb, 1), round(lsb_want, 1), round(rsb, 1), round(rsb_want, 1)])
+        examples = ["%s %+.0f/%+.0f" % (n, s[0] * per, s[1] * per) for n, _l, _r, s in self.harness_written[:6]]
+        self.log("harness applied", glyphs=len(self.harness_written), differences=bad[:10], examples=examples,
+                 summary=win.last_apply)
+        self.note("designer harness Apply: %d glyphs the harness shifted written as the preview showed them%s "
+                  "(left/right shift per 1000 em, e.g. %s)" % (
+                      len(self.harness_written), "" if not bad else ", EXCEPT %d" % len(bad), ", ".join(examples)))
+        if not self.harness_written:
+            self.error("the harness Apply wrote no glyph the harness shifts")
+        if bad:
+            self.error("after the harness Apply %d glyphs' sidebearings differ from the preview, e.g. %s"
+                       % (len(bad), bad[:5]))
+        self.wait(lambda: self.window_state("after the harness Apply") == "ready", self.harness_revert, 120.0,
+                  "the window after the harness Apply")
+
+    def harness_revert(self):
+        if not self.call_window(HARNESS, self.win.revert_last_apply):
+            raise RuntimeError("the window did not revert the harness Apply")
+        self.wait(lambda: self.window_state("during the harness Revert") not in ("applying",), self.harness_reverted,
+                  300.0, "reverting the harness Apply")
+
+    def harness_reverted(self):
+        win = self.win
+        snap = win.snapshot
+        after = self.font_state(snap.names, snap.master_id)
+        kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
+        glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"])
+        self.log("harness reverted", kerning_differences=len(kern_diff), glyph_differences=len(glyph_diff),
+                 examples=(kern_diff + glyph_diff)[:10])
+        if kern_diff or glyph_diff:
+            self.error("after reverting the harness Apply %d kerning entries and %d glyph values differ"
+                       % (len(kern_diff), len(glyph_diff)))
+        else:
+            self.note("designer harness Revert: the font is as before")
+        self.before = None
+        # off again, with the main window's switch
+        win.w.harness.set(False)
+        self.call_window(HARNESS, win.harnessChanged, None)
+        self.wait(lambda: self._preview_with(0.0), self.harness_off_again, 120.0, "the preview without the harness")
+
+    def harness_off_again(self):
+        m2 = self._metrics()
+        back = sum(1 for x, y in zip(self.harness_m0, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        if back:
+            self.error("after turning the harness off %d glyphs' sidebearings differ from before" % back)
+        else:
+            self.note("designer harness off: every glyph back to Kinetikern2's own spacing")
+        hw = self.win.harness_window
+        if hw is not None:
+            hw.close()
+        self.after_harness()
+
+    # --- spacing groups -------------------------------------------------------
+
+    def groups_step(self):
+        """Freeze the capitals, figures looser with half the force — set up in
+        the Spacing Groups window the way a user does it (groups_ui)."""
+        import kk2_groups as kg
+        self.heartbeat.stage(GROUP_WINDOWS)
+        win = self.win
+        snap = win.snapshot
+        # no groups to begin with (the window then shows the set it is handed)
+        self.call_window(GROUP_WINDOWS, win.set_groups, kg.GroupSet(), False)
+        t = time.perf_counter()
+        self.call_window(GROUP_WINDOWS, win.openGroups)
+        groups_ms = (time.perf_counter() - t) * 1000.0
+        t = time.perf_counter()
+        self.call_window(GROUP_WINDOWS, win.openPairs)
+        pairs_ms = (time.perf_counter() - t) * 1000.0
+        self.heartbeat.stage(GROUPS)
+        self.before_run = win.result
+        gw = win.groups_window
+        if gw is None:
+            raise RuntimeError("the Spacing Groups window did not open")
+        capitals, figures = self.groups_ui(gw)
+        groups = win.groups
+        self.frozen_names = set(capitals)
+        self.group_figures = sorted(figures)
+        if gw.groups is not groups or len(gw.rows.rows()) != len(groups.groups) + 1:
+            self.error("the Spacing Groups window does not show the window's groups (%d rows)" % len(gw.rows.rows()))
+        self.log("groups set", capitals=len(capitals), figures=len(figures), summary=groups.summary(set(snap.names)),
+                 open_groups_window_ms=round(groups_ms, 1), open_pairs_window_ms=round(pairs_ms, 1))
+        self.note("spacing groups: %d Latin capitals frozen, %d figures at Looseness +0.4 and 50%% force; the "
+                  "Spacing Groups window opened in %.0f ms, the Pairs window in %.0f ms"
+                  % (len(capitals), len(figures), groups_ms, pairs_ms))
+        if not capitals or not figures:
+            raise RuntimeError("the test font has no Latin capitals or no figures to put into groups")
+        self.groups_t = time.time()
+        self.wait(lambda: self.window_state("after the groups changed") == "ready" and win.result is not self.before_run,
+                  self.groups_whole, 120.0, "waiting for the preview with spacing groups")
+
+    def groups_ui(self, gw):
+        """Drives the Spacing Groups window like a user: the grid with real
+        mouse events (click, Shift-click, Command-click, a dragged rectangle),
+        All / None / Invert, the name filter, a section of the list, New
+        Group, the name, Freeze, the sliders, Glyphs in no group, taking a
+        glyph out of a group and putting it back. Checks each step; returns
+        (capitals, figures) as the window grouped them."""
+        from AppKit import NSEvent
+        down, up, dragged = 1, 2, 6  # NSEventTypeLeftMouseDown, …Up, …Dragged
+        shift, command = 1 << 17, 1 << 20
+        results = []
+
+        def check(ok, what):
+            results.append([what, bool(ok)])
+            if not ok:
+                self.error("Spacing Groups window: " + what)
+
+        view, grid = gw.grid_view, gw.grid
+        window = view.window()
+        names = list(grid.names)
+
+        def event(i, kind, flags=0):
+            r = grid.rect_of(i)
+            pt = view.convertPoint_toView_((r.origin.x + 0.5 * r.size.width, r.origin.y + 0.5 * r.size.height), None)
+            return NSEvent.mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure_(
+                kind, pt, flags, 0, window.windowNumber(), None, 0, 1, 1.0)
+
+        def click(i, flags=0):
+            grid.mouse_down(view, event(i, down, flags))
+            grid.mouse_up(view, event(i, up, flags))
+
+        cols = max(1, grid.cols)
+        click(2)
+        check(grid.selection == {names[2]}, "a click selects one glyph")
+        click(6, shift)
+        check(grid.selection == set(names[2:7]), "Shift-click selects the range")
+        click(4, command)
+        check(grid.selection == set(names[2:7]) - {names[4]}, "Command-click takes a glyph out of the selection")
+        click(4, command)
+        check(names[4] in grid.selection, "Command-click puts it back")
+        far = min(len(names) - 1, cols + 2)
+        grid.mouse_down(view, event(0, down))
+        grid.mouse_dragged(view, event(far, dragged))
+        grid.mouse_up(view, event(far, up))
+        r0, c0, r1, c1 = 0, 0, far // cols, far % cols
+        want = set(names[r * cols + c] for r in range(r0, r1 + 1) for c in range(c0, c1 + 1) if r * cols + c < len(names))
+        check(grid.selection == want, "dragging a rectangle selects the tiles inside it")
+        gw.selectAllGlyphs(None)
+        check(grid.selection == set(names), "All selects every glyph")
+        gw.selectNoGlyphs(None)
+        check(not grid.selection, "None clears the selection")
+        gw.invertSelection(None)
+        check(grid.selection == set(names), "Invert of nothing is everything")
+        gw.selectNoGlyphs(None)
+        gw.w.search.set("zero")
+        gw.searchChanged(gw.w.search)
+        check(grid.names and all("zero" in n.lower() for n in grid.names), "the name filter keeps the matching glyphs")
+        gw.w.search.set("")
+        gw.searchChanged(gw.w.search)
+        check(list(grid.names) == names, "clearing the filter shows every glyph again")
+
+        titles = [t for t, _ in gw._sections]
+
+        def pick(title):
+            if title not in titles:
+                self.error("Spacing Groups window: no section %r (sections: %s)" % (title, titles))
+                return set()
+            k = titles.index(title)
+            gw.w.sections.setSelection([k])
+            gw.sectionSelected(gw.w.sections)
+            return set(gw._sections[k][1])
+
+        def members(gid):
+            return set(n for n, k in gw.groups.members.items() if k == gid)
+
+        capitals = pick("Latin · Uppercase")
+        check(capitals and grid.selection == capitals, "a section of the list selects its glyphs")
+        gw.addGroup(None)
+        caps = gw.groups.group(gw.current)
+        gw.w.name.set("Capitals")
+        gw.nameChanged(gw.w.name)
+        gw.w.mode.set(1)
+        gw.modeChanged(gw.w.mode)
+        check(caps is not None and caps.name == "Capitals" and caps.frozen and members(caps.gid) == capitals,
+              "New Group takes the selection; the name and Freeze apply")
+        figures = pick("Figures")
+        gw.addGroup(None)
+        figs = gw.groups.group(gw.current)
+        gw.w.name.set("Figures")
+        gw.nameChanged(gw.w.name)
+        gw.w.loose.set(0.4)
+        gw.looseChanged(gw.w.loose)
+        gw.w.force.set(50.0)
+        gw.forceChanged(gw.w.force)
+        check(figs is not None and not figs.frozen and abs(figs.looseness - 0.4) < 1e-6 and abs(figs.force - 50.0) < 1e-6
+              and members(figs.gid) == figures, "the Looseness and force sliders set the group's values")
+        check(bool(gw.w.loose.getNSSlider().isEnabled()), "the sliders are on for a spaced group")
+        gw.choose_group(caps.gid)
+        check(not gw.w.loose.getNSSlider().isEnabled(), "a frozen group has no Looseness to set")
+        gw.selectUnassigned(None)
+        check(grid.selection == set(names) - capitals - figures, "Glyphs in no group selects the rest")
+        one = sorted(figures)[0]
+        grid.selection = {one}
+        gw.unassignButton(None)
+        check(one not in gw.groups.members, "Take Selected Glyphs out of Their Groups")
+        gw.choose_group(figs.gid)
+        grid.selection = {one}
+        gw.assign(None)
+        check(gw.groups.members.get(one) == figs.gid, "Put Selected Glyphs into the group")
+        opts = self.win._glyph_opts()
+        index = self.win.snapshot.index
+        check(opts is not None and all(opts[index[n]][0] for n in capitals if n in index)
+              and all(abs(opts[index[n]][1] - 0.4) < 1e-6 and abs(opts[index[n]][2] - 0.5) < 1e-6 for n in figures if n in index),
+              "the engine gets the groups (frozen capitals; figures +0.4 at 50 %)")
+        passed = sum(1 for _, ok in results if ok)
+        self.log("groups window ui", checks=results)
+        self.note("Spacing Groups window, driven like a user: %d of %d steps as expected (click, Shift-click, "
+                  "Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, "
+                  "no group, take out and put back)" % (passed, len(results)))
+        return capitals, figures
+
+    def groups_whole(self):
+        win = self.win
+        self.before_run = win.result
+        self.whole_t = time.time()
+        if not self.call_window(GROUPS, win.start_whole_font):
+            raise RuntimeError("the whole-font run with spacing groups did not start")
+        self.wait(self.whole_finished, self.groups_check, 420.0, "waiting for the whole-font run with groups")
+
+    def frozen_keys(self, snap):
+        keys = set()
+        for name in self.frozen_names:
+            glyph = self.font.glyphs[name]
+            if glyph is None:
+                continue
+            keys.add(_text(glyph.id))
+            if glyph.rightKerningGroup:
+                keys.add("@MMK_L_" + _text(glyph.rightKerningGroup))
+            if glyph.leftKerningGroup:
+                keys.add("@MMK_R_" + _text(glyph.leftKerningGroup))
+        return keys
+
+    def groups_check(self):
+        import kk2_apply
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        self.before_run = None
+        seconds = time.time() - self.whole_t
+        fitted = res.fitted_looseness
+        index = snap.index
+        moved = []
+        for name in self.frozen_names:
+            i = index.get(name)
+            spec = snap.specs[i] if i is not None else None
+            if spec is None or spec.cur_lsb != spec.cur_lsb:
+                continue
+            m = res.metrics[i]
+            if abs(m.lsb - spec.cur_lsb) > 1e-3 or abs(m.rsb - spec.cur_rsb) > 1e-3:
+                moved.append([name, round(spec.cur_lsb, 1), round(m.lsb, 1), round(spec.cur_rsb, 1), round(m.rsb, 1)])
+        # no entry may lie between two frozen glyphs or classes
+        n = len(snap.names)
+        frozen_idx = set(index[x] for x in self.frozen_names if x in index)
+        rmem, lmem = {}, {}
+        for i in range(n):
+            rmem.setdefault(res.glyph_right_class[i], []).append(i)
+            lmem.setdefault(res.glyph_left_class[i], []).append(i)
+        between = 0
+        for kind, a, b, _v, _imp in res.iter_entries():
+            left = [a] if kind in (kb.ENTRY_GLYPH_GLYPH, kb.ENTRY_GLYPH_CLASS) else rmem.get(a, [])
+            right = [b] if kind in (kb.ENTRY_GLYPH_GLYPH, kb.ENTRY_CLASS_GLYPH) else lmem.get(b, [])
+            if left and right and all(i in frozen_idx for i in left) and all(j in frozen_idx for j in right):
+                between += 1
+        self.log("groups whole-font run", seconds=round(seconds, 2), fitted_looseness=fitted,
+                 frozen_moved=len(moved), frozen_examples=moved[:10], entries=res.entry_count,
+                 entries_between_frozen=between)
+        self.note("spacing groups: whole font %.1f s, Looseness fitted to the frozen capitals %s, %d entries, %d "
+                  "between frozen glyphs, %d frozen glyphs moved"
+                  % (seconds, "%+.2f" % fitted if fitted is not None else "—", res.entry_count, between, len(moved)))
+        if fitted is None:
+            self.error("the solve did not fit the Looseness to the frozen glyphs")
+        if moved:
+            self.error("%d frozen glyphs got new sidebearings, e.g. %s" % (len(moved), moved[:5]))
+        if between:
+            self.error("%d kerning entries lie between frozen glyphs" % between)
+        # the Pairs window on the font as it is (the designer's spacing against Kinetikern2)
+        pw = win.pairs_window
+        if pw is None:
+            self.warn("the Pairs window was closed")
+            self.groups_apply()
+            return
+        pw.w.scope.set(1)
+        pw.scopeChanged(None)
+        self.pairs_t = time.time()
+        self.call_window(GROUPS, pw.measure)
+        self.wait(lambda: hasattr(pw, "_stats") and self.window_state("measuring pairs") == "ready",
+                  self.groups_pairs_before, 120.0, "measuring pairs before Apply")
+
+    def groups_pairs_before(self):
+        pw = self.win.pairs_window
+        names = self.win.snapshot.names
+        per = 1000.0 / float(self.win.snapshot.upm)
+        top = lambda rows: ["%s %s %+.0f" % (names[a], names[b], r * per) for a, b, _c, _m, r in rows[:6]]
+        self.log("pairs before apply", seconds=round(time.time() - self.pairs_t, 2), stats=pw._stats,
+                 loosest=top(pw._loose), tightest=top(pw._tight), status=pw.w.status.get())
+        self.note("pairs window (the font as it is): %d pairs in %.1f s; loosest %s; tightest %s"
+                  % (int(pw._stats.get("pairs", 0)), time.time() - self.pairs_t, ", ".join(top(pw._loose)[:3]),
+                     ", ".join(top(pw._tight)[:3])))
+        if not pw._loose or not pw._tight:
+            self.error("the Pairs window measured no loosest or tightest pairs")
+        elif pw.w.list.get():
+            pw.w.list.setSelection([0])  # the loosest pair, drawn in the preview
+            pw.rowSelected(pw.w.list)
+        # let the window server show it before the image is taken
+        self.later(0.8, self.groups_capture_pairs)
+
+    def groups_capture_pairs(self):
+        pw = self.win.pairs_window
+        try:
+            self.log("pairs image", source=self.capture_png("pairs.png", pw.w.getNSWindow()))
+        except Exception:
+            self.warn(traceback.format_exc())
+        del pw._stats  # the next measurement (after Apply) is waited for afresh
+        self.groups_apply()
+
+    def groups_apply(self):
+        """Apply; then the frozen glyphs and the kerning among them must be as they were."""
+        import kk2_apply
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        mid = snap.master_id
+        self.before = self.font_state(snap.names, mid)
+        self.group_keys = self.frozen_keys(snap)
+        self.plan = kk2_apply.plan(snap, res, True, frozen=self.frozen_names)
+        self.log("groups plan", counts=getattr(self.plan, "counts", None))
+        previous = win.last_apply
+        self.apply_t = time.time()
+        if not self.call_window(GROUPS, win.apply_whole_font_result, confirm=False):
+            raise RuntimeError("the window did not apply the result with spacing groups")
+        self.wait(lambda: win.last_apply is not previous and self.window_state("during the groups Apply") != "applying",
+                  self.groups_applied, 300.0, "applying with spacing groups")
+
+    def groups_applied(self):
+        win = self.win
+        snap = win.snapshot
+        mid = snap.master_id
+        after = self.font_state(snap.names, mid)
+        keys = self.group_keys
+        changed_glyphs = []
+        for name in self.frozen_names:
+            b, a = self.before["glyphs"].get(name), after["glyphs"].get(name)
+            if b != a:
+                changed_glyphs.append([name, b, a])
+        bk, ak = self.before["kerning"], after["kerning"]
+        changed_pairs = []
+        for lk in set(bk) | set(ak):
+            if lk not in keys:
+                continue
+            rb, ra = bk.get(lk, {}), ak.get(lk, {})
+            for rk in set(rb) | set(ra):
+                if rk in keys and rb.get(rk) != ra.get(rk):
+                    changed_pairs.append([lk, rk, rb.get(rk), ra.get(rk)])
+        figures_moved = 0
+        for name in self.group_figures:
+            b, a = self.before["glyphs"].get(name), after["glyphs"].get(name)
+            if b is not None and a is not None and b[2:] != a[2:]:
+                figures_moved += 1
+        self.log("groups applied", frozen_glyphs_changed=len(changed_glyphs), frozen_examples=changed_glyphs[:10],
+                 frozen_pairs_changed=len(changed_pairs), frozen_pair_examples=changed_pairs[:10],
+                 figures_respaced=figures_moved, summary=win.last_apply)
+        self.note("spacing groups Apply: %d frozen glyphs and %d kerning entries between frozen glyphs changed; "
+                  "%d figures re-spaced" % (len(changed_glyphs), len(changed_pairs), figures_moved))
+        if changed_glyphs:
+            self.error("Apply changed %d frozen glyphs, e.g. %s" % (len(changed_glyphs), changed_glyphs[:3]))
+        if changed_pairs:
+            self.error("Apply changed %d kerning entries between frozen glyphs, e.g. %s"
+                       % (len(changed_pairs), changed_pairs[:3]))
+        self.wait(lambda: self.window_state("after the groups' Apply") == "ready", self.groups_measure, 120.0,
+                  "waiting for the window after the groups' Apply")
+
+    def groups_measure(self):
+        """The Pairs window measures the whole font as it is now."""
+        pw = self.win.pairs_window
+        if pw is None:
+            self.warn("the Pairs window was closed")
+            self.groups_pairs()
+            return
+        pw.w.scope.set(1)
+        pw.scopeChanged(None)
+        self.pairs_t = time.time()
+        self.call_window(GROUPS, pw.measure)
+        self.wait(lambda: hasattr(pw, "_stats") and self.window_state("measuring pairs") == "ready",
+                  self.groups_pairs, 120.0, "measuring pairs")
+
+    def groups_pairs(self):
+        win = self.win
+        pw = win.pairs_window
+        if pw is not None and hasattr(pw, "_stats"):
+            names = win.snapshot.names
+            per = 1000.0 / float(win.snapshot.upm)
+            top = lambda rows: ["%s %s %+.0f" % (names[a], names[b], r * per) for a, b, _c, _m, r in rows[:6]]
+            self.log("pairs after apply", seconds=round(time.time() - self.pairs_t, 2), stats=pw._stats,
+                     loosest=top(pw._loose), tightest=top(pw._tight), status=pw.w.status.get())
+            self.note("pairs window after Apply (read again): mean difference %.1f units per 1000 em"
+                      % (float(pw._stats.get("mae", 0.0)) * per))
+            # right after Apply the font is Kinetikern2's spacing (frozen glyphs aside): the
+            # measurement must see that, not the sidebearings read before Apply
+            mae = float(pw._stats.get("mae", 0.0)) * per
+            if mae > 8.0:
+                self.error("after Apply the Pairs window still measures a mean difference of %.1f units per 1000 em "
+                           "(the font was not read again?)" % mae)
+        else:
+            self.warn("the pairs window did not measure")
+        gw = win.groups_window
+        if gw is not None and gw.groups.groups:
+            gw.select_members(gw.groups.groups[0].gid)  # the frozen capitals
+        # let the window server show the new state before the images are taken
+        self.later(0.8, self.groups_capture)
+
+    def groups_capture(self):
+        win = self.win
+        for filename, sub in (("groups.png", win.groups_window),):
+            if sub is None:
+                continue
+            try:
+                self.log(filename[:-4] + " image", source=self.capture_png(filename, sub.w.getNSWindow()))
+            except Exception:
+                self.warn(traceback.format_exc())
+        # back to the font as it was before the groups' Apply
+        self.revert_t = time.time()
+        if not self.call_window(GROUPS, win.revert_last_apply):
+            raise RuntimeError("the window did not revert the groups' Apply")
+        self.wait(lambda: self.window_state("during the groups Revert") != "applying", self.groups_reverted, 300.0,
+                  "reverting the groups' apply")
+
+    def groups_reverted(self):
+        snap = self.win.snapshot
+        after = self.font_state(snap.names, snap.master_id)
+        kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
+        glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"])
+        self.log("groups reverted", kerning_differences=len(kern_diff), glyph_differences=len(glyph_diff),
+                 examples=(kern_diff + glyph_diff)[:10])
+        if kern_diff or glyph_diff:
+            self.error("after reverting the groups' Apply %d kerning entries and %d glyph values differ"
+                       % (len(kern_diff), len(glyph_diff)))
+        else:
+            self.note("spacing groups Revert: the font is as before")
+        self.before = None
         self.finish()
 
     # --- reading ------------------------------------------------------------
@@ -1058,13 +1693,13 @@ class SelfTest(object):
                 out[ch] = [round(m.lsb, 1), round(m.rsb, 1), round(m.advance, 1)]
         return out
 
-    def capture_png(self, filename):
+    def capture_png(self, filename, window=None):
         """Save the window as the screen shows it (a process may capture its
         own windows without the Screen Recording permission). A window that is
         not on screen (a floating window hides while Glyphs is in the
         background) is drawn offscreen instead, which leaves pop-up buttons and
         push buttons blank. Returns which of the two it saved."""
-        window = self.nswindow()
+        window = window or self.nswindow()
         rep, source = None, "screen"
         if window.isVisible():
             import Quartz

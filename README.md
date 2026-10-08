@@ -126,6 +126,10 @@ other two.
 | **Replace existing kerning** | On by default. Removes the master's existing entries between the glyphs and groups that get new kerning. Existing pairs across scripts, which the engine never evaluates, are kept. Off: existing glyph pairs stay and keep overriding new class pairs (the dialog counts them). |
 | **Apply to Font** | Plans the writes, asks once in a dialog that lists what will change, then writes in slices with a progress bar. |
 | **Revert Last Apply** | Puts the kerning, groups and sidebearings back as they were before the last Apply. |
+| **Spacing Groups…** | Opens the group picker (see *Spacing groups* below): freeze parts of the font, or space them with their own Looseness and kerning force. |
+| **Pairs…** | Opens the Pairs window (see *Pairs, loosest to tightest* below). |
+| **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
+| **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
 | **Progress bar, Cancel** | Shows the current step: *Reading outlines*, *Phase 1/3: Analyzing SDFs*, *Phase 2/3: Evaluating pairs* (with seconds elapsed in a whole-font run), *Phase 3/3: Grouping & pruning*, *Planning*, *Applying*, *Reverting*. Cancel stops reading, Phase 1, a preview, a whole-font run or the planning of an Apply. Once Apply or Revert has started writing, it runs to the end. |
 
 The status line under the panes reports the last result. For example:
@@ -136,6 +140,145 @@ The status line under the panes reports the last result. For example:
 
 During a whole-font run, the controls that would restart it are disabled. The
 sample text stays editable, and the panes keep rendering.
+
+### Spacing groups
+
+**Spacing Groups…** opens a picker that paints glyphs into colour-coded
+groups. A group either has its own spacing or is frozen:
+
+- **Space.** The group's glyphs are spaced with a **Looseness offset** from the
+  main slider (−1 to +1) and kerned with a **kerning force** (0–300 % of the
+  main intensity). Figures can be looser, Cyrillic a touch tighter, fractions
+  kerned more gently, all in one run.
+- **Freeze.** The group's glyphs keep their sidebearings and groups, and the
+  kerning *between* frozen glyphs stays exactly as it is. Only the rest of the
+  font is spaced and kerned, including against the frozen glyphs. Use it to
+  space only the new characters of a finished font.
+- **Glyphs in no group** follow the main window's settings.
+
+The window has three parts:
+
+- **Sections.** Lists the font's glyphs by script and case (Latin ·
+  Uppercase, Cyrillic · Lowercase…), then figures (tabular, old-style,
+  fractions, superiors), punctuation, symbols and marks. Click a section to
+  select its glyphs, or Command-click to combine sections. There are also
+  **All / None / Invert**, **Glyphs in no group** and a name filter.
+- **Grid.** Every glyph of the master as a tile, like Glyphs' font view, tinted
+  with its group's colour; frozen glyphs carry a snowflake. Select with click,
+  Shift-click for a range, Command-click to toggle, or drag a rectangle.
+- **Groups.** **New Group**, then name it, pick a colour, choose **Space** or
+  **Freeze** and set its sliders. **Put Selected Glyphs into This Group**
+  assigns the selection, and **Take Selected Glyphs out of Their Groups** frees
+  it. Keep picking until every part of the font has the values you want.
+
+**Match the frozen spacing** (on by default) first fits the Looseness to the
+frozen glyphs' own sidebearings, so new glyphs come out as tight or loose as
+the spacing already in the font. The main slider is then an offset from that
+fit, and the window shows the fitted value.
+
+Every change previews at once. The groups are saved in the font
+(`font.userData["com.mirkovelimirovic.Kinetikern2.spacingGroups"]`), so they
+come back with the .glyphs file.
+
+How the engine handles groups:
+
+- **Pass 1:** each glyph's rest gap is shifted by its group's Looseness
+  offset, half on each side. Frozen glyphs are fixed at their current
+  sidebearings.
+- **Pass 2:** a pair's force is the coupling times the mean of the two
+  glyphs' forces. Classes never mix frozen and free glyphs, and pairs between
+  two frozen glyphs or classes are not kerned.
+- **Apply:** frozen glyphs keep their sidebearings and groups, and existing
+  kerning between frozen keys is kept even with *Replace* on. A free glyph that
+  shared a kerning group with frozen glyphs leaves it for a group of its own.
+  The dialog says how many glyphs that affects.
+
+### Pairs, loosest to tightest
+
+**Pairs…** measures the font as it is now against Kinetikern2. For every pair
+in scope (the sample text, the whole font, or one section), it compares the
+white the eye sees now — right sidebearing + left sidebearing + kerning —
+with the white Kinetikern2 gives it. The font's overall tightness is taken
+out first, so the list shows what departs from the font's *own* rhythm:
+
+- **Loosest first / Tightest first**, the top 50 to 500 pairs, with Δ in units per
+  1000 em, the gap now and Kinetikern2's, and both kerning values.
+- A preview draws the selected pair as it is and as Kinetikern2 would set it.
+  Double-click a pair, or use **Open in Edit Tab**, to look at it in Glyphs.
+
+The engine measures all pairs of a whole font in a fraction of a second; a
+whole-font scope runs the whole-font job first if it has no result yet.
+
+### Designer harness
+
+Kinetikern2 spaces from the outlines alone. Measured against the text fonts
+on Google Fonts that people rate well spaced, it does some things
+consistently differently from their designers. **Designer harness** corrects
+those, after the solve and by as much as the data say (strength 100 %) or
+less. Without it the model is untouched.
+
+What the data say. Spacing QA has a report for every Google Fonts family:
+for each of the 66 × 66 core pairs, the designer's gap minus Kinetikern2's at
+the font's best-fit Looseness. The reference fonts are the sans serifs and
+serifs rated 70 or more on google/fonts' human `/Quality/Spacing` scale (468
+families), checked at Regular and the variable ones also at 100–900 (1,688
+observations). The median over them keeps the model's habits and averages
+out any one designer's taste. Units are per 1000 em, + = designers looser:
+
+| Where | Correction | Notes |
+|---|---|---|
+| inside parentheses | +35 | +52 at light weights |
+| slash, both sides | +22, +27 | |
+| ? ! & | +10 to +15 | |
+| quotes, period, comma, hyphen | −9 to −14 | the model sets them too loose |
+| open sides of E, F, L, T | +16, +10, +6, +6 | E +32 at light weights, +21 when tight |
+| diagonals of A, V, W, Y, K | −5 to −11 | |
+| 294 pairs, beyond their two sides | | mostly punctuation: `?.` `/,` `’/` |
+
+How it is applied (`kk2_harness.py`):
+- Each core glyph side gets `a + b·L + c·w + d·L·w`. L is the Looseness
+  slider (with any frozen-glyph fit). w is the weight: the log of the stem of
+  `I` (else `l`) per 1000 em, over 85. Both are clamped to the range the data
+  cover.
+- A side that follows another glyph (a metrics key, an auto-aligned
+  composite) gets that glyph's shift. Accented letters take their base
+  letter's; `.case` punctuation takes its base mark's.
+- Pair corrections go to the exact glyphs, as glyph–glyph kerning over
+  whatever class kerning the pair has.
+- Frozen glyphs keep their sidebearings, and two frozen glyphs their kerning.
+  Other scripts, figures and symbols are left as the model spaces them.
+- The engine applies all of it after the budget (`run::Harness`,
+  `kk2_solve_start3`), so the preview, the whole-font run, Apply and the
+  Pairs window see the same thing.
+
+Does it help? It was learned on half of the families and checked on the
+other half: the mean distance between Kinetikern2 and the designers.
+
+| Pairs | Without → with the harness | Closer |
+|---|---|---|
+| All | 18.2 → 16.0 | 13 % |
+| With punctuation | 23.6 → 19.8 | 16 % |
+| With a parenthesis | 31.0 → 23.1 | 25 % |
+| Letters | 15.0 → 13.6 | 9 % |
+| Light weights (stem under 50) | 24.3 → 21.2 | 13 % |
+| Light weights, E and F before a letter | 32.9 → 25.5 | 23 % |
+
+What is left is mostly each designer's own taste, which no correction common
+to all fonts can know.
+
+**Harness…** lists the pairs the harness changes most at the current
+settings: in running text (no lowercase before a capital, no two punctuation
+marks; the default), letters only, punctuation with letters, or all pairs.
+For each it shows the change and its parts: the first glyph's right side, the
+second glyph's left side, a pair correction. The selected pair is drawn three
+ways: as in the font, as Kinetikern2 sets it, and with the harness. The window
+follows the sliders live. While it is open, the preview also kerns its pairs.
+
+The table ships in the bundle (`kk2_harness.json`), so the plugin needs
+nothing else. Learning it again takes the reports of a Spacing QA library
+scan (Spacing QA is a project of its own): run `tools/kk2_harness_data.sh`
+and then `tools/kk2_harness_learn.py`. The commands are at the top of the
+script.
 
 ### What Apply writes
 
@@ -330,6 +473,11 @@ class pairs and 25,166 exceptions.
 | `kk2_apply.py` | `Planner` (what will be written), `Applier` (writes, read-back), `RevertPoint` and `Restorer`. All of them step in slices from the window's timer. `plan()`, `apply()` and `restore()` run them to the end for tools. |
 | `kk2_bridge.py` | ctypes structs, with their sizes checked against the library; `Engine`, `InputPacker`, `Job`, `Context`, `Result`. It has no Glyphs imports, so the tools use it too. |
 | `kk2_args.py` | Reads test parameters from the argument domain only, so a stray preference can never turn a normal launch into a test run. |
+| `kk2_groups.py` | The spacing-groups model (no AppKit): groups, members, per-glyph engine options, sections, saving in `font.userData`. |
+| `kk2_groups_window.py` | The Spacing Groups window: sections list, glyph grid (a custom NSView), group rows and settings. |
+| `kk2_pairs_window.py` | The Pairs window: measurement through the engine, the list and the pair preview. |
+| `kk2_harness.py` | The designer harness: the learned table (`kk2_harness.json`), the glyphs it applies to, the stem, and each glyph side's shift and the pair corrections for a master, Looseness and strength (`Plan`). |
+| `kk2_harness_window.py` | The Designer Harness window: the pairs it changes most, drawn as in the font, as Kinetikern2 sets them, and with the harness. |
 | `kk2_selftest.py` | The unattended in-Glyphs test behind `build.sh --verify`. |
 
 ## Verification
@@ -349,8 +497,9 @@ count towards it.
 
 ### Engine unit tests
 
-`./build.sh --test` (or `cargo test --release` in `engine/`): **26 passed**
-(final build).
+`./build.sh --test` (or `cargo test --release` in `engine/`): **28 passed**
+(final build). Two of them cover the designer harness: the exact side shifts
+and pair corrections in pair and class mode, and frozen glyphs left alone.
 
 ### Equivalence gates: `tools/kk2_equivalence.py`
 
@@ -468,7 +617,62 @@ in Glyphs' import):
    sidebearings with the result.
 5. Reverts, and compares the master's whole kerning table, groups and
    sidebearings with the state before Apply.
-6. Saves `window.png` and `selftest.json`, then quits.
+6. Tests the designer harness, when the engine build has it, the way a user
+   works with it:
+   - opens the Designer Harness window;
+   - turns the harness on with its checkbox, and checks that the preview
+     moved every glyph side and every listed pair by exactly what was
+     planned;
+   - picks the Letters filter;
+   - applies the preview, reads back every glyph the harness shifted, and
+     reverts;
+   - turns the harness off with the main window's switch, and checks that
+     every glyph is back to Kinetikern2's own spacing.
+   It saves `harness.png` and `harness-letters.png`.
+7. Saves `window.png` and `selftest.json`, then quits.
+
+`./build.sh --verify [font] --groups` adds a spacing-groups stage after
+those:
+
+1. Sets up the groups in the Spacing Groups window the way a user does. It
+   uses the grid with real mouse events (click, Shift-click, Command-click, a
+   dragged rectangle), All / None / Invert and the name filter. It picks the
+   "Latin · Uppercase" section from the list, then uses New Group, the name
+   field and Freeze. Next it picks "Figures" and sets Looseness +0.4 and 50 %
+   force with the sliders. Finally it checks "Glyphs in no group", takes a
+   glyph out of its group and puts it back. Each step is checked, and so is
+   what the engine receives.
+2. Opens the Spacing Groups and Pairs windows and runs the whole font.
+3. Checks the result: the Looseness fitted to the capitals, frozen glyphs at
+   their own sidebearings, and no entries between frozen glyphs.
+4. Measures the font as it is in the Pairs window and saves `pairs.png`.
+5. Applies, and checks that the frozen glyphs, their groups and the kerning
+   between them did not change. Measures again: the Pairs window must read
+   the font again first, and then find it within 8 units per 1000 em of the
+   model on average. Saves `groups.png`.
+6. Reverts, and checks that the font is as before.
+
+Results (Glyphs 3.5.1, M1, 8 October 2026): **PASSED** on Lato and on Arial.
+The reports are in `notes/verification-2026-10-08/`: Lato with its window,
+groups and pairs images, and Arial as text, so its outlines are not
+published.
+
+| Font | Groups window, driven like a user | Frozen / spaced | Whole-font run | Frozen glyphs and kerning between them after Apply | Pairs measured | Longest main-thread stall |
+|---|---|---|---|---|---|---|
+| Lato (245 glyphs) | 19 of 19 steps | 68 capitals / 10 figures | 0.4 s, Looseness fitted −0.00 | unchanged | 52,789 pairs in 1.1 s; after Apply, mean difference 1.0 | 99 ms |
+| Arial (2,674 glyphs) | 19 of 19 steps | 354 capitals / 26 figures | 14.0 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.8 s, off the main thread; after Apply, mean difference 0.1 | 228 ms |
+
+The designer harness stage, on the same runs:
+
+| Font | Corrected | Preview against the plan | Apply | Revert, then off |
+|---|---|---|---|---|
+| Lato | 128 glyph sides (stem 97), 294 pairs | every side and every listed pair exact | 50 shifted glyphs written as previewed (E +2/+14, F +2/+9, A −11/−10) | font as before; every glyph back to the model |
+| Arial | 680 glyph sides (stem 95; accented letters and keyed sides follow), 294 pairs | every side and every listed pair exact | 51 shifted glyphs written as previewed (E +2/+15) | font as before; every glyph back to the model |
+
+The Designer Harness window opened in about 120 ms on both. Its list leads
+with F/ +61, b) +49, f/ +48, (d +48 in running text, and with AA −34,
+Fz +29, YA −27 among letters (`lato-harness.png`,
+`lato-harness-letters.png`).
 
 A 60 Hz heartbeat measures how long the main thread is busy at a time.
 Result on the final build: **PASSED** in 33.2 s.
@@ -526,4 +730,3 @@ Result on the final build: **PASSED** in 33.2 s.
 * **Not yet tested in Glyphs:** auto-aligned composites. Arial's imported
   composites never report `isAligned`, so this path is tested on mocks only.
   Try it on a `.glyphs` source with aligned composites.
- 

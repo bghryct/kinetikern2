@@ -1,0 +1,23 @@
+Kinetikern2 self-test PASSED — /private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/fonts/Lato-Regular.ttf, Glyphs 3.5.1 (3534.0), engine kinetikern2 2.0.0
+  preview ready after 0.9 s: 245 spacing glyphs (outlines read in 79 ms), 42 kerned in the sample, 470 entries
+  cancelled the whole-font run at Phase 2/3: Evaluating pairs [54%] · 0 s; the window stopped it in 2 ms
+  whole-font run 0.4 s on 7 threads: 231 kerned glyphs, 52789 pairs in scope, 19046 class pairs, 9532 entries (9532 before the budget)
+  Apply 0.55 s: 9532 kerning entries, 450 group sides, 480 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches
+  Revert 0.47 s: kerning (4643 entries), groups and sidebearings of 245 glyphs are as before Apply
+  designer harness: 128 glyph sides and 294 pairs corrected (stem 97, largest side shift 33 per 1000 em); the preview moved every side and pair exactly as planned; the Designer Harness window lists 80 pairs, e.g. F slash +61, b parenright +49, f slash +48, parenleft d +48; opened in 118 ms
+  Designer Harness window, Letters: 80 pairs, e.g. AA, Fz, YA, YY, VV, AY
+  designer harness Apply: 50 glyphs the harness shifted written as the preview showed them (left/right shift per 1000 em, e.g. A -11/-10, B +2/-5, D +2/-1, E +2/+14, F +2/+9, H +2/+4)
+  designer harness Revert: the font is as before
+  designer harness off: every glyph back to Kinetikern2's own spacing
+  Spacing Groups window, driven like a user: 19 of 19 steps as expected (click, Shift-click, Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, no group, take out and put back)
+  spacing groups: 68 Latin capitals frozen, 10 figures at Looseness +0.4 and 50% force; the Spacing Groups window opened in 164 ms, the Pairs window in 51 ms
+  spacing groups: whole font 0.4 s, Looseness fitted to the frozen capitals -0.00, 11028 entries, 0 between frozen glyphs, 0 frozen glyphs moved
+  pairs window (the font as it is): 52789 pairs in 0.9 s; loosest less florin +184, asciicircum florin +184, florin florin +179; tightest fraction underscore -187, underscore fraction -186, period quotedblleft -183
+  spacing groups Apply: 0 frozen glyphs and 0 kerning entries between frozen glyphs changed; 9 figures re-spaced
+  pairs window after Apply (read again): mean difference 1.0 units per 1000 em
+  spacing groups Revert: the font is as before
+  longest main-thread stall while the window worked: 118 ms (designer harness); limit 500 ms
+  main thread held by open window: up to 364 ms
+  main thread held by apply: up to 35 ms
+  main thread held by revert: up to 31 ms
+exit 0

@@ -25,6 +25,16 @@ use crate::profile::{PairBand, SdfProfile};
 /// `origin` of a class that came from the designer's groups (low bits: the
 /// caller's group id); otherwise `origin` is the glyph naming the new group.
 pub const EXISTING: u32 = 1 << 31;
+/// `origin` of a frozen glyph without a kerning group (low bits: the glyph):
+/// a class of its own that is written with the glyph's name, so that Apply
+/// never gives a frozen glyph a group.
+pub const GLYPH_KEYED: u32 = 1 << 30;
+
+/// Partition keys (`Classes::build_with`): classes never mix glyphs with
+/// different keys — the spacing groups a user painted (glyphs kerned with
+/// different force must not share a class value) and frozen glyphs, whose
+/// key has this bit.
+pub const PART_FROZEN: u32 = 1 << 31;
 
 /// Glyph flags (input): the glyph is the key glyph of its left / right group
 /// (its name is the group's name). Preferred as the class representative.
@@ -213,8 +223,10 @@ fn signatures_close(a: &[f64; SIGNATURE], b: &[f64; SIGNATURE], eps: f64) -> boo
 }
 
 impl SideClasses {
-    fn build(glyphs: &[PreparedGlyph], right: bool, eps: f64, shape_eps: f64) -> SideClasses {
+    fn build(glyphs: &[PreparedGlyph], right: bool, eps: f64, shape_eps: f64, part: Option<&[u32]>) -> SideClasses {
         let n = glyphs.len();
+        let key = |i: usize| part.map_or(0, |p| p.get(i).copied().unwrap_or(0));
+        let is_frozen = |i: usize| key(i) & PART_FROZEN != 0;
         let profile = |i: usize| if right { &glyphs[i].right } else { &glyphs[i].left };
         let existing = |i: usize| if right { glyphs[i].right_group_in } else { glyphs[i].left_group_in };
         let key_flag = if right { GLYPH_RIGHT_KEY } else { GLYPH_LEFT_KEY };
@@ -226,11 +238,30 @@ impl SideClasses {
             shift: vec![0.0; n],
             ..Default::default()
         };
-        // 1. the designer's groups
+        // 1. the designer's groups. A group whose members fall into different
+        //    partitions stays the group of its frozen members, else of its
+        //    largest partition; the other members are grouped anew below, as
+        //    if they had none.
+        let mut keeper: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        if part.is_some() {
+            let mut counts: std::collections::HashMap<u32, std::collections::BTreeMap<u32, usize>> =
+                std::collections::HashMap::new();
+            for i in (0..n).filter(|&i| glyphs[i].valid && existing(i) != NONE) {
+                *counts.entry(existing(i)).or_default().entry(key(i)).or_insert(0) += 1;
+            }
+            for (id, by_key) in counts {
+                let k = match by_key.keys().find(|&&k| k & PART_FROZEN != 0) {
+                    Some(&k) => k,
+                    // largest partition, the smallest key on ties
+                    None => by_key.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(&k, _)| k).unwrap_or(0),
+                };
+                keeper.insert(id, k);
+            }
+        }
         let mut by_id: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for i in (0..n).filter(|&i| glyphs[i].valid) {
             let id = existing(i);
-            if id != NONE {
+            if id != NONE && keeper.get(&id).map_or(true, |&k| k == key(i)) {
                 let k = *by_id.entry(id).or_insert_with(|| {
                     c.origin.push(EXISTING | (id & !EXISTING));
                     c.members.push(Vec::new());
@@ -242,6 +273,7 @@ impl SideClasses {
         }
         // 2. glyphs without a group: their composite base's class, if the
         //    profile matches the base wherever the base has ink
+        #[allow(clippy::too_many_arguments)]
         fn assign<'g>(
             i: usize,
             glyphs: &'g [PreparedGlyph],
@@ -250,14 +282,29 @@ impl SideClasses {
             profile: &dyn Fn(usize) -> &'g SdfProfile,
             ink: &dyn Fn(usize) -> (f64, f64),
             eps: f64,
+            is_frozen: &dyn Fn(usize) -> bool,
+            key: &dyn Fn(usize) -> u32,
         ) -> u32 {
             if c.class_of[i] != NONE {
                 return c.class_of[i];
             }
+            if is_frozen(i) {
+                // a frozen glyph without a group keeps none: a class of its own
+                c.origin.push(GLYPH_KEYED | i as u32);
+                c.members.push(vec![i as u32]);
+                c.class_of[i] = (c.origin.len() - 1) as u32;
+                return c.class_of[i];
+            }
             let b = glyphs[i].base;
             let mut target = NONE;
-            if b != NONE && (b as usize) < glyphs.len() && b as usize != i && glyphs[b as usize].valid && depth < 8 {
-                let kb = assign(b as usize, glyphs, c, depth + 1, profile, ink, eps);
+            if b != NONE
+                && (b as usize) < glyphs.len()
+                && b as usize != i
+                && glyphs[b as usize].valid
+                && key(b as usize) == key(i)
+                && depth < 8
+            {
+                let kb = assign(b as usize, glyphs, c, depth + 1, profile, ink, eps, is_frozen, key);
                 let (y0, y1) = ink(b as usize);
                 let matches = glyphs[i].group_id == glyphs[b as usize].group_id
                     && compare(profile(i), profile(b as usize), eps)
@@ -276,11 +323,11 @@ impl SideClasses {
             target
         }
         for i in (0..n).filter(|&i| glyphs[i].valid) {
-            assign(i, glyphs, &mut c, 0, &profile, &ink, eps);
+            assign(i, glyphs, &mut c, 0, &profile, &ink, eps, &is_frozen, &key);
         }
         // 2b. classes without a designer group merge when their representatives
         //     have the same shape over the spacing zone (same rhythm group)
-        c.merge_shapes(glyphs, &profile, shape_eps);
+        c.merge_shapes(glyphs, &profile, shape_eps, &key);
         // 3. representatives: the key glyph, else the first non-composite, else the first
         c.rep = c
             .members
@@ -288,7 +335,7 @@ impl SideClasses {
             .zip(&c.origin)
             .map(|(m, &origin)| {
                 if origin & EXISTING == 0 {
-                    return origin;
+                    return origin & !GLYPH_KEYED;
                 }
                 m.iter()
                     .copied()
@@ -328,7 +375,13 @@ impl SideClasses {
     /// Merges classes without a designer group whose origin glyphs match within
     /// `eps` over the spacing zone into the first such class. Origins are
     /// visited in glyph order, so a class keeps the earliest glyph's name.
-    fn merge_shapes<'g>(&mut self, glyphs: &'g [PreparedGlyph], profile: &dyn Fn(usize) -> &'g SdfProfile, eps: f64) {
+    fn merge_shapes<'g>(
+        &mut self,
+        glyphs: &'g [PreparedGlyph],
+        profile: &dyn Fn(usize) -> &'g SdfProfile,
+        eps: f64,
+        key: &dyn Fn(usize) -> u32,
+    ) {
         if eps <= 0.0 {
             return;
         }
@@ -337,7 +390,7 @@ impl SideClasses {
         // heads: (class, origin glyph, signature)
         let mut heads: Vec<(usize, usize, [f64; SIGNATURE])> = Vec::new();
         for k in 0..k_all {
-            if self.origin[k] & EXISTING != 0 {
+            if self.origin[k] & (EXISTING | GLYPH_KEYED) != 0 {
                 continue;
             }
             let g = self.origin[k] as usize;
@@ -349,6 +402,7 @@ impl SideClasses {
             let head = heads.iter().find(|&&(_, h, ref hs)| {
                 let gh = &glyphs[h];
                 gh.group_id == glyphs[g].group_id
+                    && key(h) == key(g)
                     && (gh.zone.0 - zone.0).abs() <= eps
                     && (gh.zone.1 - zone.1).abs() <= eps
                     && signatures_close(&sig, hs, eps)
@@ -394,11 +448,25 @@ impl SideClasses {
 
 impl Classes {
     pub fn build(glyphs: &[PreparedGlyph], upm: f64) -> Classes {
+        Self::build_with(glyphs, upm, None)
+    }
+
+    /// Classes that never mix partitions (`PART_FROZEN`, `GLYPH_KEYED` and
+    /// step 1 of `SideClasses::build`).
+    pub fn build_with(glyphs: &[PreparedGlyph], upm: f64, part: Option<&[u32]>) -> Classes {
         let eps = 0.5 * upm / 1000.0;
         let shape_eps = SHAPE_EPS * upm / 1000.0;
         Classes {
-            right: SideClasses::build(glyphs, true, eps, shape_eps),
-            left: SideClasses::build(glyphs, false, eps, shape_eps),
+            right: SideClasses::build(glyphs, true, eps, shape_eps, part),
+            left: SideClasses::build(glyphs, false, eps, shape_eps, part),
         }
+    }
+
+    /// True for every class of `side` whose members are all frozen.
+    pub fn frozen_classes(side: &SideClasses, frozen: &[bool]) -> Vec<bool> {
+        side.members
+            .iter()
+            .map(|m| !m.is_empty() && m.iter().all(|&g| frozen.get(g as usize).copied().unwrap_or(false)))
+            .collect()
     }
 }

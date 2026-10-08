@@ -3,11 +3,14 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Instant;
+use crate::clock::Instant;
 
 use rayon::prelude::*;
 
-use crate::engine::{Context, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, NONE};
+use std::sync::Arc;
+
+use crate::classes::{Classes, PART_FROZEN};
+use crate::engine::{Context, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, NONE};
 use crate::job::{pool, Cancelled, JobError, Progress};
 use crate::pass2::{
     Fields, Kernel, Knobs, PairOut, Probes, Scratch, Solver, Verify, Windows, PAIR_BOUNDED, PAIR_CLEARANCE, PAIR_CREVICE,
@@ -49,6 +52,27 @@ pub struct Params {
     /// this many rest gaps of the partner's ink.
     pub radius_ratio: f64,
     pub threads: usize,
+    /// Per-glyph options (frozen glyphs, section Looseness offsets).
+    pub glyph_opts: Option<Arc<Vec<GlyphOpt>>>,
+    /// Move the solve's Looseness to the frozen glyphs' own tightness first
+    /// (`Context::fit_looseness` on the frozen glyphs).
+    pub fit_frozen: bool,
+    /// Corrections toward what well-spaced fonts do, after the solve.
+    pub harness: Option<Arc<Harness>>,
+}
+
+/// The designer harness: where the model consistently spaces differently from
+/// designers (learned from well-spaced fonts), as corrections applied after
+/// the solve, in font units. `sides[i]` shifts glyph i's [lsb, rsb]; each of
+/// `pairs` (left glyph, right glyph, value) adds to that pair's kerning,
+/// written as a glyph–glyph entry over whatever class kerning it has. Frozen
+/// glyphs keep their sidebearings, and a pair of two frozen glyphs its
+/// kerning. The caller passes a side that follows another glyph (metrics
+/// key, composite) that glyph's shift.
+#[derive(Clone, Debug, Default)]
+pub struct Harness {
+    pub sides: Vec<[f64; 2]>,
+    pub pairs: Vec<(u32, u32, f64)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,6 +122,10 @@ pub struct Outcome {
     pub entries: Vec<Entry>,
     pub kern: Vec<bool>,
     pub stats: RunStats,
+    /// Classes built for this solve (frozen glyphs); None = the context's.
+    pub classes: Option<Classes>,
+    /// Looseness offset found by `fit_frozen` (slider units), else NaN.
+    pub fitted: f64,
 }
 
 #[inline]
@@ -170,8 +198,53 @@ impl Drop for LocalStats<'_> {
 /// Progress phases: 2/3 evaluating pairs, 3/3 grouping and pruning. Fails
 /// (rather than runs) when a class-mode solve exceeds MAX_CLASS_PAIRS.
 pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) -> Result<Outcome, JobError> {
-    let pass1 = ctx.pass1(&p.options);
     let n = ctx.glyphs.len();
+    let opts: Option<&[GlyphOpt]> = p.glyph_opts.as_deref().map(|v| v.as_slice());
+    let frozen: Vec<bool> = (0..n).map(|i| opts.and_then(|o| o.get(i)).is_some_and(|x| x.frozen)).collect();
+    let any_frozen = frozen.iter().any(|&f| f);
+    // the frozen glyphs' own tightness, then the solve at it
+    let mut fitted = f64::NAN;
+    let mut options = p.options.clone();
+    if p.fit_frozen && any_frozen {
+        if let Some(dt) = ctx.fit_looseness(&options, &frozen) {
+            fitted = dt;
+            options = options.shifted(dt);
+        }
+    }
+    let p_local;
+    let p = if fitted.is_finite() {
+        p_local = Params { options, ..p.clone() };
+        &p_local
+    } else {
+        p
+    };
+    let mut pass1 = ctx.pass1_with(&p.options, opts);
+    // partitions: frozen glyphs, and the kerning force of each painted group
+    let mut forces: Vec<f64> = Vec::new();
+    let part: Vec<u32> = (0..n)
+        .map(|i| {
+            let o = opts.and_then(|o| o.get(i)).copied().unwrap_or_default();
+            if o.frozen {
+                return PART_FROZEN;
+            }
+            let f = if o.intensity.is_finite() { o.intensity.max(0.0) } else { 1.0 };
+            match forces.iter().position(|&x| (x - f).abs() < 1e-9) {
+                Some(k) => k as u32,
+                None => {
+                    forces.push(f);
+                    (forces.len() - 1) as u32
+                }
+            }
+        })
+        .collect();
+    let classes = if (any_frozen || forces.len() > 1) && p.mode == Mode::Classes {
+        Some(Classes::build_with(&ctx.glyphs, ctx.upm, Some(&part)))
+    } else {
+        None
+    };
+    let force: Option<Vec<f64>> = opts.filter(|o| o.iter().any(|x| (x.intensity - 1.0).abs() > 1e-12)).map(|o| {
+        (0..n).map(|i| o.get(i).map_or(1.0, |x| if x.intensity.is_finite() { x.intensity.max(0.0) } else { 1.0 })).collect()
+    });
     let kern: Vec<bool> = (0..n)
         .map(|i| {
             let g = &ctx.glyphs[i];
@@ -183,22 +256,133 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     if p.options.coupling <= 0.0 || stats.kern_glyphs == 0 {
         progress.begin(3, 3, 1);
         progress.add(1);
-        return Ok(Outcome { pass1, mode: p.mode, entries: Vec::new(), kern, stats });
+        let mut entries = Vec::new();
+        if let Some(h) = &p.harness {
+            let built = classes.as_ref().unwrap_or(&ctx.classes);
+            apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, &frozen, &kern, p.threshold, false);
+        }
+        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted });
     }
     let t2 = Instant::now();
     let pool = pool(p.threads);
     let fields = Fields::new(ctx, &p.options);
     let knobs = Knobs::new(&p.options, ctx.upm, p.threshold);
+    let frozen_ref: Option<&[bool]> = if any_frozen { Some(&frozen) } else { None };
     let entries = pool.install(|| match p.mode {
-        Mode::Pairs => run_pairs(ctx, p, &pass1, &kern, &fields, knobs, progress, &mut stats).map_err(JobError::from),
-        Mode::Classes => run_classes(ctx, p, &pass1, &kern, &fields, knobs, progress, &mut stats),
+        Mode::Pairs => run_pairs(ctx, p, &pass1, &kern, frozen_ref, force.as_deref(), &fields, knobs, progress, &mut stats)
+            .map_err(JobError::from),
+        Mode::Classes => run_classes(
+            ctx,
+            p,
+            &pass1,
+            &kern,
+            classes.as_ref().unwrap_or(&ctx.classes),
+            frozen_ref,
+            force.as_deref(),
+            &fields,
+            knobs,
+            progress,
+            &mut stats,
+        ),
     })?;
     stats.pass2_ms = t2.elapsed().as_secs_f64() * 1000.0;
     let t3 = Instant::now();
-    let entries = prune(entries, p.budget, &mut stats);
+    let mut entries = prune(entries, p.budget, &mut stats);
+    if let Some(h) = &p.harness {
+        let built = classes.as_ref().unwrap_or(&ctx.classes);
+        apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, &frozen, &kern, p.threshold, true);
+    }
     stats.prune_ms = t3.elapsed().as_secs_f64() * 1000.0;
     progress.add(1);
-    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats })
+    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted })
+}
+
+/// Applies the designer harness to a finished solve (see `Harness`): after
+/// the budget, so its entries are always written.
+#[allow(clippy::too_many_arguments)]
+fn apply_harness(
+    h: &Harness,
+    ctx: &Context,
+    pass1: &mut Pass1,
+    entries: &mut Vec<Entry>,
+    classes: &Classes,
+    mode: Mode,
+    frozen: &[bool],
+    kern: &[bool],
+    threshold: f64,
+    kerning: bool,
+) {
+    let n = ctx.glyphs.len();
+    for (i, s) in h.sides.iter().enumerate().take(n) {
+        if frozen[i] || !pass1.metrics[i].valid {
+            continue;
+        }
+        let dl = if s[0].is_finite() { s[0] } else { 0.0 };
+        let dr = if s[1].is_finite() { s[1] } else { 0.0 };
+        let m = &mut pass1.metrics[i];
+        m.lsb += dl;
+        m.rsb += dr;
+        m.advance += dl + dr;
+        pass1.lsb[i] += dl;
+        pass1.rsb[i] += dr;
+    }
+    if !kerning || h.pairs.is_empty() {
+        return;
+    }
+    // the kerning a pair has now, with the usual precedence
+    let mut gg: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut gc: HashMap<(u32, u32), f64> = HashMap::new();
+    let mut cg: HashMap<(u32, u32), f64> = HashMap::new();
+    let mut cc: HashMap<(u32, u32), f64> = HashMap::new();
+    for (k, e) in entries.iter().enumerate() {
+        match e.kind {
+            KIND_GLYPH_GLYPH => {
+                gg.insert((e.left, e.right), k);
+            }
+            KIND_GLYPH_CLASS => {
+                gc.insert((e.left, e.right), e.value);
+            }
+            KIND_CLASS_GLYPH => {
+                cg.insert((e.left, e.right), e.value);
+            }
+            _ => {
+                cc.insert((e.left, e.right), e.value);
+            }
+        }
+    }
+    let (rc, lc) = (&classes.right.class_of, &classes.left.class_of);
+    for &(l, r, d) in &h.pairs {
+        let (li, ri) = (l as usize, r as usize);
+        if li >= n || ri >= n || !d.is_finite() || d == 0.0 {
+            continue;
+        }
+        if !kern[li] || !kern[ri] || (frozen[li] && frozen[ri]) {
+            continue;
+        }
+        if let Some(&k) = gg.get(&(l, r)) {
+            entries[k].value += d;
+            continue;
+        }
+        let base = if mode == Mode::Classes {
+            let (ra, lb) = (rc.get(li).copied().unwrap_or(NONE), lc.get(ri).copied().unwrap_or(NONE));
+            gc.get(&(l, lb)).or_else(|| cg.get(&(ra, r))).or_else(|| cc.get(&(ra, lb))).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let v = base + d;
+        if base == 0.0 && v.abs() < threshold {
+            continue;
+        }
+        entries.push(Entry {
+            kind: KIND_GLYPH_GLYPH,
+            left: l,
+            right: r,
+            value: v,
+            importance: importance(v, 0.0, ctx.upm),
+            parent: NONE,
+        });
+        gg.insert((l, r), entries.len() - 1);
+    }
 }
 
 /// Probes and window extremes for every glyph in `needed`, against every
@@ -230,6 +414,8 @@ fn run_pairs(
     p: &Params,
     pass1: &Pass1,
     kern: &[bool],
+    frozen: Option<&[bool]>,
+    force: Option<&[f64]>,
     fields: &Fields,
     knobs: Knobs,
     progress: &Progress,
@@ -255,6 +441,7 @@ fn run_pairs(
         rsb: &pass1.rsb,
         knobs,
         solver: p.solver,
+        force,
     };
     let upm = ctx.upm;
     let rows: Vec<Option<(Vec<Entry>, RunStats)>> = k
@@ -269,6 +456,9 @@ fn run_pairs(
                 }
                 if !script_ok(&glyphs[ia], &glyphs[ib], p.scope_scripts) {
                     continue;
+                }
+                if frozen.is_some_and(|f| f[ia] && f[ib]) {
+                    continue; // both glyphs frozen: their kerning stays as it is
                 }
                 st.member_pairs += 1;
                 let r = kernel.solve(ia, ib, sc);
@@ -327,18 +517,28 @@ struct Exception {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn run_classes(
     ctx: &Context,
     p: &Params,
     pass1: &Pass1,
     kern: &[bool],
+    classes: &Classes,
+    frozen: Option<&[bool]>,
+    force: Option<&[f64]>,
     fields: &Fields,
     knobs: Knobs,
     progress: &Progress,
     stats: &mut RunStats,
 ) -> Result<Vec<Entry>, JobError> {
     let glyphs = &ctx.glyphs;
-    let (rc, lc) = (&ctx.classes.right, &ctx.classes.left);
+    let (rc, lc) = (&classes.right, &classes.left);
+    // classes never mix frozen and unfrozen glyphs: a pair of two frozen
+    // classes keeps the kerning it has
+    let (r_frozen, l_frozen) = match frozen {
+        Some(f) => (Classes::frozen_classes(rc, f), Classes::frozen_classes(lc, f)),
+        None => (vec![false; rc.len()], vec![false; lc.len()]),
+    };
     let upm = ctx.upm;
     let t = knobs.threshold;
 
@@ -357,6 +557,9 @@ fn run_classes(
     let r_scripts: Vec<(Vec<u32>, bool)> = r_members.iter().map(scripts_of).collect();
     let l_scripts: Vec<(Vec<u32>, bool)> = l_members.iter().map(scripts_of).collect();
     let class_scope = |pi: usize, qi: usize| -> bool {
+        if r_frozen[pi] && l_frozen[qi] {
+            return false;
+        }
         if !p.scope_scripts {
             return true;
         }
@@ -419,6 +622,7 @@ fn run_classes(
         rsb: &pass1.rsb,
         knobs,
         solver: p.solver,
+        force,
     };
 
     // Statistics go to per-split accumulators, not to every item: a class

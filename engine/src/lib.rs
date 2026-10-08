@@ -35,11 +35,14 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 #![allow(clippy::missing_safety_doc)]
 
+pub mod api;
 mod classes;
+pub mod clock;
 mod dmat;
 mod engine;
 mod geometry;
 mod job;
+mod measure;
 mod pass2;
 mod physics;
 mod profile;
@@ -54,7 +57,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
-use engine::{Context, GlyphInput, SideRule, SolveOptions, MAX_GROUPS, NONE};
+use engine::{Context, GlyphInput, GlyphOpt, SideRule, SolveOptions, MAX_GROUPS, NONE};
 use geometry::{Vec2, NODE_LINE, NODE_QCURVE};
 use job::{Job, JobError, STATE_FAILED};
 use pass2::Solver;
@@ -120,6 +123,92 @@ pub const PARAM_CLASSES: u32 = 2;
 pub const PARAM_WINDOW: u32 = 4;
 /// Pairs only within one script plus Common/Inherited.
 pub const PARAM_SCOPE_SCRIPTS: u32 = 8;
+/// With frozen glyphs (`kk2_solve_start2`): first move the Looseness to the
+/// frozen glyphs' own tightness, so new glyphs match the spacing that is
+/// already there; the solve's Looseness is then an offset from it.
+pub const PARAM_FIT_FROZEN: u32 = 16;
+
+/// `KK2GlyphOpt.flags`: keep the glyph's sidebearings, and never kern a pair
+/// of two frozen glyphs.
+pub const GLYPHOPT_FROZEN: u32 = 1;
+
+/// Per-solve options of one glyph (`kk2_solve_start2`): its spacing group.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2GlyphOpt {
+    pub flags: u32,
+    pub reserved: u32,
+    /// Looseness offset of the glyph's group, slider units (0 = none).
+    pub looseness: f64,
+    /// Kerning force as a multiple of the solve's intensity (1 = the same;
+    /// NaN or negative = 1). A pair kerns with the mean of its glyphs'.
+    pub intensity: f64,
+}
+
+/// The designer harness of a solve (`kk2_solve_start3`): corrections toward
+/// what well-spaced fonts do, applied after the solve, in font units. Set
+/// `struct_size = sizeof(KK2Harness)`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KK2Harness {
+    pub struct_size: u32,
+    /// Entries of `sides` (one per glyph; 0 with `sides` NULL).
+    pub glyph_count: u32,
+    /// [lsb shift, rsb shift] of each glyph; NULL = none.
+    pub sides: *const f64,
+    pub pairs: *const KK2HarnessPair,
+    pub pair_count: u32,
+    pub reserved: u32,
+}
+
+/// A pair correction of the harness: added to the kerning of glyph pair
+/// (left, right).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2HarnessPair {
+    pub left: u32,
+    pub right: u32,
+    pub value: f64,
+}
+
+/// One entry of the font's current kerning (`kk2_measure`): `kind` as the
+/// result entries; class sides are the caller's group ids (`KK2Glyph`
+/// `right_group` on the left of a pair, `left_group` on the right).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2KernIn {
+    pub kind: u32,
+    pub left: u32,
+    pub right: u32,
+    pub value: f32,
+}
+
+/// One measured pair (`kk2_measure`): the visible gap now and the model's,
+/// and their difference after removing the font's overall offset.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2PairOut {
+    pub left: u32,
+    pub right: u32,
+    pub current: f32,
+    pub model: f32,
+    pub residual: f32,
+    pub reserved: u32,
+}
+
+/// Summary of `kk2_measure`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2MeasureStats {
+    pub pairs: u64,
+    /// Mean of current − model gaps (the overall tightness difference).
+    pub offset: f64,
+    /// Mean absolute residual after removing `offset`.
+    pub mae: f64,
+    pub rms: f64,
+    pub loosest_count: u32,
+    pub tightest_count: u32,
+}
 
 /// Solve parameters. Set `struct_size = sizeof(KK2Params)`; negative or NaN
 /// tuning fields keep their defaults.
@@ -275,6 +364,9 @@ pub struct KK2Ray {
     pub reserved: u32,
 }
 
+// the plugin's 64-bit ABI (the WebAssembly build of Spacing QA, with 32-bit
+// pointers, does not use the C functions)
+#[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<KK2Point>() == 24);
     assert!(size_of::<KK2Glyph>() == 104);
@@ -285,6 +377,12 @@ const _: () = {
     assert!(size_of::<KK2Stats>() == 352);
     assert!(size_of::<KK2Result>() == 464);
     assert!(size_of::<KK2Ray>() == 24);
+    assert!(size_of::<KK2GlyphOpt>() == 24);
+    assert!(size_of::<KK2Harness>() == 32);
+    assert!(size_of::<KK2HarnessPair>() == 16);
+    assert!(size_of::<KK2KernIn>() == 16);
+    assert!(size_of::<KK2PairOut>() == 24);
+    assert!(size_of::<KK2MeasureStats>() == 40);
 };
 
 /// Owns a result's arrays; `c` points into them. `c` is the first field so
@@ -302,6 +400,7 @@ struct ResultBox {
     left_rep: Vec<u32>,
     kern: Vec<u8>,
     lookup: Lookup,
+    fitted: f64,
 }
 
 // The raw pointers in `c` point into the box's own vectors, whose heap
@@ -470,6 +569,9 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
         budget: c.budget as usize,
         radius_ratio: pick(c.radius_ratio, 1.0),
         threads: c.threads as usize,
+        glyph_opts: None,
+        fit_frozen: c.flags & PARAM_FIT_FROZEN != 0,
+        harness: None,
     })
 }
 
@@ -503,7 +605,8 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         })
         .collect();
     let classes = out.mode == Mode::Classes;
-    let (rc, lc) = (&ctx.classes.right, &ctx.classes.left);
+    let built = out.classes.as_ref().unwrap_or(&ctx.classes);
+    let (rc, lc) = (&built.right, &built.left);
     let mut lookup = Lookup { classes, ..Lookup::default() };
     for e in &entries {
         let map = match e.kind {
@@ -580,6 +683,7 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         left_rep: lc.rep.clone(),
         kern: out.kern.iter().map(|&k| k as u8).collect(),
         lookup,
+        fitted: out.fitted,
     });
     let ptr = |v: &[u32]| if v.is_empty() { std::ptr::null() } else { v.as_ptr() };
     b.c.metrics = if b.metrics.is_empty() { std::ptr::null() } else { b.metrics.as_ptr() };
@@ -594,27 +698,32 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
     b
 }
 
+/// Kerning of glyph pair (a, b) from a result's entries, with the usual
+/// precedence; NaN if either glyph was not kerned.
+fn lookup_value(l: &Lookup, kern: &[u8], rc: &[u32], lc: &[u32], a: u32, b: u32) -> f32 {
+    let n = kern.len() as u32;
+    if a >= n || b >= n || kern[a as usize] == 0 || kern[b as usize] == 0 {
+        return f32::NAN;
+    }
+    if let Some(&v) = l.gg.get(&(a, b)) {
+        return v;
+    }
+    if !l.classes {
+        return 0.0;
+    }
+    let (ra, lb) = (rc[a as usize], lc[b as usize]);
+    if let Some(&v) = l.gc.get(&(a, lb)) {
+        return v;
+    }
+    if let Some(&v) = l.cg.get(&(ra, b)) {
+        return v;
+    }
+    l.cc.get(&(ra, lb)).copied().unwrap_or(0.0)
+}
+
 impl ResultBox {
     fn value(&self, a: u32, b: u32) -> f32 {
-        let n = self.kern.len() as u32;
-        if a >= n || b >= n || self.kern[a as usize] == 0 || self.kern[b as usize] == 0 {
-            return f32::NAN;
-        }
-        let l = &self.lookup;
-        if let Some(&v) = l.gg.get(&(a, b)) {
-            return v;
-        }
-        if !l.classes {
-            return 0.0;
-        }
-        let (ra, lb) = (self.glyph_right_class[a as usize], self.glyph_left_class[b as usize]);
-        if let Some(&v) = l.gc.get(&(a, lb)) {
-            return v;
-        }
-        if let Some(&v) = l.cg.get(&(ra, b)) {
-            return v;
-        }
-        l.cc.get(&(ra, lb)).copied().unwrap_or(0.0)
+        lookup_value(&self.lookup, &self.kern, &self.glyph_right_class, &self.glyph_left_class, a, b)
     }
 }
 
@@ -690,6 +799,225 @@ pub unsafe extern "C" fn kk2_solve_start(
         });
         Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
     })
+}
+
+/// `kk2_solve_start` with per-glyph options (`opts`, `opt_count` entries,
+/// one per glyph; NULL = none): frozen glyphs and section Looseness offsets.
+/// With `PARAM_FIT_FROZEN` the Looseness is first fitted to the frozen
+/// glyphs (`kk2_result_fitted_looseness`).
+#[no_mangle]
+pub unsafe extern "C" fn kk2_solve_start2(
+    ctx: *const KK2Context,
+    params: *const KK2Params,
+    kern_mask: *const u8,
+    mask_len: u32,
+    opts: *const KK2GlyphOpt,
+    opt_count: u32,
+) -> *mut KK2Job {
+    guard(null_mut(), || {
+        if ctx.is_null() {
+            return Err("context is NULL".into());
+        }
+        let ctx = (*ctx).0.clone();
+        let mut p = read_params(ctx.upm, params)?;
+        if !opts.is_null() && opt_count > 0 {
+            let v: Vec<GlyphOpt> = slice(opts, opt_count)
+                .iter()
+                .map(|o| GlyphOpt {
+                    frozen: o.flags & GLYPHOPT_FROZEN != 0,
+                    looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
+                    intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
+                })
+                .collect();
+            p.glyph_opts = Some(Arc::new(v));
+        }
+        let mask: Option<Vec<u8>> = if kern_mask.is_null() { None } else { Some(slice(kern_mask, mask_len).to_vec()) };
+        let job = Job::spawn("kinetikern2-solve", move |progress| {
+            let out = run::run(&ctx, &p, mask.as_deref(), progress)?;
+            Ok(build_result(&ctx, out))
+        });
+        Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
+    })
+}
+
+/// `kk2_solve_start2` with the designer harness (`harness`, NULL = none):
+/// glyph sides shifted and pair kerning corrected after the solve, frozen
+/// glyphs left as they are.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_solve_start3(
+    ctx: *const KK2Context,
+    params: *const KK2Params,
+    kern_mask: *const u8,
+    mask_len: u32,
+    opts: *const KK2GlyphOpt,
+    opt_count: u32,
+    harness: *const KK2Harness,
+) -> *mut KK2Job {
+    guard(null_mut(), || {
+        if ctx.is_null() {
+            return Err("context is NULL".into());
+        }
+        let ctx = (*ctx).0.clone();
+        let mut p = read_params(ctx.upm, params)?;
+        if !opts.is_null() && opt_count > 0 {
+            let v: Vec<GlyphOpt> = slice(opts, opt_count)
+                .iter()
+                .map(|o| GlyphOpt {
+                    frozen: o.flags & GLYPHOPT_FROZEN != 0,
+                    looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
+                    intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
+                })
+                .collect();
+            p.glyph_opts = Some(Arc::new(v));
+        }
+        if !harness.is_null() {
+            let h = &*harness;
+            if (h.struct_size as usize) < size_of::<KK2Harness>() {
+                return Err(format!("KK2Harness.struct_size {} < {}", h.struct_size, size_of::<KK2Harness>()));
+            }
+            let sides: Vec<[f64; 2]> = if h.sides.is_null() || h.glyph_count == 0 {
+                Vec::new()
+            } else {
+                slice(h.sides, h.glyph_count * 2).chunks(2).map(|c| [c[0], c[1]]).collect()
+            };
+            let pairs: Vec<(u32, u32, f64)> = if h.pairs.is_null() || h.pair_count == 0 {
+                Vec::new()
+            } else {
+                slice(h.pairs, h.pair_count).iter().map(|q| (q.left, q.right, q.value)).collect()
+            };
+            p.harness = Some(Arc::new(run::Harness { sides, pairs }));
+        }
+        let mask: Option<Vec<u8>> = if kern_mask.is_null() { None } else { Some(slice(kern_mask, mask_len).to_vec()) };
+        let job = Job::spawn("kinetikern2-solve", move |progress| {
+            let out = run::run(&ctx, &p, mask.as_deref(), progress)?;
+            Ok(build_result(&ctx, out))
+        });
+        Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
+    })
+}
+
+/// Looseness offset (slider units) the solve moved to with
+/// `PARAM_FIT_FROZEN`; NaN if it did not fit.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_result_fitted_looseness(res: *const KK2Result) -> f64 {
+    if res.is_null() {
+        return f64::NAN;
+    }
+    (*(res as *const ResultBox)).fitted
+}
+
+/// The Looseness offset (slider units, relative to `params`) at which Pass 1
+/// gives the glyphs flagged in `which` (`which_len` bytes), on average, the
+/// sidebearings they have now. NaN with fewer than three such glyphs.
+/// Synchronous: Pass 1 only, a few milliseconds per step.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_fit_looseness(
+    ctx: *const KK2Context,
+    params: *const KK2Params,
+    which: *const u8,
+    which_len: u32,
+) -> f64 {
+    guard(f64::NAN, || {
+        if ctx.is_null() {
+            return Err("context is NULL".into());
+        }
+        let c = &(*ctx).0;
+        let p = read_params(c.upm, params)?;
+        let w: Vec<bool> = if which.is_null() {
+            vec![true; c.glyphs.len()]
+        } else {
+            let m = slice(which, which_len);
+            (0..c.glyphs.len()).map(|i| m.get(i).copied().unwrap_or(0) != 0).collect()
+        };
+        Ok(c.fit_looseness(&p.options, &w).unwrap_or(f64::NAN))
+    })
+}
+
+/// Measures the font's spacing as it is against a solve's: for every pair of
+/// glyphs flagged in `mask` (NULL = the glyphs the solve kerned) within the
+/// pair scope, the visible gap now (current sidebearings + `current`
+/// kerning) and the model's. Fills up to `cap` of the loosest and of the
+/// tightest pairs relative to the font's own overall tightness (sorted,
+/// most extreme first) and `stats`. Returns the number of pairs measured.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_measure(
+    ctx: *const KK2Context,
+    res: *const KK2Result,
+    current: *const KK2KernIn,
+    current_count: u32,
+    mask: *const u8,
+    mask_len: u32,
+    scope_scripts: u32,
+    loosest: *mut KK2PairOut,
+    tightest: *mut KK2PairOut,
+    cap: u32,
+    stats: *mut KK2MeasureStats,
+) -> u64 {
+    guard(0, || {
+        if ctx.is_null() || res.is_null() {
+            return Err("context or result is NULL".into());
+        }
+        let c = &(*ctx).0;
+        let r = &*(res as *const ResultBox);
+        let cur: Vec<measure::KernIn> = slice(current, current_count)
+            .iter()
+            .map(|k| measure::KernIn { kind: k.kind as u8, left: k.left, right: k.right, value: k.value as f64 })
+            .collect();
+        let n = c.glyphs.len();
+        let m: Vec<bool> = if mask.is_null() {
+            r.kern.iter().map(|&k| k != 0).collect()
+        } else {
+            let mm = slice(mask, mask_len);
+            (0..n).map(|i| mm.get(i).copied().unwrap_or(0) != 0).collect()
+        };
+        let lsb: Vec<f64> = r.metrics.iter().map(|x| x.lsb).collect();
+        let rsb: Vec<f64> = r.metrics.iter().map(|x| x.rsb).collect();
+        let (look, kern, rcs, lcs) = (&r.lookup, &r.kern[..], &r.glyph_right_class[..], &r.glyph_left_class[..]);
+        let model = move |a: u32, b: u32| -> f64 {
+            let v = lookup_value(look, kern, rcs, lcs, a, b);
+            if v.is_finite() {
+                v as f64
+            } else {
+                0.0
+            }
+        };
+        let out = measure::measure(c, &lsb, &rsb, &model, &cur, &m, scope_scripts != 0, cap as usize);
+        let write = |dst: *mut KK2PairOut, src: &[measure::PairOut]| {
+            if !dst.is_null() {
+                for (k, p) in src.iter().enumerate() {
+                    *dst.add(k) = KK2PairOut {
+                        left: p.left,
+                        right: p.right,
+                        current: p.current as f32,
+                        model: p.model as f32,
+                        residual: p.residual as f32,
+                        reserved: 0,
+                    };
+                }
+            }
+        };
+        write(loosest, &out.loosest);
+        write(tightest, &out.tightest);
+        if !stats.is_null() {
+            *stats = KK2MeasureStats {
+                pairs: out.pairs,
+                offset: out.offset,
+                mae: out.mae,
+                rms: out.rms,
+                loosest_count: out.loosest.len() as u32,
+                tightest_count: out.tightest.len() as u32,
+            };
+        }
+        Ok(out.pairs)
+    })
+}
+
+/// Bit set of optional features: 1 per-glyph options and the frozen-glyph
+/// Looseness fit (`kk2_solve_start2`, `kk2_fit_looseness`), 2 `kk2_measure`,
+/// 4 the designer harness (`kk2_solve_start3`).
+#[no_mangle]
+pub extern "C" fn kk2_features() -> u32 {
+    7
 }
 
 fn progress_of(job: &KK2Job) -> &job::Progress {

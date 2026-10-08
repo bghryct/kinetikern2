@@ -1,0 +1,1209 @@
+{
+  "ok": true,
+  "font": "/private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/fonts/Lato-Regular.ttf",
+  "out": "/var/folders/wp/zn92wf195yd3j5yr_1cqqy3h0000gn/T/kk2-verify.rFMplK",
+  "glyphs_version": "3.5.1 (3534.0)",
+  "options": {
+    "whole": true,
+    "cancel": true,
+    "quit": true,
+    "groups": true,
+    "max_stall_limit_ms": 500.0
+  },
+  "steps": [
+    {
+      "path": "/private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/fonts/Lato-Regular.ttf",
+      "seconds": 0.44,
+      "glyphs": 275,
+      "masters": 1,
+      "upm": 2000,
+      "family": "Lato",
+      "step": "opened",
+      "t": 0.442
+    },
+    {
+      "top_menu": "Filter",
+      "index": 40,
+      "of": 42,
+      "enabled": true,
+      "filter_menu": [
+        "Rerun: Emboss",
+        null,
+        "Shape Order",
+        "Extrude",
+        "Glyph as Image",
+        "Offset Curve",
+        "Roughen",
+        "Round Corners",
+        "Hatch Outline",
+        "Rounded Font",
+        null,
+        "Curve Equalizer",
+        "Emboss",
+        "Grader",
+        "Gradient Hatch",
+        "Green Harmony",
+        "Grey Harmony",
+        "Inliner",
+        "Inverter",
+        "Italic Extremes",
+        "Keep Countershapes",
+        "Keep Outer Shapes",
+        "Kern-A-Lytics",
+        "Obfuscator",
+        "Pixelate",
+        "RMX Harmonizer",
+        "RMX Monospacer",
+        "RMX Scaler",
+        "RMX Tuner",
+        "Rationalize Outlines",
+        "Rimmer",
+        "Shadow",
+        "Stitcher",
+        "Unnest Components",
+        "Vector Lighting Engraver",
+        "AI Generate Full Font",
+        "Algorithmic Fitting (Willis)\u2026",
+        "Blokland Spiro Master Builder\u2026",
+        "Font Checker\u2026",
+        "Kinetic SDF Kerning\u2026",
+        "Kinetikern2\u2026",
+        "SinterContrast\u2026"
+      ],
+      "ms": 336.3,
+      "step": "menu",
+      "t": 2.473
+    },
+    {
+      "title": "Kinetikern2 \u2014 Lato",
+      "state": "reading",
+      "import_ms": 22.8,
+      "open_ms": {
+        "build": 299.86499997903593,
+        "load": 0.4610830219462514
+      },
+      "step": "window",
+      "t": 2.479
+    },
+    {
+      "seconds": 0.97,
+      "snapshot": {
+        "master": "Regular",
+        "upm": 2000.0,
+        "spacing_glyphs": 245,
+        "kern_flag": 231,
+        "rtl": 0,
+        "on_base": 66,
+        "fixed_advance": 10,
+        "left_groups": 0,
+        "right_groups": 0,
+        "metric_rules": {
+          "follow": 0,
+          "fixed": 0
+        },
+        "read_ms": 81.75441698404029,
+        "skipped": 0
+      },
+      "gc_tracked": 336100,
+      "context_prep_ms": 299.1,
+      "pairs": {
+        "AV": -130.3,
+        "AT": -129.5,
+        "LT": -140.3,
+        "To": -143.2,
+        "Te": -143.2,
+        "Ta": -142.9,
+        "Yo": -127.6,
+        "VA": -130.3,
+        "P.": -183.6,
+        "F.": -174.8,
+        "r.": -135.6,
+        "y.": -128.0,
+        "HH": 0.0,
+        "nn": 0.0,
+        "oo": 0.0,
+        "HO": 0.0
+      },
+      "metrics": {
+        "H": [
+          175.2,
+          175.2,
+          1512.5
+        ],
+        "O": [
+          104.2,
+          104.2,
+          1621.4
+        ],
+        "n": [
+          144.0,
+          132.0,
+          1119.0
+        ],
+        "o": [
+          95.5,
+          95.8,
+          1157.2
+        ],
+        "A": [
+          40.8,
+          40.8,
+          1424.7
+        ],
+        "V": [
+          39.0,
+          39.0,
+          1421.1
+        ],
+        "T": [
+          23.3,
+          23.3,
+          1168.5
+        ],
+        "L": [
+          175.5,
+          23.6,
+          1013.1
+        ],
+        ".": [
+          135.6,
+          135.6,
+          520.2
+        ]
+      },
+      "labels": [
+        "Sample text (multi-paragraph; /glyphname inserts a glyph)",
+        "Kinetikern2 \u2014 live sidebearings + kerning",
+        "Font as it is \u2014 current spacing and kerning",
+        "Regular \u00b7 245 glyphs spaced, 42 of the sample kerned \u00b7 470 entries (466 class pairs, 4 exceptions) \u00b7 pass 1 1 ms \u00b7 pass 2 17 ms \u00b7 7 threads \u00b7 Phase 1 took 0.3 s",
+        "Cancel",
+        "Apply to Font",
+        "Revert Last Apply",
+        "Pairs\u2026",
+        "Spacing Groups\u2026",
+        "Replace existing kerning",
+        "Glyphs in sample text",
+        "Apply to",
+        "\u21bb",
+        "Max pairs",
+        "Auto (7 of 8 cores)",
+        "Threads",
+        "48",
+        "Size",
+        "Regular",
+        "Master",
+        "|kern| under 5/1000 em is left out (10.0 units at 2000 UPM)",
+        "Ignore threshold (units per 1000 em)",
+        "contour field coupling \u03b2 = 1.00",
+        "SDF Kerning Intensity",
+        "spring 1.00 \u00b7 repulsion 3.86 \u00b7 rest gap lc 288, UC 353",
+        "Loose",
+        "Tight",
+        "Looseness / Tightness"
+      ],
+      "entries": 470,
+      "classes": true,
+      "right_classes": 157,
+      "left_classes": 147,
+      "kerned_glyphs": 42,
+      "stats": {
+        "prep_ms": 299.096792,
+        "pass1_ms": 0.7429169999999999,
+        "pass2_ms": 17.051582999999997,
+        "prune_ms": 0.000625,
+        "pass1_residual": 0.0004605923930433853,
+        "pass1_iterations": 16,
+        "threads": 7,
+        "kern_glyphs": 42,
+        "probe_glyphs": 43,
+        "pairs_in_scope": 1764,
+        "class_pairs": 1435,
+        "member_pairs": 370,
+        "inherited": 0,
+        "verified": 370,
+        "verified_within": 363,
+        "solved": 1442,
+        "force_evaluations": 3829,
+        "merged_rays": 157893,
+        "active_rays": 131619,
+        "clearance_hits": 0,
+        "crevice_hits": 13,
+        "saturated": 75,
+        "window_hits": 969,
+        "bound_hits": 960,
+        "fallbacks": 0,
+        "entries_before_budget": 470,
+        "class_entries": 466,
+        "exception_entries": 4,
+        "dropped_by_budget": 0,
+        "rest_gap": [
+          288.6370247297541,
+          353.4162565495766,
+          288.6370247297541,
+          299.8952672391206,
+          null,
+          null,
+          null,
+          null
+        ],
+        "rhythm_scale": [
+          244.03053410544285,
+          298.79866565312784,
+          244.03053410544285,
+          253.5489073467885,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "step": "preview",
+      "t": 3.11
+    },
+    {
+      "top_menu": "Filter",
+      "index": 40,
+      "of": 42,
+      "enabled": true,
+      "ms": 44.0,
+      "step": "menu again",
+      "t": 3.357
+    },
+    {
+      "same_window": true,
+      "windows": 1,
+      "step": "second choice",
+      "t": 3.358
+    },
+    {
+      "state": "solving",
+      "step": "cancel test: whole-font run started",
+      "t": 3.72
+    },
+    {
+      "at": {
+        "phase": 2,
+        "fraction": 0.57,
+        "text": "Phase 2/3: Evaluating pairs [57%] \u00b7 0 s",
+        "seconds": 0.18,
+        "phases": {
+          "phase 2": 0.13
+        }
+      },
+      "cancel_call_ms": 2.1,
+      "stopped_ms": 2.1,
+      "state": "ready",
+      "result_kept": true,
+      "labels": [
+        "Sample text (multi-paragraph; /glyphname inserts a glyph)",
+        "Kinetikern2 \u2014 live sidebearings + kerning",
+        "Font as it is \u2014 current spacing and kerning",
+        "Whole-font run cancelled.",
+        "Cancel",
+        "Apply to Font",
+        "Revert Last Apply",
+        "Pairs\u2026",
+        "Spacing Groups\u2026",
+        "Replace existing kerning",
+        "Glyphs in sample text",
+        "Apply to",
+        "\u21bb",
+        "Max pairs",
+        "Auto (7 of 8 cores)",
+        "Threads",
+        "48",
+        "Size",
+        "Regular",
+        "Master",
+        "|kern| under 5/1000 em is left out (10.0 units at 2000 UPM)",
+        "Ignore threshold (units per 1000 em)",
+        "contour field coupling \u03b2 = 1.00",
+        "SDF Kerning Intensity",
+        "spring 1.00 \u00b7 repulsion 3.86 \u00b7 rest gap lc 288, UC 353",
+        "Loose",
+        "Tight",
+        "Looseness / Tightness"
+      ],
+      "step": "cancel test: cancelled",
+      "t": 3.89
+    },
+    {
+      "state": "solving",
+      "step": "whole-font run started",
+      "t": 3.892
+    },
+    {
+      "seconds": 0.52,
+      "phases": {
+        "phase 2": 0.11,
+        "phase 3": 0.41
+      },
+      "labels": [
+        "Sample text (multi-paragraph; /glyphname inserts a glyph)",
+        "Kinetikern2 \u2014 live sidebearings + kerning",
+        "Font as it is \u2014 current spacing and kerning",
+        "Whole font (Regular): 231 glyphs kerned \u00b7 52,789 pairs in scope \u00b7 19,046 class pairs solved \u00b7 9,532 entries (6,443 class pairs, 3,089 exceptions) \u00b7 0.5 s on 7 threads",
+        "Cancel",
+        "Apply to Font",
+        "Revert Last Apply",
+        "Pairs\u2026",
+        "Spacing Groups\u2026",
+        "Replace existing kerning",
+        "Glyphs in sample text",
+        "Apply to",
+        "\u21bb",
+        "Max pairs",
+        "Auto (7 of 8 cores)",
+        "Threads",
+        "48",
+        "Size",
+        "Regular",
+        "Master",
+        "|kern| under 5/1000 em is left out (10.0 units at 2000 UPM)",
+        "Ignore threshold (units per 1000 em)",
+        "contour field coupling \u03b2 = 1.00",
+        "SDF Kerning Intensity",
+        "spring 1.00 \u00b7 repulsion 3.86 \u00b7 rest gap lc 288, UC 353",
+        "Loose",
+        "Tight",
+        "Looseness / Tightness"
+      ],
+      "entries": 9532,
+      "classes": true,
+      "right_classes": 157,
+      "left_classes": 147,
+      "kerned_glyphs": 231,
+      "stats": {
+        "prep_ms": 299.096792,
+        "pass1_ms": 0.563583,
+        "pass2_ms": 404.05229199999997,
+        "prune_ms": 0.0085,
+        "pass1_residual": 0.0004605923930433853,
+        "pass1_iterations": 16,
+        "threads": 7,
+        "kern_glyphs": 231,
+        "probe_glyphs": 231,
+        "pairs_in_scope": 52789,
+        "class_pairs": 19046,
+        "member_pairs": 33743,
+        "inherited": 2583,
+        "verified": 31160,
+        "verified_within": 26277,
+        "solved": 23929,
+        "force_evaluations": 101887,
+        "merged_rays": 3276087,
+        "active_rays": 2569267,
+        "clearance_hits": 24,
+        "crevice_hits": 88,
+        "saturated": 545,
+        "window_hits": 12799,
+        "bound_hits": 22612,
+        "fallbacks": 0,
+        "entries_before_budget": 9532,
+        "class_entries": 6443,
+        "exception_entries": 3089,
+        "dropped_by_budget": 0,
+        "rest_gap": [
+          288.6370247297541,
+          353.4162565495766,
+          288.6370247297541,
+          299.8952672391206,
+          null,
+          null,
+          null,
+          null
+        ],
+        "rhythm_scale": [
+          244.03053410544285,
+          298.79866565312784,
+          244.03053410544285,
+          253.5489073467885,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      "step": "whole-font run",
+      "t": 4.408
+    },
+    {
+      "capture_s": 0.08,
+      "plan_s": 0.013,
+      "gc_tracked": 336426,
+      "kerning_entries": 4643,
+      "plan": {
+        "class_pairs": 6443,
+        "exceptions": 3089,
+        "glyph_pairs": 0,
+        "removals": 4089,
+        "groups": 231,
+        "metrics": 244,
+        "overriding": 0,
+        "joining_existing": 0,
+        "other_masters": 0,
+        "frozen": 0,
+        "group_moves": 0
+      },
+      "step": "before apply",
+      "t": 4.814
+    },
+    {
+      "seconds": 0.55,
+      "call_s": 0.002,
+      "summary": {
+        "ok": true,
+        "kerning_entries": 9532,
+        "entries_removed": 4089,
+        "group_sides_set": 450,
+        "glyphs_respaced": 244,
+        "keyed_glyphs_synced": 0,
+        "metric_mismatches": 0,
+        "kerning_mismatches": 0,
+        "apply_ms": 258.26349985436536,
+        "master_id": "m01",
+        "error": null,
+        "examples": [],
+        "details": {
+          "group_conflicts": 0,
+          "missing_glyphs": 0,
+          "metric_sides": 477,
+          "composites": 66,
+          "components_held": 66,
+          "realigned": 0,
+          "readback_metrics": 488,
+          "readback_kerning": 477,
+          "readback_removals": 100
+        },
+        "counts": {
+          "class_pairs": 6443,
+          "exceptions": 3089,
+          "glyph_pairs": 0,
+          "removals": 4089,
+          "groups": 231,
+          "metrics": 244,
+          "overriding": 0,
+          "joining_existing": 0,
+          "other_masters": 0,
+          "frozen": 0,
+          "group_moves": 0
+        },
+        "ms": {
+          "start": 0.19108399283140898,
+          "composites": 5.406500014942139,
+          "revert_point": 60.001624980941415,
+          "groups": 9.649707993958145,
+          "metrics": 74.39620699733496,
+          "removals": 40.46087502501905,
+          "kerning": 36.901332961861044,
+          "record": 20.562834019074216,
+          "read_back": 6.824500014772639,
+          "undo": 2.7777499926742166,
+          "total": 258.26349985436536,
+          "wall": 423.78479198669083
+        },
+        "slowest_slice": {
+          "ms": 10.993958014296368,
+          "phases": "metrics",
+          "end_slice_ms": 0.1767499779816717
+        }
+      },
+      "kerning_entries_after": 9639,
+      "metrics_checked": 480,
+      "metrics_mismatches": 0,
+      "metric_examples": [],
+      "kerning_checked": 200,
+      "kerning_mismatches": 0,
+      "kerning_examples": [],
+      "groups_checked": 450,
+      "group_mismatches": 0,
+      "group_examples": [],
+      "spacing_checked": 245,
+      "spacing_mismatches": 0,
+      "spacing_examples": [],
+      "labels": [
+        "Sample text (multi-paragraph; /glyphname inserts a glyph)",
+        "Kinetikern2 \u2014 live sidebearings + kerning (whole-font result: 9,532 entries)",
+        "Font as it is \u2014 current spacing and kerning",
+        "Applied to Regular: 9,532 kerning entries written, 4,089 removed, 450 group sides set, 244 glyphs re-spaced in 0.26 s.",
+        "Cancel",
+        "Apply to Font",
+        "Revert Last Apply",
+        "Pairs\u2026",
+        "Spacing Groups\u2026",
+        "Replace existing kerning",
+        "Glyphs in sample text",
+        "Apply to",
+        "\u21bb",
+        "Max pairs",
+        "Auto (7 of 8 cores)",
+        "Threads",
+        "48",
+        "Size",
+        "Regular",
+        "Master",
+        "|kern| under 5/1000 em is left out (10.0 units at 2000 UPM)",
+        "Ignore threshold (units per 1000 em)",
+        "contour field coupling \u03b2 = 1.00",
+        "SDF Kerning Intensity",
+        "spring 1.00 \u00b7 repulsion 3.86 \u00b7 rest gap lc 288, UC 353",
+        "Loose",
+        "Tight",
+        "Looseness / Tightness"
+      ],
+      "step": "applied",
+      "t": 5.468
+    },
+    {
+      "seconds": 0.455,
+      "counts": {
+        "kerning_set": 4533,
+        "kerning_removed": 9085,
+        "groups": 450,
+        "metrics": 244,
+        "components": 66,
+        "synced": 0,
+        "kept_kerning": 0,
+        "kept_glyphs": 0,
+        "kept_components": 0,
+        "conflicts": 0,
+        "restore_ms": 241.75008604652248,
+        "slowest_slice": {
+          "ms": 9.238416998414323,
+          "phases": "check",
+          "end_slice_ms": 0.20845799008384347
+        }
+      },
+      "kerning_entries": 4643,
+      "kerning_differences": 0,
+      "kerning_examples": [],
+      "glyphs_checked": 245,
+      "glyph_differences": 0,
+      "glyph_examples": [],
+      "labels": [
+        "Sample text (multi-paragraph; /glyphname inserts a glyph)",
+        "Kinetikern2 \u2014 live sidebearings + kerning (whole-font result: 9,532 entries)",
+        "Font as it is \u2014 current spacing and kerning",
+        "Reverted the last apply: the kerning, groups and sidebearings of Regular are back as they were.",
+        "Cancel",
+        "Apply to Font",
+        "Revert Last Apply",
+        "Pairs\u2026",
+        "Spacing Groups\u2026",
+        "Replace existing kerning",
+        "Glyphs in sample text",
+        "Apply to",
+        "\u21bb",
+        "Max pairs",
+        "Auto (7 of 8 cores)",
+        "Threads",
+        "48",
+        "Size",
+        "Regular",
+        "Master",
+        "|kern| under 5/1000 em is left out (10.0 units at 2000 UPM)",
+        "Ignore threshold (units per 1000 em)",
+        "contour field coupling \u03b2 = 1.00",
+        "SDF Kerning Intensity",
+        "spring 1.00 \u00b7 repulsion 3.86 \u00b7 rest gap lc 288, UC 353",
+        "Loose",
+        "Tight",
+        "Looseness / Tightness"
+      ],
+      "step": "reverted",
+      "t": 6.305
+    },
+    {
+      "checks": [
+        [
+          "a click selects one glyph",
+          true
+        ],
+        [
+          "Shift-click selects the range",
+          true
+        ],
+        [
+          "Command-click takes a glyph out of the selection",
+          true
+        ],
+        [
+          "Command-click puts it back",
+          true
+        ],
+        [
+          "dragging a rectangle selects the tiles inside it",
+          true
+        ],
+        [
+          "All selects every glyph",
+          true
+        ],
+        [
+          "None clears the selection",
+          true
+        ],
+        [
+          "Invert of nothing is everything",
+          true
+        ],
+        [
+          "the name filter keeps the matching glyphs",
+          true
+        ],
+        [
+          "clearing the filter shows every glyph again",
+          true
+        ],
+        [
+          "a section of the list selects its glyphs",
+          true
+        ],
+        [
+          "New Group takes the selection; the name and Freeze apply",
+          true
+        ],
+        [
+          "the Looseness and force sliders set the group's values",
+          true
+        ],
+        [
+          "the sliders are on for a spaced group",
+          true
+        ],
+        [
+          "a frozen group has no Looseness to set",
+          true
+        ],
+        [
+          "Glyphs in no group selects the rest",
+          true
+        ],
+        [
+          "Take Selected Glyphs out of Their Groups",
+          true
+        ],
+        [
+          "Put Selected Glyphs into the group",
+          true
+        ],
+        [
+          "the engine gets the groups (frozen capitals; figures +0.4 at 50 %)",
+          true
+        ]
+      ],
+      "step": "groups window ui",
+      "t": 6.848
+    },
+    {
+      "capitals": 68,
+      "figures": 10,
+      "summary": "Capitals 68 (frozen); Figures 10 (Looseness +0.40, force 50%)",
+      "open_groups_window_ms": 168.8,
+      "open_pairs_window_ms": 56.6,
+      "step": "groups set",
+      "t": 6.848
+    },
+    {
+      "seconds": 0.42,
+      "fitted_looseness": -0.0017365765751387137,
+      "frozen_moved": 0,
+      "frozen_examples": [],
+      "entries": 11028,
+      "entries_between_frozen": 0,
+      "step": "groups whole-font run",
+      "t": 7.559
+    },
+    {
+      "seconds": 1.05,
+      "stats": {
+        "pairs": 52789,
+        "offset": 16.37187552080132,
+        "mae": 45.13791872000562,
+        "rms": 64.5691442060034
+      },
+      "loosest": [
+        "less florin +184",
+        "asciicircum florin +184",
+        "florin florin +179",
+        "less logicalnot +178",
+        "bullet florin +177",
+        "dagger florin +170"
+      ],
+      "tightest": [
+        "fraction underscore -187",
+        "underscore fraction -186",
+        "period quotedblleft -183",
+        "period quoteleft -183",
+        "comma quoteleft -172",
+        "comma quotedblleft -172"
+      ],
+      "status": "52,789 pairs measured \u00b7 the font is looser than Kinetikern2 overall by 8.2 units per 1000 em \u00b7 mean difference after that 22.6",
+      "step": "pairs before apply",
+      "t": 8.612
+    },
+    {
+      "source": "screen",
+      "step": "pairs image",
+      "t": 9.526
+    },
+    {
+      "counts": {
+        "class_pairs": 8650,
+        "exceptions": 2378,
+        "glyph_pairs": 0,
+        "removals": 3439,
+        "groups": 163,
+        "metrics": 176,
+        "overriding": 0,
+        "joining_existing": 0,
+        "other_masters": 0,
+        "frozen": 68,
+        "group_moves": 0
+      },
+      "step": "groups plan",
+      "t": 9.581
+    },
+    {
+      "frozen_glyphs_changed": 0,
+      "frozen_examples": [],
+      "frozen_pairs_changed": 0,
+      "frozen_pair_examples": [],
+      "figures_respaced": 9,
+      "summary": {
+        "ok": true,
+        "kerning_entries": 11028,
+        "entries_removed": 3439,
+        "group_sides_set": 324,
+        "glyphs_respaced": 176,
+        "keyed_glyphs_synced": 0,
+        "metric_mismatches": 0,
+        "kerning_mismatches": 0,
+        "apply_ms": 214.10020597977564,
+        "master_id": "m01",
+        "error": null,
+        "examples": [],
+        "details": {
+          "group_conflicts": 0,
+          "missing_glyphs": 0,
+          "metric_sides": 342,
+          "composites": 33,
+          "components_held": 33,
+          "realigned": 0,
+          "readback_metrics": 352,
+          "readback_kerning": 480,
+          "readback_removals": 99
+        },
+        "counts": {
+          "class_pairs": 8650,
+          "exceptions": 2378,
+          "glyph_pairs": 0,
+          "removals": 3439,
+          "groups": 163,
+          "metrics": 176,
+          "overriding": 0,
+          "joining_existing": 0,
+          "other_masters": 0,
+          "frozen": 68,
+          "group_moves": 0
+        },
+        "ms": {
+          "start": 0.11862500105053186,
+          "composites": 2.7700409991666675,
+          "revert_point": 51.18187298648991,
+          "groups": 7.064501027343795,
+          "metrics": 54.94033498689532,
+          "removals": 33.60954104573466,
+          "kerning": 42.646667949156836,
+          "record": 13.70575002511032,
+          "read_back": 5.440124979941174,
+          "undo": 1.9446249934844673,
+          "total": 214.10020597977564,
+          "wall": 332.0579999999609
+        },
+        "slowest_slice": {
+          "ms": 11.22358298744075,
+          "phases": "metrics",
+          "end_slice_ms": 0.12162499479018152
+        }
+      },
+      "step": "groups applied",
+      "t": 10.126
+    },
+    {
+      "seconds": 1.02,
+      "stats": {
+        "pairs": 52789,
+        "offset": -0.9655622029668981,
+        "mae": 1.9210172888474695,
+        "rms": 9.642380008898755
+      },
+      "loosest": [
+        "Agrave J +25",
+        "Aring J +25",
+        "Aogonek J +25",
+        "Adieresis J +25",
+        "A J +25",
+        "Acircumflex J +25"
+      ],
+      "tightest": [
+        "L Y -106",
+        "L Ydieresis -106",
+        "L Yacute -106",
+        "Y J -100",
+        "T J -100",
+        "Ydieresis J -100"
+      ],
+      "status": "52,789 pairs measured \u00b7 the font is tighter than Kinetikern2 overall by 0.5 units per 1000 em \u00b7 mean difference after that 1.0",
+      "step": "pairs after apply",
+      "t": 11.148
+    },
+    {
+      "source": "screen",
+      "step": "groups image",
+      "t": 12.07
+    },
+    {
+      "kerning_differences": 0,
+      "glyph_differences": 0,
+      "examples": [],
+      "step": "groups reverted",
+      "t": 12.575
+    },
+    {
+      "file": "window.png",
+      "source": "screen",
+      "step": "window image",
+      "t": 12.642
+    },
+    {
+      "windows": 0,
+      "result_freed": true,
+      "context_freed": true,
+      "step": "closed",
+      "t": 12.839
+    },
+    {
+      "step": "font closed",
+      "t": 12.89
+    }
+  ],
+  "states": [
+    [
+      2.482,
+      "reading"
+    ],
+    [
+      2.669,
+      "preparing"
+    ],
+    [
+      2.981,
+      "previewing"
+    ],
+    [
+      3.048,
+      "ready"
+    ],
+    [
+      3.731,
+      "solving"
+    ],
+    [
+      4.371,
+      "ready"
+    ],
+    [
+      4.82,
+      "applying"
+    ],
+    [
+      5.281,
+      "ready"
+    ],
+    [
+      5.787,
+      "applying"
+    ],
+    [
+      6.165,
+      "ready"
+    ],
+    [
+      6.932,
+      "previewing"
+    ],
+    [
+      7.047,
+      "ready"
+    ],
+    [
+      7.148,
+      "solving"
+    ],
+    [
+      7.515,
+      "ready"
+    ],
+    [
+      7.563,
+      "reading"
+    ],
+    [
+      7.756,
+      "preparing"
+    ],
+    [
+      8.015,
+      "previewing"
+    ],
+    [
+      8.08,
+      "solving"
+    ],
+    [
+      8.51,
+      "ready"
+    ],
+    [
+      9.587,
+      "applying"
+    ],
+    [
+      9.951,
+      "ready"
+    ],
+    [
+      10.13,
+      "reading"
+    ],
+    [
+      10.301,
+      "preparing"
+    ],
+    [
+      10.563,
+      "previewing"
+    ],
+    [
+      10.633,
+      "solving"
+    ],
+    [
+      11.047,
+      "ready"
+    ],
+    [
+      12.076,
+      "applying"
+    ],
+    [
+      12.431,
+      "ready"
+    ]
+  ],
+  "summary": [
+    "preview ready after 1.0 s: 245 spacing glyphs (outlines read in 82 ms), 42 kerned in the sample, 470 entries",
+    "cancelled the whole-font run at Phase 2/3: Evaluating pairs [57%] \u00b7 0 s; the window stopped it in 2 ms",
+    "whole-font run 0.5 s on 7 threads: 231 kerned glyphs, 52789 pairs in scope, 19046 class pairs, 9532 entries (9532 before the budget)",
+    "Apply 0.55 s: 9532 kerning entries, 450 group sides, 480 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches",
+    "Revert 0.45 s: kerning (4643 entries), groups and sidebearings of 245 glyphs are as before Apply",
+    "Spacing Groups window, driven like a user: 19 of 19 steps as expected (click, Shift-click, Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, no group, take out and put back)",
+    "spacing groups: 68 Latin capitals frozen, 10 figures at Looseness +0.4 and 50% force; the Spacing Groups window opened in 169 ms, the Pairs window in 57 ms",
+    "spacing groups: whole font 0.4 s, Looseness fitted to the frozen capitals -0.00, 11028 entries, 0 between frozen glyphs, 0 frozen glyphs moved",
+    "pairs window (the font as it is): 52789 pairs in 1.1 s; loosest less florin +184, asciicircum florin +184, florin florin +179; tightest fraction underscore -187, underscore fraction -186, period quotedblleft -183",
+    "spacing groups Apply: 0 frozen glyphs and 0 kerning entries between frozen glyphs changed; 9 figures re-spaced",
+    "pairs window after Apply (read again): mean difference 1.0 units per 1000 em",
+    "spacing groups Revert: the font is as before",
+    "longest main-thread stall while the window worked: 99 ms (spacing groups); limit 500 ms",
+    "main thread held by open window: up to 336 ms",
+    "main thread held by apply: up to 32 ms",
+    "main thread held by revert: up to 36 ms"
+  ],
+  "errors": [],
+  "warnings": [],
+  "engine": {
+    "version": "kinetikern2 2.0.0",
+    "cpu_count": 8,
+    "default_threads": 7
+  },
+  "window_ticks_ms": {
+    "poll whole": 84.5,
+    "left pane": 14.5,
+    "reading": 12.8,
+    "apply: metrics": 11.3,
+    "revert: check": 9.3,
+    "apply: read_back": 9.1,
+    "revert: kerning": 9.0,
+    "apply: kerning": 8.6,
+    "revert: start": 8.6,
+    "apply: removals": 8.5,
+    "plan: start": 8.4,
+    "revert: components": 8.3,
+    "apply: revert_point": 8.3,
+    "revert: groups": 8.3,
+    "revert: metrics": 8.2,
+    "apply: groups": 8.2,
+    "apply: record": 8.2,
+    "apply: start": 8.2,
+    "right pane": 6.6,
+    "plan: kerning": 6.3,
+    "apply: undo": 4.7,
+    "poll preview": 4.3,
+    "revert: undo": 3.0,
+    "start preview": 1.2,
+    "poll prepare": 1.0,
+    "poll": 0.0
+  },
+  "gc": {
+    "0": {
+      "count": 292,
+      "max_ms": 0.6,
+      "total_ms": 3.3,
+      "stage": "opening the groups windows",
+      "doing": [
+        "ready",
+        "poll",
+        0.0
+      ]
+    },
+    "1": {
+      "count": 27,
+      "max_ms": 0.8,
+      "total_ms": 3.7,
+      "stage": "open window",
+      "doing": null
+    }
+  },
+  "stalls": {
+    "open window": {
+      "ticks": 1,
+      "max_ms": 336.3,
+      "at": 2.472,
+      "over_50ms": 1,
+      "over_100ms": 1,
+      "over_250ms": 1,
+      "doing": null
+    },
+    "preview": {
+      "ticks": 48,
+      "max_ms": 37.8,
+      "at": 2.668,
+      "over_50ms": 0,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "preparing",
+        "reading",
+        8.5
+      ]
+    },
+    "menu again": {
+      "ticks": 20,
+      "max_ms": 63.8,
+      "at": 3.407,
+      "over_50ms": 1,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "ready",
+        "poll",
+        0.0
+      ]
+    },
+    "cancelled run": {
+      "ticks": 12,
+      "max_ms": 19.0,
+      "at": 3.73,
+      "over_50ms": 0,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "solving",
+        "poll",
+        0.0
+      ]
+    },
+    "whole-font run": {
+      "ticks": 50,
+      "max_ms": 25.0,
+      "at": 4.437,
+      "over_50ms": 0,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "ready",
+        "right pane",
+        2.6
+      ]
+    },
+    "apply": {
+      "ticks": 53,
+      "max_ms": 32.5,
+      "at": 5.363,
+      "over_50ms": 0,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "ready",
+        "left pane",
+        14.5
+      ]
+    },
+    "revert": {
+      "ticks": 46,
+      "max_ms": 36.3,
+      "at": 6.015,
+      "over_50ms": 0,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "applying",
+        "revert: kerning",
+        8.4
+      ]
+    },
+    "opening the groups windows": {
+      "ticks": 3,
+      "max_ms": 168.8,
+      "at": 6.776,
+      "over_50ms": 2,
+      "over_100ms": 1,
+      "over_250ms": 0,
+      "doing": [
+        "ready",
+        "poll",
+        0.0
+      ]
+    },
+    "spacing groups": {
+      "ticks": 311,
+      "max_ms": 98.9,
+      "at": 11.046,
+      "over_50ms": 2,
+      "over_100ms": 0,
+      "over_250ms": 0,
+      "doing": [
+        "ready",
+        "poll whole",
+        84.5
+      ]
+    },
+    "close": {
+      "ticks": 1,
+      "max_ms": 196.1,
+      "at": 12.838,
+      "over_50ms": 1,
+      "over_100ms": 1,
+      "over_250ms": 0,
+      "doing": [
+        "ready",
+        "left pane",
+        9.9
+      ]
+    }
+  },
+  "max_stall_ms": 98.9,
+  "max_stall_stage": "spacing groups",
+  "seconds": 12.89
+}

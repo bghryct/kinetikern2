@@ -1,0 +1,23 @@
+Kinetikern2 self-test PASSED — /System/Library/Fonts/Supplemental/Arial.ttf, Glyphs 3.5.1 (3534.0), engine kinetikern2 2.0.0
+  preview ready after 5.2 s: 2674 spacing glyphs (outlines read in 1180 ms), 42 kerned in the sample, 494 entries
+  cancelled the whole-font run at Phase 2/3: Evaluating pairs [31%] · 2 s; the window stopped it in 2 ms
+  whole-font run 18.8 s on 7 threads: 1951 kerned glyphs, 2336295 pairs in scope, 548858 class pairs, 29988 entries (332560 before the budget)
+  Apply 2.38 s: 29988 kerning entries, 3398 group sides, 4002 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches
+  Revert 2.06 s: kerning (908 entries), groups and sidebearings of 2674 glyphs are as before Apply
+  designer harness: 680 glyph sides and 294 pairs corrected (stem 95, largest side shift 33 per 1000 em); the preview moved every side and pair exactly as planned; the Designer Harness window lists 80 pairs, e.g. F slash +62, b parenright +50, f slash +49, parenleft d +49; opened in 124 ms
+  Designer Harness window, Letters: 80 pairs, e.g. AA, Fz, YA, YY, VV, AY
+  designer harness Apply: 51 glyphs the harness shifted written as the preview showed them (left/right shift per 1000 em, e.g. A -11/-10, B +2/-5, D +2/-1, E +2/+15, F +2/+9, H +2/+4)
+  designer harness Revert: the font is as before
+  designer harness off: every glyph back to Kinetikern2's own spacing
+  Spacing Groups window, driven like a user: 19 of 19 steps as expected (click, Shift-click, Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, no group, take out and put back)
+  spacing groups: 354 Latin capitals frozen, 26 figures at Looseness +0.4 and 50% force; the Spacing Groups window opened in 175 ms, the Pairs window in 53 ms
+  spacing groups: whole font 14.3 s, Looseness fitted to the frozen capitals -0.17, 29945 entries, 0 between frozen glyphs, 0 frozen glyphs moved
+  pairs window (the font as it is): 2336295 pairs in 18.8 s; loosest ldot florin +233, questiondown florin +229, uni02D3 florin +212; tightest fraction uniA721 -461, fraction uniA720 -461, uniA718 uniA721 -447
+  spacing groups Apply: 0 frozen glyphs and 0 kerning entries between frozen glyphs changed; 10 figures re-spaced
+  pairs window after Apply (read again): mean difference 0.1 units per 1000 em
+  spacing groups Revert: the font is as before
+  longest main-thread stall while the window worked: 231 ms (spacing groups); limit 500 ms
+  main thread held by open window: up to 348 ms
+  main thread held by apply: up to 70 ms
+  main thread held by revert: up to 29 ms
+exit 0

@@ -313,7 +313,7 @@ class GlyphInfo(object):
     """
 
     __slots__ = ("name", "glyph_id", "unicode", "char", "path", "width", "lsb", "rsb", "bounds", "empty",
-                 "font_lsb", "font_rsb", "category", "script", "rtl", "kern", "left_group", "right_group",
+                 "font_lsb", "font_rsb", "category", "subcategory", "case", "script", "rtl", "kern", "left_group", "right_group",
                  "left_key", "right_key", "width_key", "components", "aligned")
 
     @property
@@ -342,6 +342,11 @@ def read_glyph_info(glyph, layer, name=None, category=None, unicode=None, flags_
     info.unicode = unicode
     info.char = chr(unicode) if unicode is not None else None
     info.category = category
+    info.subcategory = _string(getattr(glyph, "subCategory", None))
+    try:
+        info.case = int(getattr(glyph, "case", 0) or 0)
+    except (TypeError, ValueError):
+        info.case = 0
 
     path = layer_path(layer)
     info.path = path

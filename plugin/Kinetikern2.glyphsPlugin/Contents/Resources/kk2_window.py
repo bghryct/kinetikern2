@@ -53,6 +53,8 @@ from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 import kk2_apply as ka
 import kk2_args
 import kk2_bridge as kb
+import kk2_groups as kg
+import kk2_harness as kh
 import kk2_proof as kp
 import kk2_snapshot as ks
 
@@ -84,6 +86,7 @@ LARGE_MAX_PAIRS = 100000  # above this the window warns about file size
 READ_SLICE = 0.008  # seconds of outline reading (and of planning, applying, reverting) per timer tick
 READ_INTERVAL = 0.012  # timer interval while reading: the run loop gets the rest
 POLL_INTERVAL = 1.0 / 15.0  # timer interval while an engine job runs
+KEY_BUDGET = 5  # index of the pair budget in _solve_key()
 PREVIEW_KEEP = 0.25  # a preview that took less than this may finish when the next is asked for
 PROGRESS_DELAY = 0.25  # previews show progress only when they take longer than this
 TYPING_PAUSE = 0.15  # the panes are laid out again this long after the last keystroke
@@ -226,6 +229,8 @@ class KK2Window(object):
         self.context = None
         self.result = None
         self.last_apply = None
+        self.last_error = None
+        self._leases = {}  # id(context or result) -> [object, count, close when released]
         self.revert_point = None
         self.tick_ms = {}  # longest timer tick per kind of work, in ms (diagnostics for kk2_selftest)
         self.last_tick = None  # (kind of work, ms) of the latest tick
@@ -270,6 +275,16 @@ class KK2Window(object):
         self._font_metrics = {}
         self._applied_names = set()
         self._kerning = FontKerning(self.font)
+        # spacing groups (kept in the font's userData) and their windows
+        self.groups = kg.GroupSet.load(self.font)
+        self.groups_window = None
+        self.pairs_window = None
+        # the designer harness: its window, the plan of the running job and of the result shown
+        self.harness_window = None
+        self._harness_cache = None
+        self._job_harness = None
+        self._result_harness = None
+        self._fitted = None  # Looseness offset the last solve fitted to the frozen glyphs
         self._timer = None
         self._timer_interval = None
         self._timer_target = None
@@ -301,7 +316,7 @@ class KK2Window(object):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        w = vanilla.FloatingWindow((1200, 860), "Kinetikern2 — %s" % self.font.familyName, minSize=(900, 600),
+        w = vanilla.FloatingWindow((1200, 860), "Kinetikern2 — %s" % self.font.familyName, minSize=(1080, 600),
                                    autosaveName=None if self._unattended else PREFIX + "window")
         self.w = w
 
@@ -332,6 +347,23 @@ class KK2Window(object):
         w.threshold.getNSSlider().setToolTip_(
             "Kerning values smaller than this are left out: the preview shows and Apply writes only pairs that "
             "matter.")
+
+        x = 886
+        w.harness = vanilla.CheckBox((x, 9, 180, 18), "Designer harness", sizeStyle="small",
+                                     value=self._setting("harness", False, bool), callback=self.harnessChanged)
+        w.harness.getNSButton().setToolTip_(
+            "Nudges the result toward what the designers of well-spaced fonts do where Kinetikern2 consistently "
+            "differs: more space in parentheses and around / ? ! &, less around quotes, period, comma and "
+            "hyphen; more on the open sides of E, F, L and T (most at light weights and tight settings), less on "
+            "the diagonals of A, V, W, Y. Learned from the text fonts on Google Fonts.")
+        w.harnessStrength = vanilla.Slider((x, 28, 92, 22), minValue=0.0, maxValue=100.0,
+                                           value=self._setting("harnessStrength", 100.0),
+                                           callback=self.harnessChanged)
+        w.harnessStrength.getNSSlider().setToolTip_("How much of the harness to apply (100 % = what the data say).")
+        w.harnessButton = vanilla.Button((-96, 26, -14, 22), "Harness…", callback=self.openHarness,
+                                         sizeStyle="small")
+        w.harnessButton.getNSButton().setToolTip_("The pairs the harness changes most, drawn with and without it.")
+        w.harnessValue = vanilla.TextBox((x, 52, -14, 14), "", sizeStyle="mini")
 
         # row 2: master, size, threads, budget
         w.masterLabel = vanilla.TextBox((14, 69, 46, 17), "Master", sizeStyle="small")
@@ -367,10 +399,17 @@ class KK2Window(object):
         w.scope = vanilla.PopUpButton((74, 96, 180, 20), SCOPES, callback=self.scopeChanged, sizeStyle="small")
         scope = int(self._setting("scope", SCOPE_SAMPLE, int))
         w.scope.set(scope if scope in (SCOPE_SAMPLE, SCOPE_WHOLE) else SCOPE_SAMPLE)
-        w.replace = vanilla.CheckBox((270, 97, 240, 18), "Replace existing kerning", sizeStyle="small",
+        w.replace = vanilla.CheckBox((270, 97, 200, 18), "Replace existing kerning", sizeStyle="small",
                                      value=self._setting("replace", True, bool), callback=self.replaceChanged)
         w.replace.getNSButton().setToolTip_(
             "Remove the master's existing kerning between the glyphs and groups that get new kerning.")
+        w.groupsButton = vanilla.Button((480, 94, 150, 22), "Spacing Groups…", callback=self.openGroups)
+        w.groupsButton.getNSButton().setToolTip_(
+            "Paint glyphs into colour-coded groups: each spaced with its own Looseness and kerning force, or "
+            "frozen so only the rest of the font is spaced.")
+        w.pairsButton = vanilla.Button((636, 94, 90, 22), "Pairs…", callback=self.openPairs)
+        w.pairsButton.getNSButton().setToolTip_(
+            "The font's pairs from loosest to tightest, measured against Kinetikern2.")
         w.revert = vanilla.Button((-318, 94, 160, 22), "Revert Last Apply", callback=self.revertLastApply)
         w.revert.getNSButton().setToolTip_(
             "Put the kerning, groups and sidebearings back as they were before the last Apply "
@@ -456,17 +495,27 @@ class KK2Window(object):
         except ValueError:
             return DEFAULT_MAX_PAIRS
 
+    def _glyph_opts(self):
+        """Per-glyph options of the spacing groups (None: no group changes anything)."""
+        if self.snapshot is None or not self.engine.features & kb.FEATURE_GLYPH_OPTS:
+            return None
+        return self.groups.opts_for(self.snapshot.names)
+
     def _params(self, budget):
         spring, repulsion, coupling = self._physics()
+        opts = self._glyph_opts()
+        fit = bool(opts) and self.groups.match_frozen and any(o[0] for o in opts)
         return kb.make_params(spring=spring, repulsion=repulsion, coupling=coupling, classes=True, window=True,
                               scope_scripts=True, threshold=self._threshold() * self._upm() / 1000.0,
-                              budget=budget, threads=self._threads())
+                              budget=budget, threads=self._threads(), fit_frozen=fit)
 
     def _solve_key(self, whole):
-        """What a result depends on, to tell whether it can be reused."""
+        """What a result depends on, to tell whether it can be reused (the
+        budget at KEY_BUDGET)."""
         spring, repulsion, coupling = self._physics()
         return (self._generation, round(spring, 9), round(repulsion, 9), round(coupling, 9),
-                round(self._threshold(), 6), self._budget() if whole else 0)
+                round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
+                round(self._harness_strength(), 4))
 
     def _update_labels(self):
         if self.w is None:
@@ -478,7 +527,10 @@ class KK2Window(object):
             parts = [("lc", rest[kb.GROUP_LOWERCASE]), ("UC", rest[kb.GROUP_UPPERCASE])]
             parts = ["%s %d" % (k, v) for k, v in parts if v == v and v > 0]
             gap = " · rest gap " + ", ".join(parts) if parts else ""
-        self.w.tightValue.set("spring %.2f · repulsion %.2f%s" % (spring, repulsion, gap))
+        fitted = ""
+        if self._fitted is not None:
+            fitted = " · matched to the frozen glyphs: %+.2f" % self._fitted
+        self.w.tightValue.set("spring %.2f · repulsion %.2f%s%s" % (spring, repulsion, gap, fitted))
         self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
         t = self._threshold()
         upm = self._upm()
@@ -489,6 +541,21 @@ class KK2Window(object):
         else:
             text = "every non-zero kern is kept"
         self.w.thresholdValue.set(text)
+        self._update_harness_label()
+
+    def _update_harness_label(self):
+        if self.w is None or getattr(self.w, "harness", None) is None:
+            return
+        if not self.harness_available():
+            text = ("unavailable: rebuild the plugin (build.sh)" if not self.engine.features & kb.FEATURE_HARNESS
+                    else "unavailable: kk2_harness.json is missing")
+        elif not self.w.harness.get():
+            text = "off · Harness… shows what it would change"
+        else:
+            plan = self._harness_plan()
+            text = plan.summary() if plan is not None else "on · waiting for the font to be read"
+        self.w.harnessValue.set(text)
+        self.w.harnessStrength.enable(bool(self.w.harness.get()) and self.harness_available())
 
     def _update_max_pairs_note(self):
         n = self._budget()
@@ -544,6 +611,7 @@ class KK2Window(object):
         self._update_controls()
 
     def _fail(self, message, trace=None):
+        self.last_error = trace or message  # for the self-test and bug reports
         if trace:
             print(trace)
         self._set_state("error")
@@ -658,6 +726,17 @@ class KK2Window(object):
         self.snapshot = snapshot
         self._ruled = set(s.name for s in snapshot.specs
                           if s.lsb_rule != kb.RULE_FREE or s.rsb_rule != kb.RULE_FREE)
+        if self.groups_window is not None:
+            try:
+                self.groups_window.refresh()
+            except Exception:
+                print(traceback.format_exc())
+        self._harness_cache = None
+        if self.harness_window is not None:
+            try:
+                self.harness_window.refresh()
+            except Exception:
+                print(traceback.format_exc())
         self.tokens = ks.tokenize(self.editor.get(), snapshot)
         self._render_left()
         self._panes_due(right=True)  # the font as it is until the first result
@@ -746,11 +825,17 @@ class KK2Window(object):
         if self.context is None or self.snapshot is None or self._job is not None:
             return
         requested = self._sample_indices()
+        if self.harness_window is not None:
+            requested = requested | self.harness_window.glyphs()  # the pairs it draws
         mask = bytearray(len(self.snapshot.names))
         for i in requested:
             mask[i] = 1
         try:
-            self._job = self.engine.solve(self.context, self._params(budget=0), bytes(mask))
+            plan = self._harness_plan()
+            self._job = self.engine.solve(self.context, self._params(budget=0), bytes(mask),
+                                          glyph_opts=self._glyph_opts(),
+                                          harness=plan.engine_arg() if plan is not None else None)
+            self._job_harness = plan
         except Exception as e:
             self._fail("The preview could not start: %s" % e, traceback.format_exc())
             return
@@ -795,6 +880,8 @@ class KK2Window(object):
         elif self._whole_after_preview:
             self._whole_after_preview = False
             self.start_whole_font(apply_when_done=True)
+        elif self.pairs_window is not None:
+            self.pairs_window.preview_ready()  # a measurement waiting for the font to be read again
 
     def _whole_ready(self, result):
         self._set_result(result, "whole", None, self._job_key)
@@ -803,24 +890,59 @@ class KK2Window(object):
         if self._apply_when_done:
             self._apply_when_done = False
             self._apply(self.result, confirm=True)
+        elif self.pairs_window is not None:
+            self.pairs_window.whole_ready()
+
+    # -------------------------------------------------------------- leases
+    def lease(self, obj):
+        """Keeps an engine context or result open while another thread reads
+        it (the Pairs window measuring): the window's own close of it waits
+        for release()."""
+        if obj is not None:
+            entry = self._leases.setdefault(id(obj), [obj, 0, False])
+            entry[1] += 1
+
+    def release(self, obj):
+        if obj is None:
+            return
+        entry = self._leases.get(id(obj))
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] <= 0:
+            del self._leases[id(obj)]
+            if entry[2]:
+                obj.close()
+
+    def _retire(self, obj):
+        """Closes a context or result now, or when its last lease ends."""
+        entry = self._leases.get(id(obj))
+        if entry is not None:
+            entry[2] = True
+        else:
+            obj.close()
 
     def _set_result(self, result, kind, requested, key):
         old = self.result
         self.result = result
+        self._fitted = result.fitted_looseness if result is not None else None
         self._result_kind = kind
         self._requested = requested
         self._result_key = key
+        self._result_harness = self._job_harness if result is not None else None
         if old is not None and old is not result:
-            old.close()
+            self._retire(old)
         self._panes_due(right=True)
         self._update_labels()
         self._set_status(self._result_status())
+        if self.harness_window is not None:
+            self.harness_window.result_ready()
 
     def _result_status(self):
         res, snap = self.result, self.snapshot
         st = res.stats
         dropped = ""
-        budget = self._result_key[-1] if self._result_key else 0  # see _solve_key
+        budget = self._result_key[KEY_BUDGET] if self._result_key else 0
         if st["dropped_by_budget"] and budget:
             dropped = " · %s dropped by the %s-pair budget" % (_count(st["dropped_by_budget"]), _count(budget))
         if self._result_kind == "whole":
@@ -851,7 +973,11 @@ class KK2Window(object):
         self._apply_after_preview = self._whole_after_preview = False
         budget = self._budget()
         try:
-            self._job = self.engine.solve(self.context, self._params(budget=budget), None)
+            plan = self._harness_plan()
+            self._job = self.engine.solve(self.context, self._params(budget=budget), None,
+                                          glyph_opts=self._glyph_opts(),
+                                          harness=plan.engine_arg() if plan is not None else None)
+            self._job_harness = plan
         except Exception as e:
             self._fail("The whole-font run could not start: %s" % e, traceback.format_exc())
             return False
@@ -919,11 +1045,11 @@ class KK2Window(object):
         self._preview_pending = False
         self._apply_when_done = self._apply_after_preview = self._whole_after_preview = False
         if self.result is not None:
-            self.result.close()
+            self._retire(self.result)
             self.result = None
         self._result_kind = self._result_key = self._requested = None
         if self.context is not None:
-            self.context.close()
+            self._retire(self.context)
             self.context = None
 
     # -------------------------------------------------------------- proofs
@@ -1124,7 +1250,9 @@ class KK2Window(object):
             return False
         replace = bool(self.w.replace.get())
         try:
-            planner = ka.Planner(snap, result, replace, metrics_names=self.plan_names(result))
+            opts = self._glyph_opts()
+            frozen = self.groups.frozen_names() if opts else None
+            planner = ka.Planner(snap, result, replace, metrics_names=self.plan_names(result), frozen=frozen)
         except Exception as e:
             self._fail("Apply could not be planned: %s" % e, traceback.format_exc())
             return False
@@ -1219,6 +1347,77 @@ class KK2Window(object):
         self._save("intensity", float(self.w.intensity.get()))
         self._update_labels()
         self._request_preview()
+        if self.harness_window is not None:
+            self.harness_window.settings_changed()  # its corrections follow the Looseness
+
+    # ------------------------------------------------------- designer harness
+    def harness_available(self):
+        return bool(self.engine.features & kb.FEATURE_HARNESS) and os.path.exists(kh.TABLE_PATH)
+
+    def _harness_strength(self):
+        """0 … 1: how much of the harness the solves use (0 = off)."""
+        if self.w is None or not self.w.harness.get() or not self.harness_available():
+            return 0.0
+        return max(0.0, min(100.0, float(self.w.harnessStrength.get()))) / 100.0
+
+    def _harness_plan(self, force_strength=None):
+        """The harness for the master read, the Looseness and the strength
+        (`force_strength`: that strength whether it is on or off), or None."""
+        s = self._harness_strength() if force_strength is None else float(force_strength)
+        snap = self.snapshot
+        if s <= 0 or snap is None or self.w is None:
+            return None
+        looseness = float(self.w.tightness.get()) + (self._fitted or 0.0)
+        opts = self._glyph_opts()
+        frozen = frozenset(i for i, o in enumerate(opts or ()) if o[0])
+        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key())
+        if self._harness_cache is not None and self._harness_cache[0] == key:
+            return self._harness_cache[1]
+        try:
+            plan = kh.Plan(snap, looseness, s, frozen=frozen)
+        except Exception:
+            print(traceback.format_exc())
+            plan = None
+        self._harness_cache = (key, plan)
+        return plan
+
+    def model_pair(self, a, b):
+        """Kinetikern2's spacing of glyph pair (a, b) without the harness, from
+        the result shown: ((lsb, rsb, advance) of a, the same of b, kerning),
+        font units; None if the result does not kern the pair."""
+        res = self.result
+        if res is None or res.ptr is None:
+            return None
+        v = res.value(a, b)
+        if v != v:
+            return None
+        h = self._result_harness
+        sa = h.sides[a] if h is not None else (0.0, 0.0)
+        sb = h.sides[b] if h is not None else (0.0, 0.0)
+        ma, mb = res.metrics[a], res.metrics[b]
+        k = float(v) - (h.pair_value.get((a, b), 0.0) if h is not None else 0.0)
+        return ((ma.lsb - sa[0], ma.rsb - sa[1], ma.advance - sa[0] - sa[1]),
+                (mb.lsb - sb[0], mb.rsb - sb[1], mb.advance - sb[0] - sb[1]), k)
+
+    def harnessChanged(self, sender):
+        self._save("harness", bool(self.w.harness.get()))
+        self._save("harnessStrength", float(self.w.harnessStrength.get()))
+        self._update_labels()
+        self._request_preview()
+        if self.harness_window is not None:
+            self.harness_window.settings_changed()
+
+    def openHarness(self, sender=None):
+        if self.harness_window is not None:
+            self.harness_window.w.getNSWindow().makeKeyAndOrderFront_(None)
+            return self.harness_window
+        import kk2_harness_window
+        self.harness_window = kk2_harness_window.HarnessWindow(self)
+        self.harness_window.refresh()  # its pairs join the preview from here on
+        return self.harness_window
+
+    def harness_window_closed(self):
+        self.harness_window = None
 
     def thresholdChanged(self, sender):
         t = self._threshold()
@@ -1330,7 +1529,56 @@ class KK2Window(object):
     def cancelJob(self, sender):
         self.cancel_job()
 
+    # ------------------------------------------------------ spacing groups
+    def openGroups(self, sender=None):
+        if self.groups_window is not None:
+            self.groups_window.w.getNSWindow().makeKeyAndOrderFront_(None)
+            return self.groups_window
+        import kk2_groups_window
+        self.groups_window = kk2_groups_window.GroupsWindow(self)
+        return self.groups_window
+
+    def openPairs(self, sender=None):
+        if self.pairs_window is not None:
+            self.pairs_window.w.getNSWindow().makeKeyAndOrderFront_(None)
+            return self.pairs_window
+        import kk2_pairs_window
+        self.pairs_window = kk2_pairs_window.PairsWindow(self)
+        return self.pairs_window
+
+    def groups_window_closed(self):
+        self.groups_window = None
+
+    def pairs_window_closed(self):
+        self.pairs_window = None
+
+    def set_groups(self, groups, preview=True):
+        """Replaces the spacing groups (a script, a test, a font's own set):
+        the Groups window shows them, the preview follows."""
+        self.groups = groups
+        if self.groups_window is not None:
+            self.groups_window.groups_replaced()
+        self.groups_changed(preview)
+
+    def groups_changed(self, preview=True):
+        """The Spacing Groups window changed the groups: save, preview again."""
+        if not self._unattended and self.font is not None:
+            self.groups.save(self.font)
+        if preview:
+            self._request_preview()
+
+    def groups_note(self):
+        """A line for the groups window: the fitted Looseness, when there is one."""
+        if self._fitted is not None:
+            return ("\nThe frozen glyphs are spaced at Looseness %+.2f of Kinetikern2's: new glyphs follow them "
+                    "(plus the main slider)." % self._fitted)
+        return ""
+
     def windowClosed(self, sender):
+        for sub in (self.groups_window, self.pairs_window, self.harness_window):
+            if sub is not None:
+                sub.close()
+        self.groups_window = self.pairs_window = self.harness_window = None
         self._stop_timer()
         if self._timer_target is not None:
             self._timer_target.kk2_callback = None

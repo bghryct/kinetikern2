@@ -370,6 +370,8 @@ pub struct Kernel<'a> {
     pub rsb: &'a [f64],
     pub knobs: Knobs,
     pub solver: Solver,
+    /// Per-glyph kerning force (multiple of the coupling); None = all 1.
+    pub force: Option<&'a [f64]>,
 }
 
 /// Vertical distance from every band height to the nearest height where the
@@ -1016,12 +1018,29 @@ impl<'a> Kernel<'a> {
         self.rsb[ia] + self.lsb[ib]
     }
 
+    /// The value pipeline of pair (ia, ib): the coupling scaled by the mean
+    /// kerning force of its two glyphs' spacing groups.
+    #[inline]
+    pub fn knobs_for(&self, ia: usize, ib: usize) -> Knobs {
+        match self.force {
+            Some(f) => {
+                let m = 0.5 * (f[ia] + f[ib]);
+                if (m - 1.0).abs() < 1e-12 {
+                    self.knobs
+                } else {
+                    Knobs { coupling: self.knobs.coupling * m.max(0.0), ..self.knobs }
+                }
+            }
+            None => self.knobs,
+        }
+    }
+
     /// The gap window (absolute) inside which the pre-floor value lies in
     /// [lo, hi], for the pair's probes.
     fn gap_window(&self, ia: usize, ib: usize, f: &ContourField, lo: f64, hi: f64) -> (f64, f64, f64) {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
         let s_star = self.probes.right(ia, b.group) + self.probes.left(ib, a.group) - f.g_ref;
-        let (rlo, rhi) = self.knobs.raw_window(lo, hi);
+        let (rlo, rhi) = self.knobs_for(ia, ib).raw_window(lo, hi);
         (s_star + rlo, s_star + rhi, s_star)
     }
 
@@ -1030,7 +1049,8 @@ impl<'a> Kernel<'a> {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
         let f = self.fields.get(a.group, b.group);
         let macro_gap = self.macro_gap(ia, ib);
-        let k = &self.knobs;
+        let kk = self.knobs_for(ia, ib);
+        let k = &kk;
         let mut out = PairOut::default();
         let ready = sc.prepared == Some((ia, ib));
         if ready || self.band(a, b, f, sc) {
@@ -1116,7 +1136,8 @@ impl<'a> Kernel<'a> {
 
     /// The pair's threshold window and walk limits.
     fn walk_limits(&self, ia: usize, ib: usize, f: &ContourField, s_min: f64, s_max: f64, ftol: f64) -> WalkLimits {
-        let k = &self.knobs;
+        let kk = self.knobs_for(ia, ib);
+        let k = &kk;
         let (wlo, whi, _) = self.gap_window(ia, ib, f, -k.threshold, k.threshold);
         WalkLimits {
             w0: (wlo.clamp(s_min, s_max), whi.clamp(s_min, s_max)),

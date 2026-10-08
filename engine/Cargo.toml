@@ -10,7 +10,7 @@ publish = false
 [lib]
 name = "kinetikern2"
 # Loaded by the Glyphs plugin through ctypes as libkinetikern2.dylib.
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
