@@ -92,6 +92,7 @@ WHOLE_KEY = PREFIX + "selfTestWhole"
 CANCEL_KEY = PREFIX + "selfTestCancel"
 MAX_STALL_KEY = PREFIX + "selfTestMaxStall"
 GROUPS_KEY = PREFIX + "selfTestGroups"
+CONNECTED_KEY = PREFIX + "selfTestConnected"
 
 DEFAULT_OUT = os.path.expanduser("~/Desktop/Kinetikern2-selftest")
 DEFAULT_MAX_STALL_MS = 500.0
@@ -112,7 +113,8 @@ APPLY, REVERT, CLOSE = "apply", "revert", "close"
 GROUPS = "spacing groups"
 GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not judged
 HARNESS = "designer harness"
-JUDGED = (PREVIEW, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS)
+CONNECTED = "connected script"
+JUDGED = (PREVIEW, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, CONNECTED)
 BUSY_STATES = ("reading", "preparing", "previewing", "solving", "applying")
 
 PHASE_TEXT = re.compile(r"Phase\s*(\d+)\s*/\s*(\d+).*?\[\s*(\d+(?:\.\d+)?)\s*%\s*\]")
@@ -412,6 +414,39 @@ class GCWatch(object):
                 g["doing"] = None
 
 
+def _profile_at(rays, y):
+    """Ink x of a side at height y, interpolated between its rays (None where it has no ink)."""
+    pts = [(ry, rx) for ry, rx, _t in rays if rx == rx]
+    for (y0, x0), (y1, x1) in zip(pts, pts[1:]):
+        if y0 <= y <= y1 and y1 > y0:
+            return x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+    return None
+
+
+def ink_gap(context, snap, m, a, b, kern):
+    """The narrowest white between the inks of glyph a and glyph b set after
+    it with the result's metrics `m` and `kern` (font units; negative: they
+    overlap), at the heights where both have ink; None if they share none."""
+    ia, ib = snap.infos.get(snap.names[a]), snap.infos.get(snap.names[b])
+    if ia is None or ib is None:
+        return None
+    right = context.rays(a, 1)
+    left = context.rays(b, 0)
+    # each outline is moved by its new left sidebearing; b starts at a's advance plus the kerning
+    da = m[a].lsb - ia.bounds[0]
+    db = m[a].advance + kern + m[b].lsb - ib.bounds[0]
+    best = None
+    for y, xl, _t in left:
+        if xl != xl:
+            continue
+        xr = _profile_at(right, y)
+        if xr is None:
+            continue
+        g = (db + xl) - (da + xr)
+        best = g if best is None else min(best, g)
+    return best
+
+
 class SelfTest(object):
 
     def __init__(self, resources, plugin):
@@ -423,13 +458,14 @@ class SelfTest(object):
         self.whole = kk2_args.flag(_argument(WHOLE_KEY))
         self.cancel = kk2_args.flag(_argument(CANCEL_KEY))
         self.groups_test = kk2_args.flag(_argument(GROUPS_KEY))
+        self.connected_test = kk2_args.flag(_argument(CONNECTED_KEY))
         self.max_stall = kk2_args.number(_argument(MAX_STALL_KEY), DEFAULT_MAX_STALL_MS)
         self.t0 = time.time()
         self.report = {
             "ok": False, "font": self.font_path, "out": self.out,
             "glyphs_version": "%s (%s)" % (Glyphs.versionString, Glyphs.buildNumber),
             "options": {"whole": self.whole, "cancel": self.cancel, "quit": self.quit, "groups": self.groups_test,
-                        "max_stall_limit_ms": self.max_stall},
+                        "connected": self.connected_test, "max_stall_limit_ms": self.max_stall},
             "steps": [], "states": [], "summary": [], "errors": [], "warnings": []}
         self.heartbeat = Heartbeat(self.on_tick, self.window_doing)
         self.gc_watch = GCWatch(self.heartbeat, self.window_doing)
@@ -895,19 +931,24 @@ class SelfTest(object):
         if win.revert_point is None:
             self.error("Apply kept no revert point")
 
+        # every side Apply wrote is within half a unit of the plan, on the ink
+        # like the plan's targets (Glyphs reports sidebearings rounded half
+        # away from zero: a half-unit side would read a unit off)
         metric_bad, metric_sides = [], 0
-        for name, sides in plan.metrics.items():
+        targets = getattr(plan, "metrics_ink", None) or plan.metrics
+        for name, sides in targets.items():
             glyph = font.glyphs[name]
             layer = glyph.layers[mid] if glyph is not None else None
             if layer is None:
                 metric_bad.append([name, "missing"])
                 continue
-            for side, want, have in (("LSB", sides[0], layer.LSB), ("RSB", sides[1], layer.RSB)):
+            lsb, rsb, _w = ink_metrics(layer) if targets is not plan.metrics else (layer.LSB, layer.RSB, None)
+            for side, want, have in (("LSB", sides[0], lsb), ("RSB", sides[1], rsb)):
                 if want is None:
                     continue
                 metric_sides += 1
-                if have is None or abs(have - want) > 0.5:
-                    metric_bad.append([name, side, want, have])
+                if have is None or abs(have - want) > 0.5 + 1e-6:
+                    metric_bad.append([name, side, round(want, 2), have])
 
         kerning = list(plan.kerning)
         stride = max(1, len(kerning) // KERNING_READBACK)
@@ -997,16 +1038,190 @@ class SelfTest(object):
             self.after_harness()
 
     def after_harness(self):
+        if self.connected_test:
+            self.later(0.3, self.connected_step)
+        else:
+            self.after_connected()
+
+    def after_connected(self):
         if self.groups_test:
             self.later(0.3, self.groups_step)
         else:
             self.finish()
+
+    # --- connected scripts ----------------------------------------------------
+
+    def _new_preview(self, old, what):
+        """A preview other than `old` is shown and the window is idle."""
+        win = self.win
+        return (self.window_state(what) == "ready" and win._result_kind == "preview" and win.result is not None
+                and win.result is not old and win.context is not None)
+
+    def connected_step(self):
+        """Connected script on, as a user does it: Phase 1 again with the joins
+        found in the font's own spacing, then the preview."""
+        win = self.win
+        self.heartbeat.stage(CONNECTED)
+        if not win.engine.features & kb.FEATURE_JOINS:
+            self.error("connected script: this engine build has no join mode (kk2_detect_joins)")
+            self.after_connected()
+            return
+        if win.w.connected.get():
+            win.w.connected.set(False)
+            self.call_window(CONNECTED, win.connectedChanged, None)
+        self.wait(lambda: self._new_preview(None, "waiting for the preview without joins") and win.joins is None,
+                  self.connected_off_ready, 180.0, "the preview without joins")
+
+    def connected_off_ready(self):
+        win = self.win
+        self.joins_off_metrics = self._metrics()
+        self.joins_off_result = win.result
+        win.w.connected.set(True)
+        self.call_window(CONNECTED, win.connectedChanged, None)
+        self.wait(lambda: self._new_preview(self.joins_off_result, "waiting for the connected-script preview"),
+                  self.connected_on_ready, 180.0, "the preview with the joins")
+
+    def connected_on_ready(self):
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        per = 1000.0 / snap.upm
+        n, joins = win.join_count, win.joins
+        self.log("connected script on", joins=n, note=win.join_note, detect_ms=round(win.join_ms, 1),
+                 label=win.w.connectedValue.get())
+        if not n or joins is None:
+            self.error("connected script: no joins found (%s): a connected script is needed for this stage" % win.join_note)
+            self.connected_off()
+            return
+        lower = [i for i, sp in enumerate(snap.specs) if sp.group == kb.GROUP_LOWERCASE]
+        joining_lower = [i for i in lower if joins[i][1]]
+        self.note("connected script: %s (found in %.0f ms on the main thread); %d of %d lowercase letters join on the right"
+                  % (win.join_note, win.join_ms, len(joining_lower), len(lower)))
+        sample = sorted(win._sample_indices())
+        m = res.metrics
+
+        def kern(a, b):
+            v = res.value(a, b)
+            return 0.0 if v != v else float(v)
+
+        def gap(a, b):
+            return m[a].rsb + m[b].lsb + kern(a, b)
+        pairs = [(a, b) for a in sample for b in sample if joins[a][1] and joins[b][0] and m[a].valid and m[b].valid]
+        kerned = [(snap.names[a], snap.names[b], round(kern(a, b), 1)) for a, b in pairs if abs(kern(a, b)) >= 0.5]
+        overlap = [p for p in pairs if gap(*p) < 0]
+        self.log("join pairs", pairs=len(pairs), kerned=kerned[:10], overlapping=len(overlap),
+                 examples=[(snap.names[a], snap.names[b], round(gap(a, b) * per, 1)) for a, b in pairs[:12]])
+        if not pairs:
+            self.error("connected script: the sample text has no pair of joining letters")
+        else:
+            self.note("connected script: %d join pairs in the sample, %d kerned (should be 0), %d overlapping as drawn"
+                      % (len(pairs), len(kerned), len(overlap)))
+            if kerned:
+                self.error("connected script: %d join pairs are kerned, e.g. %s" % (len(kerned), kerned[:5]))
+            if len(overlap) < 0.5 * len(pairs):
+                self.error("connected script: only %d of %d join pairs overlap" % (len(overlap), len(pairs)))
+        # a period after a joining letter keeps its distance from the exit
+        # stroke: the white between the two inks at every height they share
+        # (the engine's own ink profiles: a letter's bounding box can reach
+        # over the period, as a d's loop does)
+        period = snap.index.get("period")
+        if period is not None and period in sample and m[period].valid:
+            gaps = []
+            for a in sample:
+                if not joins[a][1] or not m[a].valid:
+                    continue
+                g = ink_gap(win.context, snap, m, a, period, kern(a, period))
+                if g is not None:
+                    gaps.append((snap.names[a], round(g * per, 1)))
+            worst = min(gaps, key=lambda x: x[1]) if gaps else None
+            self.log("letters before a period", pairs=gaps[:12])
+            if worst is not None:
+                self.note("connected script: a period after a joining letter keeps its distance (closest %s %+.0f per 1000 em between the inks, %d pairs)"
+                          % (worst[0], worst[1], len(gaps)))
+                if worst[1] < -1:
+                    self.error("connected script: %s and a period overlap by %.0f units per 1000 em" % (worst[0], -worst[1]))
+        self.capture_png("connected.png")
+        # Apply the preview with the joins, then Revert
+        self.before = self.font_state(snap.names, snap.master_id)
+        self.connected_written = []
+        for name in sorted(win.plan_names(res) or ()):
+            i = snap.index.get(name)
+            if i is not None and m[i].valid:
+                self.connected_written.append((name, m[i].lsb, m[i].rsb))
+        previous = win.last_apply
+        if not self.call_window(CONNECTED, win._apply, res, False):
+            raise RuntimeError("the window did not apply the connected-script preview")
+        self.wait(lambda: win.last_apply is not previous and self.window_state("during the connected Apply") != "applying",
+                  self.connected_applied, 120.0, "applying with the joins")
+
+    def connected_applied(self):
+        win = self.win
+        snap = win.snapshot
+        bad = []
+        for name, lsb_want, rsb_want in self.connected_written:
+            glyph = self.font.glyphs[name]
+            layer = glyph.layers[snap.master_id] if glyph is not None else None
+            lsb, rsb, _w = ink_metrics(layer) if layer is not None else (None, None, None)
+            if lsb is None:
+                continue
+            if max(abs(lsb - lsb_want), abs(rsb - rsb_want)) > 1.01:
+                bad.append([name, round(lsb, 1), round(lsb_want, 1), round(rsb, 1), round(rsb_want, 1)])
+        self.log("connected applied", glyphs=len(self.connected_written), differences=bad[:10], summary=win.last_apply)
+        if bad:
+            self.error("after the connected-script Apply %d glyphs differ from the preview, e.g. %s" % (len(bad), bad[:5]))
+        else:
+            self.note("connected script Apply: %d glyphs written as the preview showed them" % len(self.connected_written))
+        self.wait(lambda: self.window_state("after the connected Apply") == "ready", self.connected_revert, 120.0,
+                  "the window after the connected-script Apply")
+
+    def connected_revert(self):
+        if not self.call_window(CONNECTED, self.win.revert_last_apply):
+            raise RuntimeError("the window did not revert the connected-script Apply")
+        self.wait(lambda: self.window_state("during the connected Revert") not in ("applying",), self.connected_reverted,
+                  300.0, "reverting the connected-script Apply")
+
+    def connected_reverted(self):
+        win = self.win
+        snap = win.snapshot
+        after = self.font_state(snap.names, snap.master_id)
+        kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
+        glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"])
+        self.log("connected reverted", kerning_differences=len(kern_diff), glyph_differences=len(glyph_diff),
+                 examples=(kern_diff + glyph_diff)[:10])
+        if kern_diff or glyph_diff:
+            self.error("after reverting the connected-script Apply %d kerning entries and %d glyph values differ"
+                       % (len(kern_diff), len(glyph_diff)))
+        else:
+            self.note("connected script Revert: the font is as before")
+        self.before = None
+        self.connected_off()
+
+    def connected_off(self):
+        win = self.win
+        old = win.result
+        win.w.connected.set(False)
+        self.call_window(CONNECTED, win.connectedChanged, None)
+        self.wait(lambda: self._new_preview(old, "waiting for the preview without joins again") and win.joins is None,
+                  self.connected_off_again, 180.0, "the preview without joins, again")
+
+    def connected_off_again(self):
+        m2 = self._metrics()
+        back = sum(1 for x, y in zip(self.joins_off_metrics, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        if back:
+            self.error("after turning Connected script off %d glyphs' sidebearings differ from before" % back)
+        else:
+            self.note("connected script off: every glyph back to the spacing without joins")
+        self.after_connected()
 
     # --- the designer harness -----------------------------------------------
 
     def _result_harness_strength(self):
         key = self.win._result_key
         return key[-1] if key else None
+
+    def _result_harness_style(self):
+        key = self.win._result_key
+        return key[-2] if key and len(key) >= 2 else None
 
     def _preview_with(self, strength):
         win = self.win
@@ -1134,7 +1349,60 @@ class SelfTest(object):
             self.log("harness letters image", source=self.capture_png("harness-letters.png", hw.w.getNSWindow()))
         except Exception:
             self.warn(traceback.format_exc())
-        self.later(0.2, self.harness_apply)
+        self.later(0.2, self.harness_style_step)
+
+    def _pick_style(self, key):
+        hw = self.win.harness_window
+        keys = [k for k, _label in hw.styles]
+        hw.w.style.set(keys.index(key))
+        self.call_window(HARNESS, hw.styleChanged, None)
+
+    def harness_style_step(self):
+        """The Display conventions, picked as a user does in the Designer
+        Harness window: the preview must move every glyph side by the Display
+        plan, punctuation included."""
+        hw = self.win.harness_window
+        if "display" not in [k for k, _label in hw.styles]:
+            self.warn("the harness table has no Display conventions")
+            self.later(0.2, self.harness_apply)
+            return
+        self._pick_style("display")
+        # the window's list follows the conventions: the preview covers its pairs
+        self.wait(lambda: self._preview_with(1.0) and self._result_harness_style() == "display"
+                  and self._covers(self.win.harness_window.pairs[:20]), self.harness_style_ready, 120.0,
+                  "the preview with the Display conventions")
+
+    def harness_style_ready(self):
+        win = self.win
+        snap = win.snapshot
+        plan = win._result_harness
+        if plan is None or plan.style != "display":
+            raise RuntimeError("the preview with the Display conventions has no Display plan")
+        per = 1000.0 / snap.upm
+        bad = []
+        for i, ((l0, r0, _a0), (l1, r1, _a1)) in enumerate(zip(self.harness_m0, self._metrics())):
+            dl, dr = plan.sides[i]
+            if abs((l1 - l0) - dl) > 1e-3 or abs((r1 - r0) - dr) > 1e-3:
+                bad.append([snap.names[i], round(l1 - l0, 2), round(dl, 2), round(r1 - r0, 2), round(dr, 2)])
+        marks = []
+        for ch in (".", ",", "-", "?"):
+            name = snap.char_map.get(ch)
+            if name in snap.names:
+                i = snap.names.index(name)
+                marks.append("%s %+.0f/%+.0f" % (name, plan.sides[i][0] * per, plan.sides[i][1] * per))
+        moved = sum(1 for sd in plan.sides if abs(sd[0]) >= 0.5 or abs(sd[1]) >= 0.5)
+        self.log("harness display", sides_moved=moved, pairs=len(plan.pairs), differences=bad[:10], marks=marks)
+        self.note("designer harness, Display conventions picked in its window: %d glyph sides and %d pairs corrected, "
+                  "the preview moved every side as planned%s (%s)"
+                  % (moved, len(plan.pairs), "" if not bad else " EXCEPT %d" % len(bad), ", ".join(marks)))
+        if bad:
+            self.error("with the Display conventions %d glyphs' sidebearings moved other than planned, e.g. %s"
+                       % (len(bad), bad[:5]))
+        # back to text faces, which the rest of the test applies
+        self._pick_style("text")
+        self.wait(lambda: self._preview_with(1.0) and self._result_harness_style() == "text"
+                  and self._covers(self.win.harness_window.pairs[:20]), self.harness_apply, 120.0,
+                  "the preview with the text conventions again")
 
     def harness_apply(self):
         """Apply the preview with the harness: the glyphs it shifted must reach

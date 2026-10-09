@@ -22,6 +22,10 @@ as the data say (strength 100 %) or less:
 The corrections are learned by tools/kk2_harness_learn.py from Spacing QA's
 reports and live in kk2_harness.json next to this file. Glyphs outside the
 core set (other scripts, symbols, figures) are left as the model spaces them.
+
+Display and handwriting faces space their punctuation more openly than text
+faces. With their conventions (`style`), the punctuation also gets what the
+designers of those categories do, on top of the text faces' corrections.
 """
 
 from __future__ import division, print_function, unicode_literals
@@ -34,13 +38,23 @@ import string
 import kk2_bridge as kb
 
 TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kk2_harness.json")
+# the table's glyphs that are not letters: the punctuation and symbols of the
+# GF Latin Kernel that Spacing QA scores (figures, the symbols fonts often draw
+# at the figure width and the underscore have no corrections)
 PUNCTUATION = {"period": ".", "comma": ",", "colon": ":", "semicolon": ";", "exclam": "!", "question": "?",
                "hyphen": "-", "quotesingle": "'", "quotedbl": '"', "parenleft": "(", "parenright": ")",
-               "slash": "/", "ampersand": "&", "quoteright": "’"}
-# the core glyph of a code point
+               "slash": "/", "ampersand": "&", "quoteright": "\u2019",
+               "percent": "%", "asterisk": "*", "at": "@", "bracketleft": "[", "backslash": "\\",
+               "bracketright": "]", "grave": "`", "braceleft": "{", "bar": "|", "braceright": "}",
+               "copyright": "\u00A9", "registered": "\u00AE", "degree": "\u00B0", "periodcentered": "\u00B7",
+               "endash": "\u2013", "emdash": "\u2014", "quoteleft": "\u2018", "quotedblleft": "\u201C",
+               "quotedblright": "\u201D", "bullet": "\u2022", "ellipsis": "\u2026", "trademark": "\u2122"}
+# the table's glyph of a code point
 CODE_KEY = dict((ord(c), c) for c in string.ascii_letters)
 CODE_KEY.update((ord(ch), name) for name, ch in PUNCTUATION.items())
 CASE_SUFFIXES = ("case",)
+# the conventions the harness follows: (key, label, the table's category)
+STYLES = [("text", "Text faces", None), ("display", "Display", "Display"), ("handwriting", "Handwriting", "Handwriting")]
 
 _table = None
 
@@ -52,6 +66,19 @@ def table():
         with open(TABLE_PATH) as f:
             _table = json.load(f)
     return _table
+
+
+def available_styles():
+    """[(key, label)] of the conventions the table has (text faces always)."""
+    cats = table().get("categories", {})
+    return [(k, label) for k, label, cat in STYLES if cat is None or cat in cats]
+
+
+def _style_table(style):
+    for k, _label, cat in STYLES:
+        if k == style and cat is not None:
+            return table().get("categories", {}).get(cat)
+    return None
 
 
 def _flat_polygons(path):
@@ -118,9 +145,13 @@ class Plan(object):
     glyph indices the solve keeps as they are (the engine does not touch
     them, and neither does the plan)."""
 
-    def __init__(self, snap, looseness, strength, frozen=None):
+    def __init__(self, snap, looseness, strength, frozen=None, style="text"):
         t = table()
-        ref = t.get("reference", {})
+        extra = _style_table(style)
+        self.style = style if extra is not None else "text"
+        self.style_label = dict((k, label) for k, label, _c in STYLES)[self.style]
+        self.table_id = t.get("id", "")
+        ref = (extra or t).get("reference", {})
         self.table_families = int(ref.get("families", 0))
         self.table_observations = int(ref.get("observations", 0))
         self.strength = max(0.0, float(strength))
@@ -163,10 +194,13 @@ class Plan(object):
                 if bk is not None and bk not in PUNCTUATION:
                     self.key[i] = bk
         left_c, right_c = t["left"], t["right"]
+        # the style's punctuation, on top of the text faces' corrections
+        x_left, x_right = (extra or {}).get("left", {}), (extra or {}).get("right", {})
         own = [[0.0, 0.0] for _ in range(n)]
         for i, k in enumerate(self.key):
             if k is not None:
-                own[i] = [corr(left_c[k]) if k in left_c else 0.0, corr(right_c[k]) if k in right_c else 0.0]
+                own[i] = [(corr(left_c[k]) if k in left_c else 0.0) + (corr(x_left[k]) if k in x_left else 0.0),
+                          (corr(right_c[k]) if k in right_c else 0.0) + (corr(x_right[k]) if k in x_right else 0.0)]
 
         # a side that follows another glyph's side gets that side's shift
         specs = snap.specs
@@ -196,7 +230,9 @@ class Plan(object):
         self.sides = [[0.0, 0.0] if i in frozen else [side(i, True), side(i, False)] for i in range(n)]
         # pair corrections: glyphs that are their core glyph (not accented
         # variants), both kerned
-        pairs_t = t["pairs"]
+        pairs_t = dict(t["pairs"])
+        for name, v in (extra or {}).get("pairs", {}).items():
+            pairs_t[name] = pairs_t.get(name, 0.0) + v
         by_key = {}
         for i, k in enumerate(self.key):
             if k is not None and self.exact[i]:
@@ -269,5 +305,6 @@ class Plan(object):
         if self.strength <= 0:
             return "off"
         stem = ("stem %.0f" % self.stem_measured) if self.stem_measured else "stem not measured (no I or l)"
-        return "%d %% · %s · Looseness %+.2f · %d glyph sides, %d pairs corrected" % (
-            round(100 * self.strength), stem, self.looseness, self.changed_sides, len(self.pairs))
+        style = "" if self.style == "text" else " · %s punctuation" % self.style_label
+        return "%d %%%s · %s · Looseness %+.2f · %d glyph sides, %d pairs corrected" % (
+            round(100 * self.strength), style, stem, self.looseness, self.changed_sides, len(self.pairs))

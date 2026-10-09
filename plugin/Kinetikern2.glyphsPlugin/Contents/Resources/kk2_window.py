@@ -281,10 +281,19 @@ class KK2Window(object):
         self.pairs_window = None
         # the designer harness: its window, the plan of the running job and of the result shown
         self.harness_window = None
+        # the conventions it follows: text faces, display or handwriting punctuation
+        self.harness_style = self._setting("harnessStyle", "text", str)
+        if self.harness_style not in [k for k, _label, _cat in kh.STYLES]:
+            self.harness_style = "text"
         self._harness_cache = None
         self._job_harness = None
         self._result_harness = None
         self._fitted = None  # Looseness offset the last solve fitted to the frozen glyphs
+        # a connected script: the joins the context was prepared with (None: none)
+        self.joins = None
+        self.join_count = 0
+        self.join_note = ""
+        self.join_ms = 0.0
         self._timer = None
         self._timer_interval = None
         self._timer_target = None
@@ -390,7 +399,17 @@ class KK2Window(object):
         w.maxPairs.getNSTextField().setToolTip_(
             "Most kerning entries a whole-font Apply writes (the least important are left out). Empty or 0: "
             "no limit.")
-        w.maxPairsNote = vanilla.TextBox((732, 70, -60, 14), "", sizeStyle="mini")
+        w.maxPairsNote = vanilla.TextBox((732, 70, 112, 14), "", sizeStyle="mini")
+        w.connected = vanilla.CheckBox((850, 67, 128, 18), "Connected script", sizeStyle="small",
+                                       value=self._setting("connected", False, bool), callback=self.connectedChanged)
+        w.connected.getNSButton().setToolTip_(
+            "For scripts whose letters join. The joins are learned from the font's own spacing and kerning: when "
+            "most lowercase letters overlap most of their partners, each letter side's join stroke is found, the "
+            "letter bodies are spaced without it, and two joining letters overlap as drawn, with no kerning between "
+            "them. Every other pair — punctuation, figures, a letter beside one that does not join — keeps the "
+            "usual rules: a period keeps its distance from an exit stroke. A font whose letters do not overlap "
+            "is spaced as usual.")
+        w.connectedValue = vanilla.TextBox((980, 70, -60, 14), "", sizeStyle="mini")
         w.reload = vanilla.Button((-50, 64, 36, 22), "↻", callback=self.reloadOutlines, sizeStyle="small")
         w.reload.getNSButton().setToolTip_("Read the outlines of the selected master again")
 
@@ -515,7 +534,7 @@ class KK2Window(object):
         spring, repulsion, coupling = self._physics()
         return (self._generation, round(spring, 9), round(repulsion, 9), round(coupling, 9),
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
-                round(self._harness_strength(), 4))
+                self.join_count, self.harness_style, round(self._harness_strength(), 4))
 
     def _update_labels(self):
         if self.w is None:
@@ -542,6 +561,7 @@ class KK2Window(object):
             text = "every non-zero kern is kept"
         self.w.thresholdValue.set(text)
         self._update_harness_label()
+        self._update_join_label()
 
     def _update_harness_label(self):
         if self.w is None or getattr(self.w, "harness", None) is None:
@@ -579,6 +599,7 @@ class KK2Window(object):
         for control in (w.tightness, w.intensity, w.threshold, w.thresholdField, w.maxPairs, w.threads, w.master,
                         w.scope, w.replace, w.reload):
             control.enable(not busy)
+        w.connected.enable(not busy and bool(self.engine.features & kb.FEATURE_JOINS))
         w.apply.enable(not busy and self.context is not None)
         w.revert.enable(not busy and self._reader is None and self.revert_point is not None)
         # a plan can be dropped; writes, once started, run to the end
@@ -744,8 +765,18 @@ class KK2Window(object):
             self._fail("%s has no exporting letters, figures, punctuation or symbols to space." %
                        snapshot.master_name)
             return
+        self._start_prepare()
+
+    def _start_prepare(self):
+        """Phase 1 on the snapshot read: with a connected script's joins when
+        the setting is on (found first, in milliseconds)."""
+        snapshot = self.snapshot
+        joins = self._detect_joins(snapshot) if self._connected() else None
+        if not self._connected():
+            self.joins, self.join_count, self.join_note = None, 0, ""
+        self._update_join_label()
         try:
-            self._job = self.engine.prepare(snapshot.packer, snapshot.upm, self._threads())
+            self._job = self.engine.prepare(snapshot.packer, snapshot.upm, self._threads(), joins=joins)
         except Exception as e:
             self._fail("The engine could not start: %s" % e, traceback.format_exc())
             return
@@ -754,9 +785,83 @@ class KK2Window(object):
         self._set_state("preparing")
         self._show_progress("Phase 1/3: %s [0%%]" % kb.PHASE_NAMES[1], 0.0)
         skipped = getattr(snapshot, "glyph_count_skipped", 0)
-        self._set_status("Analyzing %s glyphs of %s (outlines read in %.0f ms%s)…" % (
+        self._set_status("Analyzing %s glyphs of %s (outlines read in %.0f ms%s)%s…" % (
             _count(len(snapshot.names)), snapshot.master_name, snapshot.read_ms,
-            ", %s glyphs without outlines or not exporting left out" % _count(skipped) if skipped else ""))
+            ", %s glyphs without outlines or not exporting left out" % _count(skipped) if skipped else "",
+            " · connected script: %s" % self.join_note if self._connected() and self.join_note else ""))
+
+    # ------------------------------------------------------ connected scripts
+    def _connected(self):
+        """The Connected script setting is on (and the engine has the mode)."""
+        return (self.w is not None and bool(self.w.connected.get())
+                and bool(self.engine.features & kb.FEATURE_JOINS))
+
+    def _x_height(self, snap):
+        """The ink top of x, else the master's x-height (what Spacing QA uses)."""
+        info = snap.infos.get("x")
+        if info is not None and not info.empty:
+            return info.bounds[1] + info.bounds[3]
+        return snap.x_height
+
+    def _detect_joins(self, snap):
+        """The join bands of a connected script, learned from the master's
+        own spacing and kerning (Spacing QA's rule); None when its letters do
+        not join. Sets the note the window shows."""
+        self.joins, self.join_count = None, 0
+        t = time.perf_counter()
+        try:
+            from kk2_pairs_window import current_kerning
+            # every letter is measured against the basic a–z (Spacing QA's
+            # partners): milliseconds even for a font of a thousand letters
+            kinds = bytearray(len(snap.names))
+            letters = 0
+            for i, spec in enumerate(snap.specs):
+                if spec.group in (kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE):
+                    cp = getattr(snap.infos.get(snap.names[i]), "unicode", None)
+                    kinds[i] = kb.JOINKIND_LOWER if cp is not None and 0x61 <= cp <= 0x7A else kb.JOINKIND_UPPER
+                    letters += 1
+            current = current_kerning(snap, self._kerning.table(snap.master_id))
+            bands = self.engine.detect_joins(snap.packer, snap.upm, self._x_height(snap), kinds, current,
+                                             kb.JOINRULE_BOTH)
+        except Exception as e:
+            print(traceback.format_exc())
+            self.join_note = "could not look for joins: %s" % e
+            return None
+        finally:
+            self.join_ms = 1000.0 * (time.perf_counter() - t)
+        n = sum(1 for left, right in bands if left or right)
+        if not n:
+            self.join_note = "no joins: the letters do not overlap"
+            return None
+        self.joins, self.join_count = bands, n
+        self.join_note = "%s of %s letters join" % (_count(n), _count(letters))
+        return bands
+
+    def _update_join_label(self):
+        if self.w is None or getattr(self.w, "connected", None) is None:
+            return
+        if not self.engine.features & kb.FEATURE_JOINS:
+            text = "unavailable: rebuild the plugin (build.sh)"
+        elif not self.w.connected.get():
+            text = ""
+        elif self.snapshot is None:
+            text = "on · waiting for the font to be read"
+        else:
+            text = self.join_note
+        self.w.connectedValue.set(text)
+
+    def connectedChanged(self, sender):
+        self._save("connected", bool(self.w.connected.get()))
+        self._update_join_label()
+        if self.snapshot is None or self._reader is not None:
+            return  # the end of reading prepares with the setting
+        if self._stepper is not None or (self._job is not None and self._job_kind == "whole"):
+            return  # the checkbox is disabled meanwhile
+        # Phase 1 again, with or without the joins; the preview follows
+        self._release_engine()
+        self._panes_due(right=True)
+        self._start_prepare()
+        self._run_timer(POLL_INTERVAL)
 
     # --------------------------------------------------------- engine jobs
     def _poll_job(self):
@@ -952,11 +1057,12 @@ class KK2Window(object):
                        _count(st["class_pairs"]), _count(res.entry_count), _count(st["class_entries"]),
                        _count(st["exception_entries"]), dropped, self._job_elapsed, st["threads"]))
         prep = self.context.prep_ms if self.context is not None else 0.0
+        joined = " · connected script: %s" % self.join_note if self.joins is not None else ""
         return ("%s · %s glyphs spaced, %s of the sample kerned · %s entries (%s class pairs, %s exceptions) · "
-                "pass 1 %.0f ms · pass 2 %.0f ms · %d threads · Phase 1 took %.1f s"
+                "pass 1 %.0f ms · pass 2 %.0f ms · %d threads · Phase 1 took %.1f s%s"
                 % (snap.master_name, _count(len(snap.names)), _count(st["kern_glyphs"]), _count(res.entry_count),
                    _count(st["class_entries"]), _count(st["exception_entries"]), st["pass1_ms"], st["pass2_ms"],
-                   st["threads"], prep / 1000.0))
+                   st["threads"], prep / 1000.0, joined))
 
     def start_whole_font(self, apply_when_done=False):
         """Kerns every glyph of the master (mask None, budget from Max pairs)
@@ -1370,11 +1476,11 @@ class KK2Window(object):
         looseness = float(self.w.tightness.get()) + (self._fitted or 0.0)
         opts = self._glyph_opts()
         frozen = frozenset(i for i, o in enumerate(opts or ()) if o[0])
-        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key())
+        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key(), self.harness_style)
         if self._harness_cache is not None and self._harness_cache[0] == key:
             return self._harness_cache[1]
         try:
-            plan = kh.Plan(snap, looseness, s, frozen=frozen)
+            plan = kh.Plan(snap, looseness, s, frozen=frozen, style=self.harness_style)
         except Exception:
             print(traceback.format_exc())
             plan = None
@@ -1402,6 +1508,18 @@ class KK2Window(object):
     def harnessChanged(self, sender):
         self._save("harness", bool(self.w.harness.get()))
         self._save("harnessStrength", float(self.w.harnessStrength.get()))
+        self._update_labels()
+        self._request_preview()
+        if self.harness_window is not None:
+            self.harness_window.settings_changed()
+
+    def set_harness_style(self, style):
+        """Follow the conventions of `style` ("text", "display",
+        "handwriting"): the punctuation of that category."""
+        if style == self.harness_style or style not in [k for k, _label in kh.available_styles()]:
+            return
+        self.harness_style = style
+        self._save("harnessStyle", style)
         self._update_labels()
         self._request_preview()
         if self.harness_window is not None:

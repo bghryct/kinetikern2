@@ -17,6 +17,8 @@ import traceback
 
 import objc
 import vanilla
+
+import kk2_harness as kh
 from AppKit import (NSAffineTransform, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
                     NSGraphicsContext, NSRectFill, NSString, NSView)
 
@@ -70,7 +72,17 @@ class HarnessWindow(object):
         w.which = vanilla.SegmentedButton((-420, 9, -12, 24), [dict(title=t) for _, t in FILTERS],
                                           callback=self.whichChanged, sizeStyle="small")
         w.which.set(0)
-        w.status = vanilla.TextBox((12, 40, -12, 32), "", sizeStyle="small")
+        # the conventions: text faces, or a category's punctuation as well
+        self.styles = kh.available_styles()
+        w.styleLabel = vanilla.TextBox((12, 43, 80, 17), "Conventions", sizeStyle="small")
+        w.style = vanilla.PopUpButton((90, 40, 130, 22), [label for _k, label in self.styles],
+                                      callback=self.styleChanged, sizeStyle="small")
+        keys = [k for k, _label in self.styles]
+        w.style.set(keys.index(self.main.harness_style) if self.main.harness_style in keys else 0)
+        w.style.getNSPopUpButton().setToolTip_(
+            "Text faces: what the designers of well-spaced text faces do. Display, Handwriting: their punctuation "
+            "as well, which they space more openly.")
+        w.status = vanilla.TextBox((230, 40, -12, 32), "", sizeStyle="small")
         w.list = vanilla.List((12, 76, 520, -40), [], columnDescriptions=[
             dict(title="#", key="rank", width=26),
             dict(title="Pair", key="pair", width=130),
@@ -104,6 +116,9 @@ class HarnessWindow(object):
         self.main.w.harness.set(bool(self.w.on.get()))
         self.main.harnessChanged(None)
 
+    def styleChanged(self, sender):
+        self.main.set_harness_style(self.styles[max(0, self.w.style.get())][0])
+
     def strengthChanged(self, sender):
         self.main.w.harnessStrength.set(float(self.w.strength.get()))
         self.main.harnessChanged(None)
@@ -115,6 +130,9 @@ class HarnessWindow(object):
         mw = self.main.w
         self.w.on.set(bool(mw.harness.get()))
         self.w.strength.set(float(mw.harnessStrength.get()))
+        keys = [k for k, _label in self.styles]
+        if self.main.harness_style in keys:
+            self.w.style.set(keys.index(self.main.harness_style))
         self.refresh()
 
     def resized(self, sender):
@@ -179,8 +197,10 @@ class HarnessWindow(object):
         self.w.status.set(
             ("Live: the preview and Apply use it. " if on else "Off: this is what it would do at %d %%. " % round(
                 100 * plan.strength)) + plan.summary().capitalize() +
-            ". Learned from %d text families on Google Fonts rated well spaced (%d weights and widths)." % (
-                plan.table_families, plan.table_observations))
+            (". Learned from %d text families on Google Fonts rated well spaced, at %d weights in all." % (
+                plan.table_families, plan.table_observations) if plan.style == "text" else
+             ". Its punctuation learned from %d %s families on Google Fonts rated well spaced." % (
+                 plan.table_families, plan.style_label.lower())))
         if rows:
             idx = 0
             if keep is not None:

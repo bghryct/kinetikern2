@@ -46,6 +46,9 @@ pub const PAIR_WINDOW: u32 = 16;
 pub const PAIR_FALLBACK: u32 = 32;
 /// Settled by the force bounds alone (no distance queries).
 pub const PAIR_BOUNDED: u32 = 64;
+/// The facing sides join (a connected script): no kerning and no floors, the
+/// joins overlap as drawn; Pass 1 spaced the two bodies.
+pub const PAIR_JOIN: u32 = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Solver {
@@ -1047,6 +1050,9 @@ impl<'a> Kernel<'a> {
     /// Full evaluation of one ordered pair.
     pub fn solve(&self, ia: usize, ib: usize, sc: &mut Scratch) -> PairOut {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        if a.joins(b) {
+            return PairOut { flags: PAIR_JOIN, ..PairOut::default() };
+        }
         let f = self.fields.get(a.group, b.group);
         let macro_gap = self.macro_gap(ia, ib);
         let kk = self.knobs_for(ia, ib);
@@ -1159,6 +1165,10 @@ impl<'a> Kernel<'a> {
     /// the force evaluations it cost and whether the force bounds alone decided.
     pub fn verify(&self, ia: usize, ib: usize, target: f64, sc: &mut Scratch) -> (Verify, u32, bool) {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        if a.joins(b) {
+            // a join pair is 0, as its class representative (classes never mix joins)
+            return (if target.abs() < self.knobs.threshold { Verify::Within } else { Verify::Differs }, 0, true);
+        }
         let f = self.fields.get(a.group, b.group);
         let t = self.knobs.threshold;
         if self.solver != Solver::Window {
@@ -1241,6 +1251,9 @@ impl<'a> Kernel<'a> {
     /// Final value of a pair whose pre-floor value is `pre` (floors, rounding).
     pub fn finish(&self, ia: usize, ib: usize, pre: f64) -> (f64, u32) {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        if a.joins(b) {
+            return (0.0, PAIR_JOIN);
+        }
         let (v, fl) = self.floors(a, b, self.macro_gap(ia, ib), pre);
         (if v.abs() < 0.5 || !v.is_finite() { 0.0 } else { v }, fl)
     }

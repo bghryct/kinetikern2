@@ -87,6 +87,30 @@ def _moved(target, current):
     return current + d if d else None
 
 
+def _ink(layer):
+    """(LSB, RSB) on the ink of the decomposed outline: the engine's frame,
+    and exact. Glyphs rounds the LSB and RSB it reports, half away from zero
+    (a side of −144.5 reads −145, one of 6.5 reads 7), and does not refresh
+    them for a composite whose base moved; its setters move the outline by
+    the new value minus the reported one. So Apply and Revert work out their
+    whole-unit moves here and set `reported + move`. (None, None) for a layer
+    without ink."""
+    try:
+        path = layer.completeBezierPath
+    except Exception:
+        path = None
+    if path is None:
+        try:
+            path = layer.bezierPath
+        except Exception:
+            path = None
+    if path is None or not path.elementCount():
+        return None, None
+    r = path.bounds()
+    x = float(r.origin.x)
+    return x, float(layer.width) - (x + float(r.size.width))
+
+
 def _text(value):
     return str(value) if value else None
 
@@ -373,6 +397,8 @@ class ApplyPlan(object):
     metrics        {glyph: (LSB or None, RSB or None)}: targets in Glyphs'
                    own measure (layer.LSB / RSB) for the free sides; None
                    for sides a metrics key or an aligned component drives
+    metrics_ink    the same targets on the ink (the engine's values): what
+                   the Applier moves to and checks
     keep_width     glyphs whose advance stays (tabular figures): the LSB
                    moves, the width is put back
     sync           glyphs following others (keys, aligned components),
@@ -394,6 +420,7 @@ class ApplyPlan(object):
         self.kerning = []
         self.groups_to_set = {}
         self.metrics = {}
+        self.metrics_ink = {}
         self.keep_width = set()
         self.sync = []
         self.follow = {}
@@ -798,6 +825,7 @@ class Planner(_Stepper):
                     stack.append(t)
         yield
         metrics = {}
+        metrics_ink = {}
         keep_width = set()
         changing = ruled_sides = 0
         for i in range(n):
@@ -827,6 +855,7 @@ class Planner(_Stepper):
             if lsb is None and rsb is None:
                 continue
             metrics[name] = (lsb, rsb)
+            metrics_ink[name] = (float(m.lsb) if lsb is not None else None, float(m.rsb) if rsb is not None else None)
             if fixed:
                 keep_width.add(name)
             # the dialog's estimate, against the font as the snapshot read it
@@ -851,6 +880,7 @@ class Planner(_Stepper):
         p.kerning = kerning
         p.groups_to_set = groups
         p.metrics = metrics
+        p.metrics_ink = metrics_ink
         p.keep_width = keep_width
         p.sync = sync
         p.follow = follow
@@ -924,6 +954,7 @@ class RevertPoint(object):
         self.kerning = {}  # (left key, right key) → value before Apply, None: no entry
         self.groups = {}  # name → (left group, right group)
         self.metrics = {}  # name → (LSB, RSB, width)
+        self.ink_lsb = {}  # name → LSB on the ink (exact; see _ink)
         self.composed = {}  # composite name → its component glyph names
         self.aligned = set()  # layers Glyphs aligns itself: never set directly
         self.components = []  # (composite, index, x, y)
@@ -956,6 +987,9 @@ class RevertPoint(object):
                 self.aligned.add(name)
             _refresh(glyph, layer)
         self.metrics[name] = (float(layer.LSB), float(layer.RSB), float(layer.width))
+        ink_l, _ink_r = _ink(layer)
+        if ink_l is not None:
+            self.ink_lsb[name] = ink_l
 
     def capture_component(self, name, k):
         comp = self._component(name, k)
@@ -1246,11 +1280,12 @@ class Restorer(_Stepper):
         return counts
 
     def _restore_metrics(self, name):
-        """Puts a layer's LSB and width back; the RSB follows. Setting the
-        saved LSB itself (not a whole-unit move) also takes back the last-bit
-        rounding a move across a power of two leaves in Glyphs' setter. A
-        composite is read before any glyph it is built from moves back (see
-        RevertPoint._order), so its cached LSB is still its own. True if
+        """Puts a layer's LSB and width back; the RSB follows. The outline
+        moves back to where it was on the ink (see _ink), set as `reported +
+        move`: setting the saved LSB itself would put a half-unit side that
+        crossed zero a unit off, as Glyphs reads it rounded. A composite is
+        read before any glyph it is built from moves back (see
+        RevertPoint._order), so its outline is still as Apply left it. True if
         anything was set."""
         point = self.point
         glyph = _glyph(point.font, name)
@@ -1260,8 +1295,20 @@ class Restorer(_Stepper):
         self._undo.add(glyph)
         lsb, _rsb, width = point.metrics[name]
         changed = False
+        saved = point.ink_lsb.get(name)
+        now, _r = _ink(layer) if saved is not None else (None, None)
         cur = float(layer.LSB)
-        if math.isfinite(lsb) and math.isfinite(cur) and abs(cur - lsb) > 1e-9:
+        if saved is not None and now is not None and math.isfinite(cur):
+            for _ in range(2):  # a stale cached LSB would leave a remainder: once more
+                shift = saved - now
+                if abs(shift) <= 1e-6:
+                    break
+                layer.LSB = float(layer.LSB) + shift
+                changed = True
+                now, _r = _ink(layer)
+                if now is None:
+                    break
+        elif math.isfinite(lsb) and math.isfinite(cur) and abs(cur - lsb) > 1e-9:
             layer.LSB = lsb
             changed = True
         if abs(float(layer.width) - width) > 1e-9:
@@ -1528,11 +1575,14 @@ class Applier(_Stepper):
                 yield
 
     def _write_metrics(self, name, lsb, rsb, users, written):
-        """Moves the free sides to the plan's targets (whole units, see
-        _moved); every LSB move holds the composites drawing the glyph in
-        place, so their cached metrics (read fresh by the RevertPoint) stay
-        true. The RSB moves through the width (64 µs instead of the RSB
-        setter's 350). True if a side moved."""
+        """Moves the free sides to the plan's targets in whole units, worked
+        out on the ink (see _ink: Glyphs' rounded LSB and RSB would put a
+        half-unit side a unit off) and set through Glyphs' setters as
+        `reported + move`; without an ink measure, as _moved does. Every LSB
+        move holds the composites drawing the glyph in place, so their cached
+        metrics (read fresh by the RevertPoint) stay true. The RSB moves
+        through the width (64 µs instead of the RSB setter's 350). True if a
+        side moved."""
         glyph = _glyph(self.font, name)
         layer = _layer(glyph, self.plan.master_id)
         if layer is None:
@@ -1541,23 +1591,49 @@ class Applier(_Stepper):
         self._undo.add(glyph)
         sides = 0
         width = float(layer.width) if name in self.plan.keep_width else None
+        ink_l, ink_r = getattr(self.plan, "metrics_ink", {}).get(name, (None, None))
+        now_l, _now_r = _ink(layer)
         cur = float(layer.LSB)
-        new = _moved(lsb, cur)
-        if new is not None:
-            layer.LSB = new
-            if math.isfinite(cur):
-                self._held(users, name, new - cur)
-            sides += 1
+        if lsb is not None and ink_l is not None and now_l is not None and math.isfinite(cur):
+            d = round_units(ink_l - now_l)
+            if d:
+                layer.LSB = cur + d
+                moved, _r = _ink(layer)
+                if moved is not None and abs(moved - (now_l + d)) > 1e-6:
+                    # a stale cached LSB moved it by another amount: the rest
+                    layer.LSB = float(layer.LSB) + (now_l + d - moved)
+                    moved, _r = _ink(layer)
+                # the composites drawing it are held by what the outline really
+                # moved (a whole number of units, kept free of float noise)
+                shift = (moved - now_l) if moved is not None else float(d)
+                if abs(shift - round(shift)) < 1e-6:
+                    shift = float(round(shift))
+                self._held(users, name, shift)
+                sides += 1
+        else:
+            new = _moved(lsb, cur)
+            if new is not None:
+                layer.LSB = new
+                if math.isfinite(cur):
+                    self._held(users, name, new - cur)
+                sides += 1
         if width is not None and abs(float(layer.width) - width) > 1e-9:
             layer.width = width
+        _now_l, now_r = _ink(layer)
         cur = float(layer.RSB)
-        new = _moved(rsb, cur)
-        if new is not None:
-            if math.isfinite(cur):
-                layer.width = float(layer.width) + (new - cur)
-            else:
-                layer.RSB = new
-            sides += 1
+        if rsb is not None and ink_r is not None and now_r is not None:
+            d = round_units(ink_r - now_r)
+            if d:
+                layer.width = float(layer.width) + d
+                sides += 1
+        else:
+            new = _moved(rsb, cur)
+            if new is not None:
+                if math.isfinite(cur):
+                    layer.width = float(layer.width) + (new - cur)
+                else:
+                    layer.RSB = new
+                sides += 1
         if sides:
             written.append((name, glyph, layer, width))
             self._detail["metric_sides"] += sides
@@ -1597,13 +1673,23 @@ class Applier(_Stepper):
 
     def _read_back_metrics(self, row):
         """A written glyph ends within half a unit of its targets (whole-unit
-        moves from a fractional side) and a kept advance is exactly as it was.
-        (Each was written through its own setter, which recomputes its cache.)
-        Returns the number of sides that do not."""
+        moves from a fractional side), measured on the ink like the targets
+        (Glyphs' rounded LSB and RSB without them), and a kept advance is
+        exactly as it was. Returns the number of sides that do not."""
         name, _glyph_, layer, width = row
         lsb, rsb = self.plan.metrics[name]
+        ink_l, ink_r = getattr(self.plan, "metrics_ink", {}).get(name, (None, None))
+        now_l, now_r = _ink(layer)
+        if ink_l is not None and now_l is not None:
+            lsb, have_l = ink_l, now_l
+        else:
+            have_l = layer.LSB
+        if ink_r is not None and now_r is not None:
+            rsb, have_r = ink_r, now_r
+        else:
+            have_r = layer.RSB
         bad = 0
-        checks = (("LSB", lsb, layer.LSB, 0.5), ("RSB", rsb, layer.RSB, 0.5), ("width", width, layer.width, 0.0))
+        checks = (("LSB", lsb, have_l, 0.5), ("RSB", rsb, have_r, 0.5), ("width", width, layer.width, 0.0))
         for side, want, have, tolerance in checks:
             if want is None:
                 continue

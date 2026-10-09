@@ -74,18 +74,22 @@ impl CurrentKerning {
     }
 
     pub fn value(&self, ctx: &Context, a: usize, b: usize) -> f64 {
-        let (ga, gb) = (&ctx.glyphs[a], &ctx.glyphs[b]);
-        if let Some(&v) = self.gg.get(&(a as u32, b as u32)) {
+        self.value_in(a as u32, b as u32, ctx.glyphs[a].right_group_in, ctx.glyphs[b].left_group_in)
+    }
+
+    /// The kerning of glyph pair (a, b), whose left glyph's right group is
+    /// `ra` and right glyph's left group is `lb` (caller ids, NONE = none).
+    pub fn value_in(&self, a: u32, b: u32, ra: u32, lb: u32) -> f64 {
+        if let Some(&v) = self.gg.get(&(a, b)) {
             return v;
         }
-        let (ra, lb) = (ga.right_group_in, gb.left_group_in);
         if lb != NONE {
-            if let Some(&v) = self.gc.get(&(a as u32, lb)) {
+            if let Some(&v) = self.gc.get(&(a, lb)) {
                 return v;
             }
         }
         if ra != NONE {
-            if let Some(&v) = self.cg.get(&(ra, b as u32)) {
+            if let Some(&v) = self.cg.get(&(ra, b)) {
                 return v;
             }
             if lb != NONE {

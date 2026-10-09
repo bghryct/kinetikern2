@@ -130,6 +130,7 @@ other two.
 | **Pairs…** | Opens the Pairs window (see *Pairs, loosest to tightest* below). |
 | **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
 | **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
+| **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning, spaces the letter bodies without them and lets two joining letters overlap as drawn. The note beside it says how many letters join, or that none do. Off by default. |
 | **Progress bar, Cancel** | Shows the current step: *Reading outlines*, *Phase 1/3: Analyzing SDFs*, *Phase 2/3: Evaluating pairs* (with seconds elapsed in a whole-font run), *Phase 3/3: Grouping & pruning*, *Planning*, *Applying*, *Reverting*. Cancel stops reading, Phase 1, a preview, a whole-font run or the planning of an Apply. Once Apply or Revert has started writing, it runs to the end. |
 
 The status line under the panes reports the last result. For example:
@@ -218,22 +219,30 @@ those, after the solve and by as much as the data say (strength 100 %) or
 less. Without it the model is untouched.
 
 What the data say. Spacing QA has a report for every Google Fonts family:
-for each of the 66 × 66 core pairs, the designer's gap minus Kinetikern2's at
-the font's best-fit Looseness. The reference fonts are the sans serifs and
-serifs rated 70 or more on google/fonts' human `/Quality/Spacing` scale (468
-families), checked at Regular and the variable ones also at 100–900 (1,688
-observations). The median over them keeps the model's habits and averages
-out any one designer's taste. Units are per 1000 em, + = designers looser:
+for every pair of the 88 scored glyphs of the GF Latin Kernel (letters,
+punctuation and the symbols spaced by their shape), the designer's gap minus
+the bare model's at the font's best-fit Looseness. The reference fonts are
+the sans serifs and serifs rated 70 or more on google/fonts' human
+`/Quality/Spacing` scale (472 families), checked at Regular and the variable
+ones also at 100–900 (1,693 observations). The median over them keeps the
+model's habits and averages out any one designer's taste. Units are per 1000
+em, + = designers looser (third table, `2026-10-08-1b31cb2d`):
 
 | Where | Correction | Notes |
 |---|---|---|
-| inside parentheses | +35 | +52 at light weights |
-| slash, both sides | +22, +27 | |
-| ? ! & | +10 to +15 | |
-| quotes, period, comma, hyphen | −9 to −14 | the model sets them too loose |
-| open sides of E, F, L, T | +16, +10, +6, +6 | E +32 at light weights, +21 when tight |
-| diagonals of A, V, W, Y, K | −5 to −11 | |
-| 294 pairs, beyond their two sides | | mostly punctuation: `?.` `/,` `’/` |
+| inside parentheses | +33 | +50 at light weights |
+| inside brackets, braces | +54 to +57, +37 | +89 at light weights |
+| slash, backslash, bar | +19 to +31 | |
+| ? ! & % * @ | +5 to +14 | |
+| quotes, period, comma, hyphen, degree | −6 to −16 | the model sets them too loose |
+| en and em dashes | −24 to −28 | −35 to −39 at light weights |
+| open sides of E, F, L, T | +15, +9, +6, +4 | E +32 at light weights, +21 when tight |
+| diagonals of A, V, W, Y, K | −4 to −11 | |
+| 1,972 pairs, beyond their two sides | | mostly with punctuation and symbols: `?.` `/,` `’/`, a period or comma before a diagonal, a raised symbol after a letter the model would tuck it under (`L°`, ``L` ``) |
+
+On the families it was not learned from (half held out at a time) it brings
+the model 19 % closer to the designers (mean gap difference 24.9 → 20.3), and
+the punctuation pairs 10 units or more off from 3,010 to 57.
 
 How it is applied (`kk2_harness.py`):
 - Each core glyph side gets `a + b·L + c·w + d·L·w`. L is the Looseness
@@ -244,31 +253,55 @@ How it is applied (`kk2_harness.py`):
   composite) gets that glyph's shift. Accented letters take their base
   letter's; `.case` punctuation takes its base mark's.
 - Pair corrections go to the exact glyphs, as glyph–glyph kerning over
-  whatever class kerning the pair has.
+  whatever class kerning the pair has. They are fitted after the side
+  corrections, on what those leave of each pair, where the median is 8 units
+  or more and 60 % of the observations agree on its sign. (The first table
+  fitted them before the sides with 70 % agreement. A pair the sides move a
+  lot then kept no correction when designers disagree on kerning it: a period
+  before v or w, which the sides tighten, came out 20–27 units tight.)
 - Frozen glyphs keep their sidebearings, and two frozen glyphs their kerning.
   Other scripts, figures and symbols are left as the model spaces them.
 - The engine applies all of it after the budget (`run::Harness`,
   `kk2_solve_start3`), so the preview, the whole-font run, Apply and the
   Pairs window see the same thing.
 
-Does it help? It was learned on half of the families and checked on the
-other half: the mean distance between Kinetikern2 and the designers.
+**Conventions.** Display and handwriting faces space their punctuation more
+openly than text faces. The Harness window's **Conventions** menu picks whose
+punctuation to follow: **Text faces** (the default), **Display** or
+**Handwriting**. The last two add, on top of the text faces' corrections, what
+the designers of that category do with punctuation alone: learned from the
+display and handwriting families rated 70 or more (220 and 133). Their
+letters keep the text faces' corrections. After a period, for example,
+handwriting designers leave about 37 units more than text-face designers.
+
+Does it help? Each table was learned on half of the families and checked on
+the other half: the mean distance between Kinetikern2 and the designers, and
+the punctuation pairs whose median is still 10 units or more off.
 
 | Pairs | Without → with the harness | Closer |
 |---|---|---|
-| All | 18.2 → 16.0 | 13 % |
-| With punctuation | 23.6 → 19.8 | 16 % |
-| With a parenthesis | 31.0 → 23.1 | 25 % |
-| Letters | 15.0 → 13.6 | 9 % |
-| Light weights (stem under 50) | 24.3 → 21.2 | 13 % |
-| Light weights, E and F before a letter | 32.9 → 25.5 | 23 % |
+| All | 18.6 → 15.6 | 16 % |
+| With punctuation | 23.6 → 19.3 | 18 % |
+| With a parenthesis | 30.2 → 22.0 | 27 % |
+| Letters | 15.5 → 13.2 | 15 % |
+| Light weights (stem under 50) | 23.9 → 19.3 | 19 % |
+| Light weights, E and F before a letter | 38.0 → 22.9 | 40 % |
+| Punctuation pairs ≥ 10 units tighter / looser than the designers | 475 / 287 → 0 / 0 | |
+| Display: punctuation pairs ≥ 10 tighter / looser (on top of the text table) | 135 / 66 → 5 / 0 | |
+| Handwriting: the same | 824 / 382 → 75 / 58 | |
+
+(The numbers published with the first table were not truly held out: the
+cross-check matched each held-out family with the wrong observation. Fixed,
+the first table scores nearly the same averages; what the new pair rule
+changes is the pairs that stayed systematically off.)
 
 What is left is mostly each designer's own taste, which no correction common
 to all fonts can know.
 
 **Harness…** lists the pairs the harness changes most at the current
-settings: in running text (no lowercase before a capital, no two punctuation
-marks; the default), letters only, punctuation with letters, or all pairs.
+settings and conventions: in running text (no lowercase before a capital, no
+two punctuation marks; the default), letters only, punctuation with letters,
+or all pairs.
 For each it shows the change and its parts: the first glyph's right side, the
 second glyph's left side, a pair correction. The selected pair is drawn three
 ways: as in the font, as Kinetikern2 sets it, and with the harness. The window
@@ -279,6 +312,33 @@ nothing else. Learning it again takes the reports of a Spacing QA library
 scan (Spacing QA is a project of its own): run `tools/kk2_harness_data.sh`
 and then `tools/kk2_harness_learn.py`. The commands are at the top of the
 script.
+
+### Connected scripts
+
+Kinetikern2 never lets two glyphs' ink overlap. Connected scripts are drawn
+to overlap where the letters join. **Connected script** spaces them as joined:
+
+- **Is the font connected?** When at least half its lowercase a–z overlap at
+  least half of their a–z partners at some height, as the master is spaced
+  and kerned. Text faces never are, nor are scripts and casual hands whose
+  strokes reach past the advance but stop short of the next letter (spacing
+  them as joined made them less even).
+- **Where are the joins?** For each letter side, the band of heights where it
+  overlaps most of its partners, or where its ink reaches past its advance
+  (before its origin on the left). Every letter is measured against the basic
+  a–z, so accented and alternate letters get their bands like their bases.
+- **What changes.** Each joining side's body — the side without its join
+  band — is spaced in Pass 1, so the join stroke overhangs like the hook of a
+  j. A pair whose facing sides both join gets no kerning and overlaps as
+  drawn. Every other pair keeps every rule: punctuation, figures, and a
+  letter beside one that does not join keep their clearance (a period after
+  an exit stroke stays clear of it).
+
+The joins are found on the main thread when the setting is turned on or the
+master is read (milliseconds: 69 ms for Great Vibes' 1,630 letters on a busy
+machine), then Phase 1 runs again with them. The same detector decides joins
+in Spacing QA, which spaces every connected family this way. The design and
+its evaluation on 365 families are in `notes/connected-scripts.md`.
 
 ### What Apply writes
 
@@ -292,7 +352,12 @@ script.
   name, with `.kk2` added if that name is already in use. Groups belong to the
   glyph, not the master: in a multi-master font, the dialog says how many
   glyphs join existing groups and so change kerning in the other masters.
-* **Sidebearings:** free sides move by whole units to the engine's values.
+* **Sidebearings:** free sides move by whole units to the engine's values,
+  worked out on the ink of the outline, as the engine measures it. Glyphs
+  reports sidebearings rounded half away from zero, so a side that sits on a
+  half unit (a curve extreme at −144.5 reads −145, at 6.5 reads 7) would land
+  a unit off if the move were worked out from what Glyphs reports; Apply sets
+  `reported + move` instead, and checks the result on the ink.
   * **Sides that Glyphs computes:** sides driven by a metrics key or an
     auto-aligned component are refreshed by Glyphs (`syncMetrics`,
     `alignComponents`). The engine solved with those same rules, so the
@@ -313,7 +378,8 @@ script.
 **Undo and Revert.** Apply writes with undo registration off: 3.5 µs per
 kerning entry instead of 33. It clears the undo history of the kerning and of
 the glyphs it writes, and the dialog says so. **Revert Last Apply** is the
-undo:
+undo; it moves every outline back to exactly where it was on the ink, half-unit
+sides included:
 - **Changes made after the Apply:** Revert puts back only what is still as
   Apply left it. If something was changed since, it asks: *Keep Later
   Changes*, *Revert Everything* or *Cancel*.
@@ -624,12 +690,26 @@ in Glyphs' import):
      moved every glyph side and every listed pair by exactly what was
      planned;
    - picks the Letters filter;
+   - picks the Display conventions in the window's menu, checks that the
+     preview moved every glyph side by exactly the Display plan, and picks
+     Text faces again;
    - applies the preview, reads back every glyph the harness shifted, and
      reverts;
    - turns the harness off with the main window's switch, and checks that
      every glyph is back to Kinetikern2's own spacing.
    It saves `harness.png` and `harness-letters.png`.
 7. Saves `window.png` and `selftest.json`, then quits.
+
+`./build.sh --verify FONT --connected` adds a connected-script stage after
+the harness (FONT must be a connected script; an OFL script from Google
+Fonts such as Great Vibes): it turns **Connected script** on as a user does,
+waits for Phase 1 and the preview, and checks that joins were found, that
+the join pairs of the sample text are not kerned and that most overlap, and
+that a period after a joining letter keeps its distance (the narrowest white
+between the inks, from the engine's own profiles). It applies the preview
+and checks the font against it, reverts, and turns the setting off: every
+glyph must be back to the spacing without joins. It saves `connected.png`.
+On Great Vibes: 1,615 of 1,630 letters join; 1,368 join pairs, none kerned.
 
 `./build.sh --verify [font] --groups` adds a spacing-groups stage after
 those:
@@ -653,26 +733,51 @@ those:
 6. Reverts, and checks that the font is as before.
 
 Results (Glyphs 3.5.1, M1, 8 October 2026): **PASSED** on Lato and on Arial.
+Lato was run last, on the final plugin (one label of the harness window was
+reworded after it).
 The reports are in `notes/verification-2026-10-08/`: Lato with its window,
 groups and pairs images, and Arial as text, so its outlines are not
 published.
 
 | Font | Groups window, driven like a user | Frozen / spaced | Whole-font run | Frozen glyphs and kerning between them after Apply | Pairs measured | Longest main-thread stall |
 |---|---|---|---|---|---|---|
-| Lato (245 glyphs) | 19 of 19 steps | 68 capitals / 10 figures | 0.4 s, Looseness fitted −0.00 | unchanged | 52,789 pairs in 1.1 s; after Apply, mean difference 1.0 | 99 ms |
+| Lato (245 glyphs) | 19 of 19 steps | 68 capitals / 10 figures | 0.4 s, Looseness fitted −0.00 | unchanged | 52,789 pairs in 0.9 s; after Apply, mean difference 1.0 | 120 ms (the harness stage) |
 | Arial (2,674 glyphs) | 19 of 19 steps | 354 capitals / 26 figures | 14.0 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.8 s, off the main thread; after Apply, mean difference 0.1 | 228 ms |
 
-The designer harness stage, on the same runs:
+The designer harness stage. Lato ran last, with the second table (416 pairs,
+the Display and Handwriting conventions); Arial ran with the first (294
+pairs):
 
-| Font | Corrected | Preview against the plan | Apply | Revert, then off |
-|---|---|---|---|---|
-| Lato | 128 glyph sides (stem 97), 294 pairs | every side and every listed pair exact | 50 shifted glyphs written as previewed (E +2/+14, F +2/+9, A −11/−10) | font as before; every glyph back to the model |
-| Arial | 680 glyph sides (stem 95; accented letters and keyed sides follow), 294 pairs | every side and every listed pair exact | 51 shifted glyphs written as previewed (E +2/+15) | font as before; every glyph back to the model |
+| Font | Corrected | Preview against the plan | Display conventions | Apply | Revert, then off |
+|---|---|---|---|---|---|
+| Lato | 128 glyph sides (stem 97), 416 pairs | every side and every listed pair exact | 554 pairs; every side exact (period −6/−3, hyphen −7/−4, question +14/+8) | 47 shifted glyphs written as previewed (E +2/+14, F +2/+9, A −11/−10) | font as before; every glyph back to the model |
+| Arial | 680 glyph sides (stem 95; accented letters and keyed sides follow), 294 pairs | every side and every listed pair exact | (not in that build) | 51 shifted glyphs written as previewed (E +2/+15) | font as before; every glyph back to the model |
 
-The Designer Harness window opened in about 120 ms on both. Its list leads
-with F/ +61, b) +49, f/ +48, (d +48 in running text, and with AA −34,
-Fz +29, YA −27 among letters (`lato-harness.png`,
+The Designer Harness window opened in about 120 ms on both. With the second
+table its list leads with F/ +55, E) +47, L) +46, h) +46 in running text, and
+with AA, YA, Yq, Fz among letters (`lato-harness.png`,
 `lato-harness-letters.png`).
+
+**The third table and connected scripts** (8 October, evening; Glyphs 3.5.1,
+M1). Lato with `--groups` and the third table, learned on the GF Latin
+Kernel: **PASSED**. The harness corrected 149 glyph sides and 1,925 pairs,
+every one as planned (the window leads with L• +77, L° +67, T• +67, L% +66);
+the Display conventions 2,506 pairs; Apply wrote the 48 shifted glyphs as
+previewed and Revert put the font back; the spacing-groups stage passed all
+19 steps; the longest main-thread stall was 124 ms (`lato-summary-kernel.txt`,
+`lato-selftest-kernel.json`, `lato-kernel-harness.png`). Great Vibes (OFL,
+1,839 spacing glyphs) with `--connected`: **PASSED**. The connected-script
+stage: 1,615 of 1,630 letters join, found in 63 ms; 1,368 join pairs in the
+sample, none kerned, 761 overlapping as drawn; a period after a joining
+letter keeps at least 20 units per 1000 em of white between the inks (Y);
+Apply as previewed, Revert exact, off restores the spacing without joins
+exactly. The harness stage corrected 607 sides and 2,005 pairs exactly as
+planned. The whole-font Apply read back 0 mismatches and Revert put all
+1,839 glyphs back exactly, after a fix this font prompted: its half-unit
+sides (curve extremes on half units, as Great Vibes' caron puts ccaron's
+right side at −144.5) read a unit off in Glyphs, which rounds them half away
+from zero, so Apply's read-back and Revert now work on the ink
+(`greatvibes-connected-summary.txt`, `greatvibes-connected.png`).
 
 A 60 Hz heartbeat measures how long the main thread is busy at a time.
 Result on the final build: **PASSED** in 33.2 s.
@@ -695,6 +800,13 @@ Result on the final build: **PASSED** in 33.2 s.
   right-to-left glyphs in left-to-right order, which is wrong for them;
   leaving them alone is the safe choice until there is a right-to-left pair
   order. The proofs do set right-to-left text right to left.
+* **Connected scripts need some spacing first.** The joins are learned from
+  the master's own spacing and kerning: a script whose letters do not yet
+  overlap where they join (a font just drawn, all sidebearings at their
+  defaults) has none to find, and is spaced as usual. Space a few letters so
+  that they join, then turn **Connected script** on. Slanted scripts are
+  measured as they are drawn, not along their slant (an experiment in
+  Spacing QA, `spacingqa check --slant`, gave mixed results).
 * **Multiple equilibria.** Some pairs have more than one equilibrium gap. The
   window solver picks its root by force signs; v1 searched from the Pass 1
   gap. Most of the time they agree, but on 0.004–0.031 % of pairs the values

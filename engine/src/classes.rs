@@ -35,6 +35,9 @@ pub const GLYPH_KEYED: u32 = 1 << 30;
 /// different force must not share a class value) and frozen glyphs, whose
 /// key has this bit.
 pub const PART_FROZEN: u32 = 1 << 31;
+/// A side with a join (a connected script): it never shares a class with a
+/// side without one, since a pair of joining sides is kerned otherwise.
+pub const PART_JOIN: u32 = 1 << 30;
 
 /// Glyph flags (input): the glyph is the key glyph of its left / right group
 /// (its name is the group's name). Preferred as the class representative.
@@ -225,7 +228,9 @@ fn signatures_close(a: &[f64; SIGNATURE], b: &[f64; SIGNATURE], eps: f64) -> boo
 impl SideClasses {
     fn build(glyphs: &[PreparedGlyph], right: bool, eps: f64, shape_eps: f64, part: Option<&[u32]>) -> SideClasses {
         let n = glyphs.len();
-        let key = |i: usize| part.map_or(0, |p| p.get(i).copied().unwrap_or(0));
+        let joins = |i: usize| if right { glyphs[i].join_right.is_some() } else { glyphs[i].join_left.is_some() };
+        let any_join = (0..n).any(|i| glyphs[i].valid && joins(i));
+        let key = |i: usize| part.map_or(0, |p| p.get(i).copied().unwrap_or(0)) | if joins(i) { PART_JOIN } else { 0 };
         let is_frozen = |i: usize| key(i) & PART_FROZEN != 0;
         let profile = |i: usize| if right { &glyphs[i].right } else { &glyphs[i].left };
         let existing = |i: usize| if right { glyphs[i].right_group_in } else { glyphs[i].left_group_in };
@@ -243,7 +248,7 @@ impl SideClasses {
         //    largest partition; the other members are grouped anew below, as
         //    if they had none.
         let mut keeper: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        if part.is_some() {
+        if part.is_some() || any_join {
             let mut counts: std::collections::HashMap<u32, std::collections::BTreeMap<u32, usize>> =
                 std::collections::HashMap::new();
             for i in (0..n).filter(|&i| glyphs[i].valid && existing(i) != NONE) {

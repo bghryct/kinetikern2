@@ -42,6 +42,7 @@ mod dmat;
 mod engine;
 mod geometry;
 mod job;
+mod joins;
 mod measure;
 mod pass2;
 mod physics;
@@ -182,6 +183,32 @@ pub struct KK2KernIn {
     pub right: u32,
     pub value: f32,
 }
+
+/// A glyph's join bands in a connected script (`kk2_prepare_start2`,
+/// `kk2_detect_joins`): the heights, font units, where its left and right
+/// sides' join strokes reach into the neighbour. NaN = no join on that side.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KK2Joins {
+    pub left_y0: f64,
+    pub left_y1: f64,
+    pub right_y0: f64,
+    pub right_y1: f64,
+}
+
+/// `kk2_detect_joins` kinds, one byte per glyph: only letters join, and the
+/// lowercase letters are the partners whose overlaps are counted.
+pub const JOINKIND_OTHER: u8 = 0;
+pub const JOINKIND_UPPER: u8 = 1;
+pub const JOINKIND_LOWER: u8 = 2;
+
+/// `kk2_detect_joins` rules: what makes a join. Ink past the advance (or
+/// before the origin) or overlaps with most partners as kerned …
+pub const JOINRULE_BOTH: u32 = 0;
+/// … ink past the advance only (the kerning is not used) …
+pub const JOINRULE_OVERHANG: u32 = 1;
+/// … overlaps only.
+pub const JOINRULE_OVERLAPS: u32 = 2;
 
 /// One measured pair (`kk2_measure`): the visible gap now and the model's,
 /// and their difference after removing the font's overall offset.
@@ -381,6 +408,7 @@ const _: () = {
     assert!(size_of::<KK2Harness>() == 32);
     assert!(size_of::<KK2HarnessPair>() == 16);
     assert!(size_of::<KK2KernIn>() == 16);
+    assert!(size_of::<KK2Joins>() == 32);
     assert!(size_of::<KK2PairOut>() == 24);
     assert!(size_of::<KK2MeasureStats>() == 40);
 };
@@ -525,6 +553,8 @@ unsafe fn read_inputs(glyphs: *const KK2Glyph, count: u32) -> Result<Vec<GlyphIn
             rsb_rule: rule(g.rsb_rule, if g.rsb_glyph < count { g.rsb_glyph } else { NONE }, g.rsb_value),
             cur_lsb: g.cur_lsb,
             cur_rsb: g.cur_rsb,
+            join_left: None,
+            join_right: None,
         });
     }
     Ok(out)
@@ -572,6 +602,7 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
         glyph_opts: None,
         fit_frozen: c.flags & PARAM_FIT_FROZEN != 0,
         harness: None,
+        keep_bare: false,
     })
 }
 
@@ -768,12 +799,121 @@ pub unsafe extern "C" fn kk2_prepare_start(
 ) -> *mut KK2Job {
     guard(null_mut(), || {
         let inputs = read_inputs(glyphs, glyph_count)?;
-        let job = Job::spawn("kinetikern2-prepare", move |progress| {
-            Context::prepare(inputs, units_per_em, threads as usize, progress)
-                .map(Arc::new)
-                .map_err(JobError::from)
-        });
-        Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Prepare(job), error: Mutex::new(CString::default()) })))
+        Ok(spawn_prepare(inputs, units_per_em, threads))
+    })
+}
+
+fn spawn_prepare(inputs: Vec<GlyphInput>, units_per_em: f64, threads: u32) -> *mut KK2Job {
+    let job = Job::spawn("kinetikern2-prepare", move |progress| {
+        Context::prepare(inputs, units_per_em, threads as usize, progress)
+            .map(Arc::new)
+            .map_err(JobError::from)
+    });
+    Box::into_raw(Box::new(KK2Job { kind: JobKind::Prepare(job), error: Mutex::new(CString::default()) }))
+}
+
+fn join_band(y0: f64, y1: f64) -> Option<(f64, f64)> {
+    (y0.is_finite() && y1.is_finite() && y1 > y0).then_some((y0, y1))
+}
+
+/// `kk2_prepare_start` for a connected script: `joins` (NULL = none) holds
+/// each glyph's join bands, `glyph_count` records of `joins_size` bytes (set
+/// it to `sizeof(KK2Joins)`). A joining side's body is spaced without its
+/// join stroke, which overhangs like the hook of a j, and a pair whose facing
+/// sides both join gets no kerning: its joins overlap as drawn. Every other
+/// pair keeps the usual rules (a letter next to a period keeps its
+/// clearance from the join stroke).
+#[no_mangle]
+pub unsafe extern "C" fn kk2_prepare_start2(
+    glyphs: *const KK2Glyph,
+    glyph_count: u32,
+    units_per_em: f64,
+    threads: u32,
+    joins: *const KK2Joins,
+    joins_size: u32,
+) -> *mut KK2Job {
+    guard(null_mut(), || {
+        let mut inputs = read_inputs(glyphs, glyph_count)?;
+        if !joins.is_null() {
+            if (joins_size as usize) < size_of::<KK2Joins>() {
+                return Err(format!("joins_size {joins_size} < {}", size_of::<KK2Joins>()));
+            }
+            for (k, inp) in inputs.iter_mut().enumerate() {
+                let j = std::ptr::read_unaligned((joins as *const u8).add(k * joins_size as usize) as *const KK2Joins);
+                inp.join_left = join_band(j.left_y0, j.left_y1);
+                inp.join_right = join_band(j.right_y0, j.right_y1);
+            }
+        }
+        Ok(spawn_prepare(inputs, units_per_em, threads))
+    })
+}
+
+/// A connected script's joins, found in the font's own spacing (the rule
+/// Spacing QA uses): `kinds` one `JOINKIND_*` byte per glyph, `x_height` in
+/// font units, `kerning` the font's current kerning as `kk2_measure` takes it
+/// (NULL = none; `JOINRULE_OVERHANG` does not use it), `rule` a
+/// `JOINRULE_*`. Fills `out` (`glyph_count` records, NaN = no join) and
+/// returns the number of glyphs with a join: 0 when the font is not a
+/// connected script (text faces never are), 0xFFFFFFFF on failure (see
+/// `kk2_last_error`). Runs on the calling thread.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_detect_joins(
+    glyphs: *const KK2Glyph,
+    glyph_count: u32,
+    units_per_em: f64,
+    x_height: f64,
+    kinds: *const u8,
+    kerning: *const KK2KernIn,
+    kerning_count: u32,
+    rule: u32,
+    out: *mut KK2Joins,
+) -> u32 {
+    guard(u32::MAX, || {
+        if glyph_count > 0 && (kinds.is_null() || out.is_null()) {
+            return Err("kinds or out is NULL".into());
+        }
+        let inputs = read_inputs(glyphs, glyph_count)?;
+        let kinds = slice(kinds, glyph_count);
+        let jg: Vec<joins::JoinGlyph> = inputs
+            .iter()
+            .zip(kinds)
+            .map(|(g, &k)| joins::JoinGlyph {
+                contours: &g.contours,
+                advance: g.advance,
+                kind: match k {
+                    JOINKIND_UPPER => joins::JoinKind::Upper,
+                    JOINKIND_LOWER => joins::JoinKind::Lower,
+                    _ => joins::JoinKind::Other,
+                },
+            })
+            .collect();
+        let entries: Vec<measure::KernIn> = slice(kerning, kerning_count)
+            .iter()
+            .map(|k| measure::KernIn { kind: k.kind as u8, left: k.left, right: k.right, value: k.value as f64 })
+            .collect();
+        let cur = measure::CurrentKerning::new(&entries);
+        let kern = |a: usize, b: usize| {
+            let v = cur.value_in(a as u32, b as u32, inputs[a].right_group, inputs[b].left_group);
+            if v.is_finite() {
+                v
+            } else {
+                0.0
+            }
+        };
+        let rule = match rule {
+            JOINRULE_OVERHANG => joins::JoinRule::Overhang,
+            JOINRULE_OVERLAPS => joins::JoinRule::Overlaps,
+            _ => joins::JoinRule::Both,
+        };
+        let bands = joins::detect(&jg, units_per_em, x_height, &kern, rule);
+        let mut joined = 0;
+        for (k, (l, r)) in bands.iter().enumerate() {
+            let (l0, l1) = l.unwrap_or((f64::NAN, f64::NAN));
+            let (r0, r1) = r.unwrap_or((f64::NAN, f64::NAN));
+            *out.add(k) = KK2Joins { left_y0: l0, left_y1: l1, right_y0: r0, right_y1: r1 };
+            joined += (l.is_some() || r.is_some()) as u32;
+        }
+        Ok(joined)
     })
 }
 
@@ -1014,10 +1154,11 @@ pub unsafe extern "C" fn kk2_measure(
 
 /// Bit set of optional features: 1 per-glyph options and the frozen-glyph
 /// Looseness fit (`kk2_solve_start2`, `kk2_fit_looseness`), 2 `kk2_measure`,
-/// 4 the designer harness (`kk2_solve_start3`).
+/// 4 the designer harness (`kk2_solve_start3`), 8 connected scripts
+/// (`kk2_prepare_start2`, `kk2_detect_joins`).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    7
+    15
 }
 
 fn progress_of(job: &KK2Job) -> &job::Progress {

@@ -1,25 +1,26 @@
 {
   "ok": true,
   "font": "/private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/fonts/Lato-Regular.ttf",
-  "out": "/var/folders/wp/zn92wf195yd3j5yr_1cqqy3h0000gn/T/kk2-verify.l4qMhL",
+  "out": "/var/folders/wp/zn92wf195yd3j5yr_1cqqy3h0000gn/T/kk2-verify.ncT4rs",
   "glyphs_version": "3.5.1 (3534.0)",
   "options": {
     "whole": true,
     "cancel": true,
     "quit": true,
     "groups": true,
+    "connected": false,
     "max_stall_limit_ms": 500.0
   },
   "steps": [
     {
       "path": "/private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/fonts/Lato-Regular.ttf",
-      "seconds": 0.5,
+      "seconds": 0.48,
       "glyphs": 275,
       "masters": 1,
       "upm": 2000,
       "family": "Lato",
       "step": "opened",
-      "t": 0.503
+      "t": 0.48
     },
     {
       "top_menu": "Filter",
@@ -70,23 +71,23 @@
         "Kinetikern2\u2026",
         "SinterContrast\u2026"
       ],
-      "ms": 368.1,
+      "ms": 355.0,
       "step": "menu",
-      "t": 2.556
+      "t": 2.548
     },
     {
       "title": "Kinetikern2 \u2014 Lato",
       "state": "reading",
-      "import_ms": 24.3,
+      "import_ms": 26.7,
       "open_ms": {
-        "build": 342.9851669934578,
-        "load": 0.3965409705415368
+        "build": 327.37741695018485,
+        "load": 0.4505830002017319
       },
       "step": "window",
-      "t": 2.58
+      "t": 2.56
     },
     {
-      "seconds": 0.93,
+      "seconds": 1.02,
       "snapshot": {
         "master": "Regular",
         "upm": 2000.0,
@@ -101,11 +102,11 @@
           "follow": 0,
           "fixed": 0
         },
-        "read_ms": 79.46487510344014,
+        "read_ms": 92.61275321478024,
         "skipped": 0
       },
-      "gc_tracked": 336195,
-      "context_prep_ms": 240.8,
+      "gc_tracked": 336271,
+      "context_prep_ms": 304.7,
       "pairs": {
         "AV": -130.3,
         "AT": -129.5,
@@ -175,7 +176,7 @@
         "Sample text (multi-paragraph; /glyphname inserts a glyph)",
         "Kinetikern2 \u2014 live sidebearings + kerning",
         "Font as it is \u2014 current spacing and kerning",
-        "Regular \u00b7 245 glyphs spaced, 42 of the sample kerned \u00b7 470 entries (466 class pairs, 4 exceptions) \u00b7 pass 1 1 ms \u00b7 pass 2 14 ms \u00b7 7 threads \u00b7 Phase 1 took 0.2 s",
+        "Regular \u00b7 245 glyphs spaced, 42 of the sample kerned \u00b7 470 entries (466 class pairs, 4 exceptions) \u00b7 pass 1 2 ms \u00b7 pass 2 18 ms \u00b7 7 threads \u00b7 Phase 1 took 0.3 s",
         "Cancel",
         "Apply to Font",
         "Revert Last Apply",
@@ -185,6 +186,7 @@
         "Glyphs in sample text",
         "Apply to",
         "\u21bb",
+        "Connected script",
         "Max pairs",
         "Auto (7 of 8 cores)",
         "Threads",
@@ -210,10 +212,10 @@
       "left_classes": 147,
       "kerned_glyphs": 42,
       "stats": {
-        "prep_ms": 240.77124999999998,
-        "pass1_ms": 0.604042,
-        "pass2_ms": 13.7585,
-        "prune_ms": 0.0006659999999999999,
+        "prep_ms": 304.704458,
+        "pass1_ms": 1.903959,
+        "pass2_ms": 17.502041,
+        "prune_ms": 0.0006670000000000001,
         "pass1_residual": 0.0004605923930433853,
         "pass1_iterations": 16,
         "threads": 7,
@@ -261,40 +263,40 @@
         ]
       },
       "step": "preview",
-      "t": 3.12
+      "t": 3.204
     },
     {
       "top_menu": "Filter",
       "index": 40,
       "of": 42,
       "enabled": true,
-      "ms": 7.4,
+      "ms": 20.7,
       "step": "menu again",
-      "t": 3.331
+      "t": 3.427
     },
     {
       "same_window": true,
       "windows": 1,
       "step": "second choice",
-      "t": 3.331
+      "t": 3.427
     },
     {
       "state": "solving",
       "step": "cancel test: whole-font run started",
-      "t": 3.643
+      "t": 3.778
     },
     {
       "at": {
         "phase": 2,
-        "fraction": 0.59,
-        "text": "Phase 2/3: Evaluating pairs [59%] \u00b7 0 s",
-        "seconds": 0.18,
+        "fraction": 0.41,
+        "text": "Phase 2/3: Evaluating pairs [41%] \u00b7 0 s",
+        "seconds": 0.17,
         "phases": {
-          "phase 2": 0.13
+          "phase 2": 0.12
         }
       },
-      "cancel_call_ms": 2.1,
-      "stopped_ms": 2.1,
+      "cancel_call_ms": 2.4,
+      "stopped_ms": 2.4,
       "state": "ready",
       "result_kept": true,
       "labels": [
@@ -311,6 +313,7 @@
         "Glyphs in sample text",
         "Apply to",
         "\u21bb",
+        "Connected script",
         "Max pairs",
         "Auto (7 of 8 cores)",
         "Threads",
@@ -331,15 +334,15 @@
         "Looseness / Tightness"
       ],
       "step": "cancel test: cancelled",
-      "t": 3.815
+      "t": 3.948
     },
     {
       "state": "solving",
       "step": "whole-font run started",
-      "t": 3.817
+      "t": 3.95
     },
     {
-      "seconds": 0.41,
+      "seconds": 0.52,
       "phases": {
         "phase 2": 0.11
       },
@@ -347,7 +350,7 @@
         "Sample text (multi-paragraph; /glyphname inserts a glyph)",
         "Kinetikern2 \u2014 live sidebearings + kerning",
         "Font as it is \u2014 current spacing and kerning",
-        "Whole font (Regular): 231 glyphs kerned \u00b7 52,789 pairs in scope \u00b7 19,046 class pairs solved \u00b7 9,532 entries (6,443 class pairs, 3,089 exceptions) \u00b7 0.4 s on 7 threads",
+        "Whole font (Regular): 231 glyphs kerned \u00b7 52,789 pairs in scope \u00b7 19,046 class pairs solved \u00b7 9,532 entries (6,443 class pairs, 3,089 exceptions) \u00b7 0.5 s on 7 threads",
         "Cancel",
         "Apply to Font",
         "Revert Last Apply",
@@ -357,6 +360,7 @@
         "Glyphs in sample text",
         "Apply to",
         "\u21bb",
+        "Connected script",
         "Max pairs",
         "Auto (7 of 8 cores)",
         "Threads",
@@ -382,10 +386,10 @@
       "left_classes": 147,
       "kerned_glyphs": 231,
       "stats": {
-        "prep_ms": 240.77124999999998,
-        "pass1_ms": 0.549208,
-        "pass2_ms": 387.13925,
-        "prune_ms": 0.010459,
+        "prep_ms": 304.704458,
+        "pass1_ms": 1.910625,
+        "pass2_ms": 452.915208,
+        "prune_ms": 0.009458,
         "pass1_residual": 0.0004605923930433853,
         "pass1_iterations": 16,
         "threads": 7,
@@ -433,12 +437,12 @@
         ]
       },
       "step": "whole-font run",
-      "t": 4.23
+      "t": 4.471
     },
     {
-      "capture_s": 0.083,
-      "plan_s": 0.012,
-      "gc_tracked": 336665,
+      "capture_s": 0.05,
+      "plan_s": 0.013,
+      "gc_tracked": 336741,
       "kerning_entries": 4643,
       "plan": {
         "class_pairs": 6443,
@@ -454,10 +458,10 @@
         "group_moves": 0
       },
       "step": "before apply",
-      "t": 4.635
+      "t": 4.845
     },
     {
-      "seconds": 0.429,
+      "seconds": 0.443,
       "call_s": 0.002,
       "summary": {
         "ok": true,
@@ -468,7 +472,7 @@
         "keyed_glyphs_synced": 0,
         "metric_mismatches": 0,
         "kerning_mismatches": 0,
-        "apply_ms": 223.91671012155712,
+        "apply_ms": 258.5665840888396,
         "master_id": "m01",
         "error": null,
         "examples": [],
@@ -497,23 +501,23 @@
           "group_moves": 0
         },
         "ms": {
-          "start": 0.12612499995157123,
-          "composites": 4.3492920231074095,
-          "revert_point": 50.22037506569177,
-          "groups": 8.502832963131368,
-          "metrics": 70.36725000943989,
-          "removals": 32.60183398379013,
-          "kerning": 31.482125108595937,
-          "record": 17.533334030304104,
-          "read_back": 5.68816700251773,
-          "undo": 2.3149580229073763,
-          "total": 223.91671012155712,
-          "wall": 344.81783397495747
+          "start": 0.17533398931846023,
+          "composites": 4.764166020322591,
+          "revert_point": 58.36970894597471,
+          "groups": 10.049625008832663,
+          "metrics": 78.81587598240003,
+          "removals": 37.21812600269914,
+          "kerning": 37.37049893243238,
+          "record": 20.951207960024476,
+          "read_back": 6.771792017389089,
+          "undo": 2.7530420338734984,
+          "total": 258.5665840888396,
+          "wall": 403.3496659831144
         },
         "slowest_slice": {
-          "ms": 10.10770903667435,
-          "phases": "metrics",
-          "end_slice_ms": 0.16449997201561928
+          "ms": 8.503582968842238,
+          "phases": "kerning",
+          "end_slice_ms": 0.19983400125056505
         }
       },
       "kerning_entries_after": 9639,
@@ -533,7 +537,7 @@
         "Sample text (multi-paragraph; /glyphname inserts a glyph)",
         "Kinetikern2 \u2014 live sidebearings + kerning (whole-font result: 9,532 entries)",
         "Font as it is \u2014 current spacing and kerning",
-        "Applied to Regular: 9,532 kerning entries written, 4,089 removed, 450 group sides set, 244 glyphs re-spaced in 0.22 s.",
+        "Applied to Regular: 9,532 kerning entries written, 4,089 removed, 450 group sides set, 244 glyphs re-spaced in 0.26 s.",
         "Cancel",
         "Apply to Font",
         "Revert Last Apply",
@@ -543,6 +547,7 @@
         "Glyphs in sample text",
         "Apply to",
         "\u21bb",
+        "Connected script",
         "Max pairs",
         "Auto (7 of 8 cores)",
         "Threads",
@@ -563,10 +568,10 @@
         "Looseness / Tightness"
       ],
       "step": "applied",
-      "t": 5.165
+      "t": 5.406
     },
     {
-      "seconds": 0.442,
+      "seconds": 0.429,
       "counts": {
         "kerning_set": 4533,
         "kerning_removed": 9085,
@@ -578,11 +583,11 @@
         "kept_glyphs": 0,
         "kept_components": 0,
         "conflicts": 0,
-        "restore_ms": 244.01891214074567,
+        "restore_ms": 226.9974573282525,
         "slowest_slice": {
-          "ms": 8.956416975706816,
-          "phases": "check",
-          "end_slice_ms": 0.18216599710285664
+          "ms": 8.862375048920512,
+          "phases": "kerning",
+          "end_slice_ms": 0.2093329676426947
         }
       },
       "kerning_entries": 4643,
@@ -605,6 +610,7 @@
         "Glyphs in sample text",
         "Apply to",
         "\u21bb",
+        "Connected script",
         "Max pairs",
         "Auto (7 of 8 cores)",
         "Threads",
@@ -625,115 +631,115 @@
         "Looseness / Tightness"
       ],
       "step": "reverted",
-      "t": 5.975
+      "t": 6.208
     },
     {
       "stem": 97.0,
       "looseness": 0.0,
-      "sides_moved": 128,
-      "pairs": 416,
-      "biggest_side_shift_per_1000": 33.1,
+      "sides_moved": 149,
+      "pairs": 1925,
+      "biggest_side_shift_per_1000": 52.7,
       "rows": 80,
       "top": [
-        "F slash +55",
-        "E parenright +47",
-        "L parenright +46",
-        "h parenright +46",
-        "parenleft z +45",
-        "b parenright +45",
-        "parenleft d +45",
-        "T slash +44",
-        "p parenright +43",
-        "parenleft q +43"
+        "L bullet +77",
+        "L degree +67",
+        "T bullet +67",
+        "L percent +66",
+        "bullet T +66",
+        "L periodcentered +61",
+        "L trademark +60",
+        "G bracketright +59",
+        "bracketleft d +59",
+        "percent T +58"
       ],
       "side_differences": [],
       "pair_differences": [],
-      "window_open_ms": 120.5,
+      "window_open_ms": 101.8,
       "model_pair": true,
       "step": "harness on",
-      "t": 6.655
+      "t": 6.903
     },
     {
       "source": "screen",
       "step": "harness image",
-      "t": 6.725
+      "t": 6.97
     },
     {
       "rows": 80,
       "first": [
         "AA   A A",
         "YA   Y A",
+        "AY   A Y",
         "Yq   Y q",
-        "Fz   F z",
+        "YY   Y Y",
         "Yo   Y o",
         "Ye   Y e",
-        "Yc   Y c",
-        "AY   A Y"
+        "Yc   Y c"
       ],
       "not_letters": [],
       "step": "harness letters",
-      "t": 6.73
+      "t": 6.977
     },
     {
       "source": "screen",
       "step": "harness letters image",
-      "t": 7.633
+      "t": 7.851
     },
     {
-      "sides_moved": 128,
-      "pairs": 554,
+      "sides_moved": 149,
+      "pairs": 2506,
       "differences": [],
       "marks": [
-        "period -6/-3",
-        "comma -4/-1",
-        "hyphen -7/-4",
-        "question +14/+8"
+        "period -8/-4",
+        "comma -5/+2",
+        "hyphen -10/-7",
+        "question +15/+5"
       ],
       "step": "harness display",
-      "t": 7.968
+      "t": 8.179
     },
     {
-      "glyphs": 47,
+      "glyphs": 48,
       "differences": [],
       "examples": [
-        "A -11/-10",
-        "E +2/+14",
-        "F +2/+9",
-        "H +2/+4",
-        "I +5/+6",
-        "J +5/+3"
+        "A -12/-11",
+        "B +2/-5",
+        "C -4/+7",
+        "D +2/-2",
+        "E +1/+13",
+        "F +2/+8"
       ],
       "summary": {
         "ok": true,
-        "kerning_entries": 777,
-        "entries_removed": 206,
-        "group_sides_set": 84,
-        "glyphs_respaced": 47,
+        "kerning_entries": 1009,
+        "entries_removed": 205,
+        "group_sides_set": 89,
+        "glyphs_respaced": 49,
         "keyed_glyphs_synced": 0,
         "metric_mismatches": 0,
         "kerning_mismatches": 0,
-        "apply_ms": 51.21970898471773,
+        "apply_ms": 54.69374998938292,
         "master_id": "m01",
         "error": null,
         "examples": [],
         "details": {
           "group_conflicts": 0,
           "missing_glyphs": 0,
-          "metric_sides": 94,
-          "composites": 53,
-          "components_held": 53,
+          "metric_sides": 91,
+          "composites": 47,
+          "components_held": 45,
           "realigned": 0,
-          "readback_metrics": 94,
-          "readback_kerning": 389,
+          "readback_metrics": 98,
+          "readback_kerning": 337,
           "readback_removals": 69
         },
         "counts": {
-          "class_pairs": 572,
-          "exceptions": 205,
+          "class_pairs": 581,
+          "exceptions": 428,
           "glyph_pairs": 0,
-          "removals": 206,
-          "groups": 45,
-          "metrics": 47,
+          "removals": 205,
+          "groups": 47,
+          "metrics": 49,
           "overriding": 0,
           "joining_existing": 0,
           "other_masters": 0,
@@ -741,34 +747,34 @@
           "group_moves": 0
         },
         "ms": {
-          "start": 0.06791698979213834,
-          "composites": 4.03070799075067,
-          "revert_point": 14.514291018713266,
-          "groups": 1.8222920480184257,
-          "metrics": 10.623124951962382,
-          "removals": 2.260750043205917,
-          "kerning": 2.9147499590180814,
-          "record": 10.888917022384703,
-          "read_back": 2.819583984091878,
-          "undo": 1.0932500008493662,
-          "total": 51.21970898471773,
-          "wall": 100.0212500221096
+          "start": 0.11016702046617866,
+          "composites": 3.740791988093406,
+          "revert_point": 15.85004199296236,
+          "groups": 2.1842499845661223,
+          "metrics": 12.45854003354907,
+          "removals": 2.5234170025214553,
+          "kerning": 3.897207963746041,
+          "record": 10.462415928486735,
+          "read_back": 2.1965840132907033,
+          "undo": 1.0589159792289138,
+          "total": 54.69374998938292,
+          "wall": 102.63416700763628
         },
         "slowest_slice": {
-          "ms": 8.30074999248609,
-          "phases": "metrics/removals",
-          "end_slice_ms": 0.07037504110485315
+          "ms": 8.370499999728054,
+          "phases": "metrics",
+          "end_slice_ms": 0.07766700582578778
         }
       },
       "step": "harness applied",
-      "t": 8.39
+      "t": 8.565
     },
     {
       "kerning_differences": 0,
       "glyph_differences": 0,
       "examples": [],
       "step": "harness reverted",
-      "t": 8.541
+      "t": 8.723
     },
     {
       "checks": [
@@ -850,33 +856,33 @@
         ]
       ],
       "step": "groups window ui",
-      "t": 9.24
+      "t": 9.476
     },
     {
       "capitals": 68,
       "figures": 10,
       "summary": "Capitals 68 (frozen); Figures 10 (Looseness +0.40, force 50%)",
-      "open_groups_window_ms": 169.8,
-      "open_pairs_window_ms": 48.5,
+      "open_groups_window_ms": 144.9,
+      "open_pairs_window_ms": 68.2,
       "step": "groups set",
-      "t": 9.24
+      "t": 9.476
     },
     {
-      "seconds": 0.41,
+      "seconds": 0.52,
       "fitted_looseness": -0.0017365765751387137,
       "frozen_moved": 0,
       "frozen_examples": [],
       "entries": 11028,
       "entries_between_frozen": 0,
       "step": "groups whole-font run",
-      "t": 9.942
+      "t": 10.195
     },
     {
-      "seconds": 0.91,
+      "seconds": 1.13,
       "stats": {
         "pairs": 52789,
         "offset": 16.37187552080132,
-        "mae": 45.13791872000565,
+        "mae": 45.137918720005636,
         "rms": 64.5691442060034
       },
       "loosest": [
@@ -897,12 +903,12 @@
       ],
       "status": "52,789 pairs measured \u00b7 the font is looser than Kinetikern2 overall by 8.2 units per 1000 em \u00b7 mean difference after that 22.6",
       "step": "pairs before apply",
-      "t": 10.853
+      "t": 11.326
     },
     {
       "source": "screen",
       "step": "pairs image",
-      "t": 11.736
+      "t": 12.191
     },
     {
       "counts": {
@@ -919,7 +925,7 @@
         "group_moves": 0
       },
       "step": "groups plan",
-      "t": 11.797
+      "t": 12.253
     },
     {
       "frozen_glyphs_changed": 0,
@@ -936,7 +942,7 @@
         "keyed_glyphs_synced": 0,
         "metric_mismatches": 0,
         "kerning_mismatches": 0,
-        "apply_ms": 213.05499610025436,
+        "apply_ms": 215.3265040833503,
         "master_id": "m01",
         "error": null,
         "examples": [],
@@ -965,287 +971,287 @@
           "group_moves": 0
         },
         "ms": {
-          "start": 0.20125001901760697,
-          "composites": 2.215708023868501,
-          "revert_point": 44.42062502494082,
-          "groups": 6.832916988059878,
-          "metrics": 59.76624909089878,
-          "removals": 34.81816698331386,
-          "kerning": 42.74937405716628,
-          "record": 13.765083043836057,
-          "read_back": 5.384915973991156,
-          "undo": 1.9173339824192226,
-          "total": 213.05499610025436,
-          "wall": 341.40991704771295
+          "start": 0.15462498413398862,
+          "composites": 2.6978750247508287,
+          "revert_point": 52.02520888997242,
+          "groups": 7.121667033061385,
+          "metrics": 55.2564580575563,
+          "removals": 32.15104207629338,
+          "kerning": 43.41979295713827,
+          "record": 14.130917028523982,
+          "read_back": 5.466541973873973,
+          "undo": 2.0405420218594372,
+          "total": 215.3265040833503,
+          "wall": 340.2842920040712
         },
         "slowest_slice": {
-          "ms": 11.034666036721319,
-          "phases": "metrics",
-          "end_slice_ms": 0.1367499935440719
+          "ms": 8.462792029604316,
+          "phases": "kerning",
+          "end_slice_ms": 0.15841698041185737
         }
       },
       "step": "groups applied",
-      "t": 12.321
+      "t": 12.798
     },
     {
-      "seconds": 1.14,
+      "seconds": 1.18,
       "stats": {
         "pairs": 52789,
         "offset": -0.9655622029668981,
-        "mae": 1.9210172888474701,
-        "rms": 9.642380008898755
+        "mae": 1.921017288847468,
+        "rms": 9.642380008898757
       },
       "loosest": [
         "Agrave J +25",
-        "Atilde J +25",
         "Aring J +25",
-        "Aogonek J +25",
-        "A J +25",
-        "Acircumflex J +25"
+        "Atilde J +25",
+        "Acircumflex J +25",
+        "Adieresis J +25",
+        "A J +25"
       ],
       "tightest": [
         "L Y -106",
-        "L Ydieresis -106",
         "L Yacute -106",
-        "Y J -100",
+        "L Ydieresis -106",
+        "Yacute J -100",
         "Ydieresis J -100",
-        "T J -100"
+        "Y J -100"
       ],
       "status": "52,789 pairs measured \u00b7 the font is tighter than Kinetikern2 overall by 0.5 units per 1000 em \u00b7 mean difference after that 1.0",
       "step": "pairs after apply",
-      "t": 13.461
+      "t": 13.975
     },
     {
       "source": "screen",
       "step": "groups image",
-      "t": 14.385
+      "t": 14.858
     },
     {
       "kerning_differences": 0,
       "glyph_differences": 0,
       "examples": [],
       "step": "groups reverted",
-      "t": 14.756
+      "t": 15.345
     },
     {
       "file": "window.png",
       "source": "screen",
       "step": "window image",
-      "t": 14.822
+      "t": 15.417
     },
     {
       "windows": 0,
       "result_freed": true,
       "context_freed": true,
       "step": "closed",
-      "t": 15.039
+      "t": 15.642
     },
     {
       "step": "font closed",
-      "t": 15.073
+      "t": 15.695
     }
   ],
   "states": [
     [
-      2.582,
+      2.563,
       "reading"
     ],
     [
-      2.757,
+      2.758,
       "preparing"
     ],
     [
-      2.997,
+      3.082,
       "previewing"
     ],
     [
-      3.065,
+      3.149,
       "ready"
     ],
     [
-      3.655,
+      3.787,
       "solving"
     ],
     [
-      4.23,
+      4.433,
       "ready"
     ],
     [
-      4.641,
+      4.852,
       "applying"
     ],
     [
-      5.016,
+      5.407,
       "ready"
     ],
     [
-      5.485,
+      5.718,
       "applying"
     ],
     [
-      5.866,
+      6.084,
       "ready"
     ],
     [
-      6.428,
+      6.678,
       "previewing"
     ],
     [
-      6.48,
+      6.691,
       "ready"
     ],
     [
-      6.554,
+      6.802,
       "previewing"
     ],
     [
-      6.614,
+      6.883,
       "ready"
     ],
     [
-      6.747,
+      6.993,
       "previewing"
     ],
     [
-      6.814,
+      7.082,
       "ready"
     ],
     [
-      7.867,
+      8.077,
       "previewing"
     ],
     [
-      7.915,
+      8.132,
       "ready"
     ],
     [
-      8.004,
+      8.2,
       "previewing"
     ],
     [
-      8.048,
+      8.266,
       "ready"
     ],
     [
-      8.178,
+      8.354,
       "applying"
     ],
     [
-      8.297,
+      8.485,
       "ready"
     ],
     [
-      8.397,
+      8.571,
       "applying"
     ],
     [
-      8.463,
+      8.647,
       "ready"
     ],
     [
-      8.559,
+      8.743,
       "previewing"
     ],
     [
-      8.708,
+      8.836,
       "ready"
     ],
     [
-      9.296,
+      9.573,
       "previewing"
     ],
     [
-      9.431,
+      9.666,
       "ready"
     ],
     [
-      9.531,
+      9.685,
       "solving"
     ],
     [
-      9.903,
+      10.139,
       "ready"
     ],
     [
-      9.947,
+      10.199,
       "reading"
     ],
     [
-      10.129,
+      10.38,
       "preparing"
     ],
     [
-      10.381,
+      10.717,
       "previewing"
     ],
     [
-      10.447,
+      10.784,
       "solving"
     ],
     [
-      10.806,
+      11.282,
       "ready"
     ],
     [
-      11.803,
+      12.26,
       "applying"
     ],
     [
-      12.18,
+      12.634,
       "ready"
     ],
     [
-      12.325,
+      12.801,
       "reading"
     ],
     [
-      12.497,
+      12.988,
       "preparing"
     ],
     [
-      12.814,
+      13.299,
       "previewing"
     ],
     [
-      12.88,
+      13.369,
       "solving"
     ],
     [
-      13.36,
+      13.875,
       "ready"
     ],
     [
-      14.391,
+      14.864,
       "applying"
     ],
     [
-      14.699,
+      15.201,
       "ready"
     ]
   ],
   "summary": [
-    "preview ready after 0.9 s: 245 spacing glyphs (outlines read in 79 ms), 42 kerned in the sample, 470 entries",
-    "cancelled the whole-font run at Phase 2/3: Evaluating pairs [59%] \u00b7 0 s; the window stopped it in 2 ms",
-    "whole-font run 0.4 s on 7 threads: 231 kerned glyphs, 52789 pairs in scope, 19046 class pairs, 9532 entries (9532 before the budget)",
-    "Apply 0.43 s: 9532 kerning entries, 450 group sides, 480 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches",
-    "Revert 0.44 s: kerning (4643 entries), groups and sidebearings of 245 glyphs are as before Apply",
-    "designer harness: 128 glyph sides and 416 pairs corrected (stem 97, largest side shift 33 per 1000 em); the preview moved every side and pair exactly as planned; the Designer Harness window lists 80 pairs, e.g. F slash +55, E parenright +47, L parenright +46, h parenright +46; opened in 121 ms",
-    "Designer Harness window, Letters: 80 pairs, e.g. AA, YA, Yq, Fz, Yo, Ye",
-    "designer harness, Display conventions picked in its window: 128 glyph sides and 554 pairs corrected, the preview moved every side as planned (period -6/-3, comma -4/-1, hyphen -7/-4, question +14/+8)",
-    "designer harness Apply: 47 glyphs the harness shifted written as the preview showed them (left/right shift per 1000 em, e.g. A -11/-10, E +2/+14, F +2/+9, H +2/+4, I +5/+6, J +5/+3)",
+    "preview ready after 1.0 s: 245 spacing glyphs (outlines read in 93 ms), 42 kerned in the sample, 470 entries",
+    "cancelled the whole-font run at Phase 2/3: Evaluating pairs [41%] \u00b7 0 s; the window stopped it in 2 ms",
+    "whole-font run 0.5 s on 7 threads: 231 kerned glyphs, 52789 pairs in scope, 19046 class pairs, 9532 entries (9532 before the budget)",
+    "Apply 0.44 s: 9532 kerning entries, 450 group sides, 480 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches",
+    "Revert 0.43 s: kerning (4643 entries), groups and sidebearings of 245 glyphs are as before Apply",
+    "designer harness: 149 glyph sides and 1925 pairs corrected (stem 97, largest side shift 53 per 1000 em); the preview moved every side and pair exactly as planned; the Designer Harness window lists 80 pairs, e.g. L bullet +77, L degree +67, T bullet +67, L percent +66; opened in 102 ms",
+    "Designer Harness window, Letters: 80 pairs, e.g. AA, YA, AY, Yq, YY, Yo",
+    "designer harness, Display conventions picked in its window: 149 glyph sides and 2506 pairs corrected, the preview moved every side as planned (period -8/-4, comma -5/+2, hyphen -10/-7, question +15/+5)",
+    "designer harness Apply: 48 glyphs the harness shifted written as the preview showed them (left/right shift per 1000 em, e.g. A -12/-11, B +2/-5, C -4/+7, D +2/-2, E +1/+13, F +2/+8)",
     "designer harness Revert: the font is as before",
     "designer harness off: every glyph back to Kinetikern2's own spacing",
     "Spacing Groups window, driven like a user: 19 of 19 steps as expected (click, Shift-click, Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, no group, take out and put back)",
-    "spacing groups: 68 Latin capitals frozen, 10 figures at Looseness +0.4 and 50% force; the Spacing Groups window opened in 170 ms, the Pairs window in 49 ms",
-    "spacing groups: whole font 0.4 s, Looseness fitted to the frozen capitals -0.00, 11028 entries, 0 between frozen glyphs, 0 frozen glyphs moved",
-    "pairs window (the font as it is): 52789 pairs in 0.9 s; loosest less florin +184, asciicircum florin +184, florin florin +179; tightest fraction underscore -187, underscore fraction -186, period quotedblleft -183",
+    "spacing groups: 68 Latin capitals frozen, 10 figures at Looseness +0.4 and 50% force; the Spacing Groups window opened in 145 ms, the Pairs window in 68 ms",
+    "spacing groups: whole font 0.5 s, Looseness fitted to the frozen capitals -0.00, 11028 entries, 0 between frozen glyphs, 0 frozen glyphs moved",
+    "pairs window (the font as it is): 52789 pairs in 1.1 s; loosest less florin +184, asciicircum florin +184, florin florin +179; tightest fraction underscore -187, underscore fraction -186, period quotedblleft -183",
     "spacing groups Apply: 0 frozen glyphs and 0 kerning entries between frozen glyphs changed; 9 figures re-spaced",
     "pairs window after Apply (read again): mean difference 1.0 units per 1000 em",
     "spacing groups Revert: the font is as before",
-    "longest main-thread stall while the window worked: 120 ms (designer harness); limit 500 ms",
-    "main thread held by open window: up to 368 ms",
-    "main thread held by apply: up to 29 ms",
-    "main thread held by revert: up to 24 ms"
+    "longest main-thread stall while the window worked: 124 ms (spacing groups); limit 500 ms",
+    "main thread held by open window: up to 355 ms",
+    "main thread held by apply: up to 27 ms",
+    "main thread held by revert: up to 28 ms"
   ],
   "errors": [],
   "warnings": [],
@@ -1255,78 +1261,78 @@
     "default_threads": 7
   },
   "window_ticks_ms": {
-    "poll whole": 83.2,
-    "left pane": 11.9,
-    "reading": 11.2,
-    "apply: metrics": 11.1,
-    "revert: kerning": 10.3,
-    "apply: read_back": 9.9,
-    "revert: check": 9.0,
+    "poll whole": 96.1,
+    "reading": 12.1,
+    "left pane": 11.0,
+    "revert: kerning": 9.2,
+    "revert: metrics": 8.7,
+    "revert: check": 8.7,
+    "revert: components": 8.7,
     "apply: kerning": 8.6,
-    "revert: components": 8.6,
-    "apply: groups": 8.6,
+    "plan: start": 8.6,
+    "apply: metrics": 8.6,
+    "revert: start": 8.5,
     "apply: removals": 8.4,
-    "revert: start": 8.4,
-    "revert: metrics": 8.4,
-    "plan: start": 8.4,
-    "apply: record": 8.3,
+    "apply: read_back": 8.4,
+    "apply: revert_point": 8.4,
+    "apply: groups": 8.4,
+    "apply: start": 8.3,
     "revert: groups": 8.2,
-    "apply: revert_point": 8.2,
-    "apply: start": 8.2,
-    "right pane": 7.8,
-    "plan: kerning": 4.7,
-    "poll preview": 4.2,
-    "start preview": 1.0,
+    "apply: record": 8.2,
+    "plan: kerning": 6.6,
+    "right pane": 5.4,
+    "poll preview": 3.2,
+    "start preview": 1.4,
     "poll prepare": 1.0,
     "poll": 0.0
   },
   "gc": {
+    "1": {
+      "count": 30,
+      "max_ms": 0.9,
+      "total_ms": 5.2,
+      "stage": "open window",
+      "doing": null
+    },
     "0": {
-      "count": 306,
-      "max_ms": 1.6,
-      "total_ms": 5.8,
-      "stage": "opening the groups windows",
+      "count": 321,
+      "max_ms": 0.7,
+      "total_ms": 4.6,
+      "stage": "designer harness",
       "doing": [
         "ready",
         "poll",
         0.0
       ]
-    },
-    "1": {
-      "count": 28,
-      "max_ms": 0.7,
-      "total_ms": 4.0,
-      "stage": "open window",
-      "doing": null
     }
   },
   "stalls": {
     "open window": {
       "ticks": 1,
-      "max_ms": 368.1,
-      "at": 2.556,
+      "max_ms": 354.9,
+      "at": 2.547,
       "over_50ms": 1,
       "over_100ms": 1,
       "over_250ms": 1,
       "doing": null
     },
     "preview": {
-      "ticks": 42,
-      "max_ms": 43.7,
-      "at": 2.757,
+      "ticks": 51,
+      "max_ms": 31.8,
+      "at": 2.83,
       "over_50ms": 0,
       "over_100ms": 0,
       "over_250ms": 0,
       "doing": [
         "preparing",
-        "reading",
-        7.2
+        "right pane",
+        3.6
       ]
     },
     "menu again": {
       "ticks": 20,
-      "max_ms": 17.6,
-      "at": 3.63,
+      "max_ms": 48.6,
+      "at": 3.47,
       "over_50ms": 0,
       "over_100ms": 0,
       "over_250ms": 0,
@@ -1338,61 +1344,61 @@
     },
     "cancelled run": {
       "ticks": 12,
-      "max_ms": 17.6,
-      "at": 3.797,
+      "max_ms": 18.2,
+      "at": 3.867,
       "over_50ms": 0,
       "over_100ms": 0,
       "over_250ms": 0,
       "doing": [
         "solving",
         "poll whole",
-        0.1
+        0.2
       ]
     },
     "whole-font run": {
-      "ticks": 45,
-      "max_ms": 17.6,
-      "at": 4.33,
+      "ticks": 51,
+      "max_ms": 19.4,
+      "at": 4.502,
       "over_50ms": 0,
       "over_100ms": 0,
       "over_250ms": 0,
       "doing": [
         "ready",
         "right pane",
-        1.7
+        1.5
       ]
     },
     "apply": {
-      "ticks": 47,
-      "max_ms": 29.1,
-      "at": 4.862,
+      "ticks": 45,
+      "max_ms": 26.6,
+      "at": 5.433,
       "over_50ms": 0,
       "over_100ms": 0,
       "over_250ms": 0,
       "doing": [
-        "applying",
-        "apply: metrics",
-        8.2
+        "ready",
+        "left pane",
+        9.7
       ]
     },
     "revert": {
-      "ticks": 46,
-      "max_ms": 24.1,
-      "at": 5.855,
+      "ticks": 44,
+      "max_ms": 27.7,
+      "at": 5.918,
       "over_50ms": 0,
       "over_100ms": 0,
       "over_250ms": 0,
       "doing": [
         "applying",
-        "revert: kerning",
-        8.3
+        "revert: components",
+        8.7
       ]
     },
     "designer harness": {
       "ticks": 143,
-      "max_ms": 120.5,
-      "at": 6.397,
-      "over_50ms": 1,
+      "max_ms": 101.8,
+      "at": 6.611,
+      "over_50ms": 3,
       "over_100ms": 1,
       "over_250ms": 0,
       "doing": [
@@ -1403,9 +1409,9 @@
     },
     "opening the groups windows": {
       "ticks": 3,
-      "max_ms": 169.7,
-      "at": 9.177,
-      "over_50ms": 1,
+      "max_ms": 144.9,
+      "at": 9.39,
+      "over_50ms": 2,
       "over_100ms": 1,
       "over_250ms": 0,
       "doing": [
@@ -1415,33 +1421,33 @@
       ]
     },
     "spacing groups": {
-      "ticks": 305,
-      "max_ms": 96.4,
-      "at": 13.36,
+      "ticks": 321,
+      "max_ms": 123.7,
+      "at": 13.874,
       "over_50ms": 2,
-      "over_100ms": 0,
+      "over_100ms": 2,
       "over_250ms": 0,
       "doing": [
         "ready",
         "poll whole",
-        83.2
+        96.1
       ]
     },
     "close": {
       "ticks": 1,
-      "max_ms": 215.9,
-      "at": 15.038,
+      "max_ms": 224.4,
+      "at": 15.641,
       "over_50ms": 1,
       "over_100ms": 1,
       "over_250ms": 0,
       "doing": [
         "ready",
-        "revert: kerning",
-        10.3
+        "left pane",
+        8.1
       ]
     }
   },
-  "max_stall_ms": 120.5,
-  "max_stall_stage": "designer harness",
-  "seconds": 15.073
+  "max_stall_ms": 123.7,
+  "max_stall_stage": "spacing groups",
+  "seconds": 15.695
 }

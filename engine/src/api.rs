@@ -22,6 +22,7 @@ pub use crate::engine::{
     NONE,
 };
 pub use crate::geometry::{Vec2, NODE_CURVE, NODE_LINE, NODE_OFFCURVE, NODE_QCURVE};
+pub use crate::joins::{detect as detect_joins, Bands as JoinBands, JoinGlyph, JoinKind, JoinRule};
 pub use crate::measure::{KernIn, Measured, PairOut};
 pub use crate::pass2::Solver;
 pub use crate::physics::rest_gap;
@@ -194,6 +195,21 @@ impl Engine {
 
     /// One solve; blocks until done.
     pub fn solve(&self, s: &Settings) -> Result<Solution, String> {
+        Ok(self.run(s, false)?.0)
+    }
+
+    /// One solve with the designer harness of `s`, and the same solve as it
+    /// was before the harness — the bare model — at no extra cost: (with the
+    /// harness, bare). Without a harness both are the same solve.
+    pub fn solve_with_bare(&self, s: &Settings) -> Result<(Solution, Solution), String> {
+        let (with, bare) = self.run(s, true)?;
+        Ok(match bare {
+            Some(bare) => (with, bare),
+            None => (with.clone(), with),
+        })
+    }
+
+    fn run(&self, s: &Settings, keep_bare: bool) -> Result<(Solution, Option<Solution>), String> {
         let ctx = &self.ctx;
         let p = Params {
             options: s.options(ctx.upm),
@@ -207,6 +223,7 @@ impl Engine {
             glyph_opts: s.glyph_opts.clone().map(Arc::new),
             fit_frozen: s.fit_frozen,
             harness: s.harness.clone().map(Arc::new),
+            keep_bare,
         };
         let mask: Option<Vec<u8>> = s.kern_mask.as_ref().map(|m| m.iter().map(|&b| b as u8).collect());
         let progress = Progress::new();
@@ -215,37 +232,41 @@ impl Engine {
             crate::job::JobError::Failed(msg) => msg,
         })?;
         let classes = out.classes.as_ref().unwrap_or(&ctx.classes);
-        let mut look = Lookup { classes: out.mode == Mode::Classes, ..Lookup::default() };
-        let entries: Vec<Entry> = out
-            .entries
-            .iter()
-            .map(|e| Entry { kind: e.kind, left: e.left, right: e.right, value: e.value, importance: e.importance })
-            .collect();
-        for e in &entries {
-            let map = match e.kind {
-                KIND_CLASS_CLASS => &mut look.cc,
-                KIND_GLYPH_CLASS => &mut look.gc,
-                KIND_CLASS_GLYPH => &mut look.cg,
-                _ => &mut look.gg,
-            };
-            map.insert((e.left, e.right), e.value);
-        }
-        let m = &out.pass1.metrics;
-        Ok(Solution {
-            lsb: out.pass1.lsb.clone(),
-            rsb: out.pass1.rsb.clone(),
-            advance: m.iter().map(|x| x.advance).collect(),
-            valid: m.iter().map(|x| x.valid).collect(),
-            kerned: out.kern.clone(),
-            fitted: if out.fitted.is_finite() { Some(s.looseness + out.fitted) } else { None },
-            rest_gap: out.pass1.rest_gap,
-            right_class: classes.right.class_of.clone(),
-            left_class: classes.left.class_of.clone(),
-            right_origin: classes.right.origin.clone(),
-            left_origin: classes.left.origin.clone(),
-            entries,
-            look,
-        })
+        let solution = |pass1: &crate::engine::Pass1, raw: &[run::Entry]| {
+            let mut look = Lookup { classes: out.mode == Mode::Classes, ..Lookup::default() };
+            let entries: Vec<Entry> = raw
+                .iter()
+                .map(|e| Entry { kind: e.kind, left: e.left, right: e.right, value: e.value, importance: e.importance })
+                .collect();
+            for e in &entries {
+                let map = match e.kind {
+                    KIND_CLASS_CLASS => &mut look.cc,
+                    KIND_GLYPH_CLASS => &mut look.gc,
+                    KIND_CLASS_GLYPH => &mut look.cg,
+                    _ => &mut look.gg,
+                };
+                map.insert((e.left, e.right), e.value);
+            }
+            let m = &pass1.metrics;
+            Solution {
+                lsb: pass1.lsb.clone(),
+                rsb: pass1.rsb.clone(),
+                advance: m.iter().map(|x| x.advance).collect(),
+                valid: m.iter().map(|x| x.valid).collect(),
+                kerned: out.kern.clone(),
+                fitted: if out.fitted.is_finite() { Some(s.looseness + out.fitted) } else { None },
+                rest_gap: pass1.rest_gap,
+                right_class: classes.right.class_of.clone(),
+                left_class: classes.left.class_of.clone(),
+                right_origin: classes.right.origin.clone(),
+                left_origin: classes.left.origin.clone(),
+                entries,
+                look,
+            }
+        };
+        let with = solution(&out.pass1, &out.entries);
+        let bare = out.bare.as_ref().map(|(p1, e)| solution(p1, e));
+        Ok((with, bare))
     }
 
     /// The font's spacing as it is (each glyph's current sidebearings, from
@@ -274,7 +295,7 @@ pub struct Entry {
     pub importance: f64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Lookup {
     classes: bool,
     gg: HashMap<(u32, u32), f64>,
@@ -284,6 +305,7 @@ struct Lookup {
 }
 
 /// The result of one solve.
+#[derive(Clone)]
 pub struct Solution {
     pub lsb: Vec<f64>,
     pub rsb: Vec<f64>,
@@ -392,6 +414,82 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_bare_model_is_the_solve_before_the_harness() {
+        let e = font();
+        for mode in [Mode::Pairs, Mode::Classes] {
+            let base = Settings { mode, ..Settings::new() };
+            let plain = e.solve(&base).unwrap();
+            let with = e.solve(&Settings { harness: Some(harness()), ..base.clone() }).unwrap();
+            let (w, bare) = e.solve_with_bare(&Settings { harness: Some(harness()), ..base.clone() }).unwrap();
+            for i in 0..4 {
+                assert_eq!((bare.lsb[i], bare.rsb[i], bare.advance[i]), (plain.lsb[i], plain.rsb[i], plain.advance[i]), "{mode:?} bare {i}");
+                assert_eq!((w.lsb[i], w.rsb[i], w.advance[i]), (with.lsb[i], with.rsb[i], with.advance[i]), "{mode:?} with {i}");
+            }
+            for a in 0..4 {
+                for b in 0..4 {
+                    assert_eq!(bare.kerning(a, b), plain.kerning(a, b), "{mode:?} bare pair {a} {b}");
+                    assert_eq!(w.kerning(a, b), with.kerning(a, b), "{mode:?} pair {a} {b}");
+                }
+            }
+            // without a harness both are the plain solve
+            let (x, y) = e.solve_with_bare(&base).unwrap();
+            assert_eq!((x.lsb.clone(), y.lsb.clone()), (plain.lsb.clone(), plain.lsb.clone()));
+        }
+    }
+
+    /// Three lowercase letters of a connected script — a body with an entry
+    /// stroke on the left and an exit stroke on the right, along the baseline,
+    /// both reaching past the advance — and a period. `joins`: the strokes are
+    /// declared as joins.
+    fn script(joins: bool) -> Engine {
+        // an n: two stems and an arch (its counter sets the rhythm), with the strokes
+        let letter = |w: f64| {
+            let mut g = GlyphInput::simple(
+                vec![
+                    rect(-20.0, 0.0, 100.0, 40.0),
+                    rect(100.0, 0.0, 170.0, 500.0),
+                    rect(170.0, 430.0, 30.0 + w, 500.0),
+                    rect(30.0 + w, 0.0, 100.0 + w, 500.0),
+                    rect(100.0 + w, 0.0, 220.0 + w, 40.0),
+                ],
+                200.0 + w,
+                GROUP_LOWERCASE,
+            );
+            if joins {
+                g.join_left = Some((0.0, 40.0));
+                g.join_right = Some((0.0, 40.0));
+            }
+            g
+        };
+        let dot = GlyphInput::simple(vec![rect(60.0, 0.0, 150.0, 90.0)], 210.0, GROUP_OTHER);
+        Engine::prepare(vec![letter(280.0), letter(300.0), letter(260.0), dot], 1000.0, 1).unwrap()
+    }
+
+    #[test]
+    fn a_connected_script_overlaps_at_its_joins() {
+        let gap = |s: &Solution, a: usize, b: usize| s.rsb[a] + s.lsb[b] + s.kerning(a, b);
+        for mode in [Mode::Pairs, Mode::Classes] {
+            let base = Settings { mode, ..Settings::new() };
+            let plain = script(false).solve(&base).unwrap();
+            let joined = script(true).solve(&base).unwrap();
+            // without joins the strokes are the letters' edges: no overlap anywhere
+            assert!(gap(&plain, 0, 1) > 0.0, "{mode:?} {}", gap(&plain, 0, 1));
+            // with them each stroke overhangs its body, and two letters overlap
+            // at the join (their bodies are spaced), without kerning
+            assert!(joined.rsb[0] < 0.0 && joined.lsb[1] < 0.0, "{mode:?} joined rsb {} lsb {}; plain rsb {} lsb {}", joined.rsb[0], joined.lsb[1], plain.rsb[0], plain.lsb[1]);
+            for a in 0..3 {
+                for b in 0..3 {
+                    assert_eq!(joined.kerning(a, b), 0.0, "{mode:?} join pair {a} {b}");
+                    assert!(gap(&joined, a, b) < 0.0, "{mode:?} {a} {b} overlap {}", gap(&joined, a, b));
+                }
+            }
+            // a period after a letter keeps its clearance from the exit stroke
+            assert!(gap(&joined, 0, 3) >= 0.0, "{mode:?} letter period {}", gap(&joined, 0, 3));
+            assert!(gap(&joined, 3, 1) >= 0.0, "{mode:?} period letter {}", gap(&joined, 3, 1));
         }
     }
 

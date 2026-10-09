@@ -51,6 +51,13 @@ GLYPHOPT_FROZEN = 1
 FEATURE_GLYPH_OPTS = 1
 FEATURE_MEASURE = 2
 FEATURE_HARNESS = 4
+FEATURE_JOINS = 8
+
+# kk2_detect_joins: what a glyph is to the joins (only letters join; the
+# lowercase letters are the partners whose overlaps are counted) and what
+# makes a join
+JOINKIND_OTHER, JOINKIND_UPPER, JOINKIND_LOWER = 0, 1, 2
+JOINRULE_BOTH, JOINRULE_OVERHANG, JOINRULE_OVERLAPS = 0, 1, 2
 
 STATE_RUNNING, STATE_DONE, STATE_FAILED, STATE_CANCELLED = 0, 1, 2, 3
 PHASE_NAMES = {1: "Analyzing SDFs", 2: "Evaluating pairs", 3: "Grouping & pruning"}
@@ -143,6 +150,11 @@ class KK2KernIn(Structure):
     _fields_ = [("kind", c_uint32), ("left", c_uint32), ("right", c_uint32), ("value", c_float)]
 
 
+class KK2Joins(Structure):
+    """A glyph's join bands in a connected script (font units; NaN = none)."""
+    _fields_ = [(n, c_double) for n in ("left_y0", "left_y1", "right_y0", "right_y1")]
+
+
 class KK2PairOut(Structure):
     _fields_ = [("left", c_uint32), ("right", c_uint32), ("current", c_float), ("model", c_float),
                 ("residual", c_float), ("reserved", c_uint32)]
@@ -155,7 +167,7 @@ class KK2MeasureStats(Structure):
 
 _SIZES = {KK2Point: 24, KK2Glyph: 104, KK2Params: 152, KK2Progress: 40, KK2Metrics: 64, KK2Entry: 24,
           KK2Stats: 352, KK2Result: 464, KK2Ray: 24, KK2GlyphOpt: 24, KK2KernIn: 16, KK2PairOut: 24,
-          KK2MeasureStats: 40, KK2Harness: 32, KK2HarnessPair: 16}
+          KK2MeasureStats: 40, KK2Harness: 32, KK2HarnessPair: 16, KK2Joins: 32}
 _POINT = struct.Struct("<ddII")
 _ENTRY = struct.Struct("<IIffII")
 
@@ -280,6 +292,25 @@ def pack_glyph_opts(opts):
     return arr
 
 
+def pack_kern_in(current):
+    """[(kind, left, right, value)] (group ids on class sides) → a KK2KernIn array."""
+    arr = (KK2KernIn * max(len(current), 1))()
+    for k, (kind, left, right, value) in enumerate(current):
+        arr[k].kind, arr[k].left, arr[k].right, arr[k].value = int(kind), int(left), int(right), float(value)
+    return arr
+
+
+def pack_joins(joins, n):
+    """[((left y0, y1) or None, (right y0, y1) or None)] → a KK2Joins array of n."""
+    nan = float("nan")
+    arr = (KK2Joins * max(n, 1))()
+    for k in range(n):
+        left, right = joins[k] if k < len(joins) and joins[k] else (None, None)
+        arr[k].left_y0, arr[k].left_y1 = (float(left[0]), float(left[1])) if left else (nan, nan)
+        arr[k].right_y0, arr[k].right_y1 = (float(right[0]), float(right[1])) if right else (nan, nan)
+    return arr
+
+
 def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=True, scope_scripts=True,
                 threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False, **tuning):
     p = KK2Params()
@@ -347,6 +378,9 @@ class Engine(object):
             "kk2_fit_looseness": ([c_void_p, POINTER(KK2Params), c_void_p, c_uint32], c_double),
             "kk2_measure": ([c_void_p, c_void_p, c_void_p, c_uint32, c_void_p, c_uint32, c_uint32, c_void_p, c_void_p,
                              c_uint32, POINTER(KK2MeasureStats)], c_uint64),
+            "kk2_prepare_start2": ([c_void_p, c_uint32, c_double, c_uint32, c_void_p, c_uint32], c_void_p),
+            "kk2_detect_joins": ([c_void_p, c_uint32, c_double, c_double, c_void_p, c_void_p, c_uint32, c_uint32,
+                                  c_void_p], c_uint32),
         }
         self.features = 0
         for name, (args, res) in optional.items():
@@ -367,14 +401,45 @@ class Engine(object):
     def last_error(self):
         return (self.lib.kk2_last_error() or b"").decode("utf-8", "replace")
 
-    def prepare(self, packer, units_per_em, threads=0):
-        """Starts Phase 1. Returns a Job whose output is a Context."""
+    def prepare(self, packer, units_per_em, threads=0, joins=None):
+        """Starts Phase 1. Returns a Job whose output is a Context. `joins`:
+        a connected script's join bands (detect_joins), or None."""
         arr, n, keep = packer.build()
-        ptr = self.lib.kk2_prepare_start(ctypes.addressof(arr), n, float(units_per_em), int(threads))
+        if joins is not None:
+            if not self.features & FEATURE_JOINS:
+                raise EngineError("this engine build has no connected-script mode (kk2_prepare_start2)")
+            jarr = pack_joins(joins, n)
+            ptr = self.lib.kk2_prepare_start2(ctypes.addressof(arr), n, float(units_per_em), int(threads),
+                                              ctypes.addressof(jarr), sizeof(KK2Joins))
+            del jarr
+        else:
+            ptr = self.lib.kk2_prepare_start(ctypes.addressof(arr), n, float(units_per_em), int(threads))
         del keep, arr  # the engine copied the input
         if not ptr:
             raise EngineError(self.last_error())
         return Job(self, ptr, "prepare", names=[g[4].name for g in packer.glyphs])
+
+    def detect_joins(self, packer, units_per_em, x_height, kinds, current=(), rule=JOINRULE_BOTH):
+        """A connected script's joins, found in the font's own spacing: one
+        (left band, right band) per glyph, each (y0, y1) in font units or
+        None — all None when the font is not a connected script (text faces
+        never are). `kinds`: one JOINKIND_* per glyph; `current`: the font's
+        kerning as measure() takes it (JOINRULE_OVERHANG does not use it).
+        Synchronous (milliseconds for a script font)."""
+        if not self.features & FEATURE_JOINS:
+            raise EngineError("this engine build has no connected-script mode (kk2_detect_joins)")
+        arr, n, keep = packer.build()
+        kinds_buf = (c_uint8 * max(n, 1)).from_buffer_copy(bytes(bytearray(kinds[:n])).ljust(max(n, 1), b"\0"))
+        cur = pack_kern_in(current)
+        out = (KK2Joins * max(n, 1))()
+        count = self.lib.kk2_detect_joins(ctypes.addressof(arr), n, float(units_per_em), float(x_height),
+                                          ctypes.addressof(kinds_buf), ctypes.addressof(cur), len(current), int(rule),
+                                          ctypes.addressof(out))
+        del keep, arr
+        if count == 0xFFFFFFFF:
+            raise EngineError(self.last_error())
+        band = lambda y0, y1: (y0, y1) if y0 == y0 and y1 == y1 else None
+        return [(band(o.left_y0, o.left_y1), band(o.right_y0, o.right_y1)) for o in out[:n]]
 
     def solve(self, context, params, kern_mask=None, glyph_opts=None, harness=None):
         """Starts Phases 2–3. `kern_mask`: bytes (one per glyph) or None.
@@ -448,9 +513,7 @@ class Engine(object):
         if not self.features & FEATURE_MEASURE:
             raise EngineError("this engine build cannot measure (kk2_measure)")
         n = len(current)
-        cur = (KK2KernIn * max(n, 1))()
-        for k, (kind, left, right, value) in enumerate(current):
-            cur[k].kind, cur[k].left, cur[k].right, cur[k].value = int(kind), int(left), int(right), float(value)
+        cur = pack_kern_in(current)
         if mask is not None:
             mbuf = (c_uint8 * len(mask)).from_buffer_copy(bytes(bytearray(1 if x else 0 for x in mask)))
             mptr, mlen = ctypes.addressof(mbuf), len(mask)

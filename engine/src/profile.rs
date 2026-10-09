@@ -277,6 +277,32 @@ impl SdfProfile {
             .with_chunks()
     }
 
+    /// The profile with the ink between the heights `band` left out (a
+    /// connected script's join: the stroke that reaches the neighbour). Rays
+    /// strictly outside the band are kept, a gap ray marks the band: the
+    /// band's own edges are left out too, since at an edge the profile can
+    /// still be the stroke's.
+    pub fn masked(&self, band: (f64, f64)) -> SdfProfile {
+        let (y0, y1) = (band.0.min(band.1), band.0.max(band.1));
+        let mut rays: Vec<Ray> = Vec::with_capacity(self.rays.len() + 1);
+        for r in self.rays.iter().filter(|r| r.y < y0) {
+            rays.push(*r);
+        }
+        rays.push(Ray { y: 0.5 * (y0 + y1), x: f64::NAN, tier: TIER_STRUCTURAL });
+        for r in self.rays.iter().filter(|r| r.y > y1) {
+            rays.push(*r);
+        }
+        rays.dedup_by(|later, kept| (later.y - kept.y).abs() < 1e-7);
+        while rays.first().is_some_and(|r| !r.has_ink()) {
+            rays.remove(0);
+        }
+        while rays.last().is_some_and(|r| !r.has_ink()) {
+            rays.pop();
+        }
+        rays.dedup_by(|later, kept| !later.has_ink() && !kept.has_ink());
+        SdfProfile { side: self.side, rays, extreme: self.extreme, chunks: Vec::new(), supers: Vec::new() }.with_chunks()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.rays.len() < 2
     }

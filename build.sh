@@ -10,6 +10,10 @@
 #                               /System/Library/Fonts/Supplemental/Arial.ttf
 #   ./build.sh --verify --groups  the self-test also runs its spacing-groups stage
 #                               (frozen capitals, looser figures, the Pairs window)
+#   ./build.sh --verify FONT --connected  and its connected-script stage (FONT must
+#                               be a connected script, e.g. an OFL script from Google
+#                               Fonts): joins found, join pairs unkerned and overlapping,
+#                               a period's distance kept, Apply/Revert, off again
 #
 # The library is replaced atomically (built into a staging file, signed, then renamed
 # over the old one), so a Glyphs or a tool that has the old one loaded keeps it.
@@ -37,6 +41,7 @@ INSTALL=0
 TEST=0
 VERIFY=0
 SPACING_GROUPS=0
+CONNECTED=0
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,11 +49,12 @@ while [ $# -gt 0 ]; do
     --install) INSTALL=1 ;;
     --test) TEST=1 ;;
     --groups) SPACING_GROUPS=1 ;;
+    --connected) CONNECTED=1 ;;
     --verify)
       VERIFY=1
       # an optional font path follows (anything not starting with "-")
       if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then FONT="$2"; shift; fi ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -169,8 +175,9 @@ RESULTS="$(mktemp -d "${TMP%/}/kk2-verify.XXXXXX")"
 REPORT="$RESULTS/selftest.json"
 # the results folder is unique, so it identifies this run's instance
 PATTERN="$KEY\.selfTestOut $(printf '%s' "$RESULTS" | sed 's/[][\.*^$?+(){}|]/\\&/g')"
-EXTRA=""
-[ "$SPACING_GROUPS" = 1 ] && EXTRA="-$KEY.selfTestGroups"
+EXTRA=()
+[ "$SPACING_GROUPS" = 1 ] && EXTRA+=("-$KEY.selfTestGroups" YES)
+[ "$CONNECTED" = 1 ] && EXTRA+=("-$KEY.selfTestConnected" YES)
 echo "self-test: $(basename "$FONT") in a temporary Glyphs 3 (results in $RESULTS)"
 open -n -a "$GLYPHS_APP" --args -ApplePersistenceIgnoreState YES \
   "-$KEY.selfTestFont" "$FONT" \
@@ -178,7 +185,7 @@ open -n -a "$GLYPHS_APP" --args -ApplePersistenceIgnoreState YES \
   "-$KEY.selfTestQuit" YES \
   "-$KEY.selfTestWhole" YES \
   "-$KEY.selfTestCancel" YES \
-  ${EXTRA:+"$EXTRA" YES}
+  ${EXTRA[@]+"${EXTRA[@]}"}
 
 START=$(date +%s)
 PID=""
@@ -216,7 +223,7 @@ if [ -n "$PID" ]; then
   fi
 fi
 
-for image in window groups pairs; do
+for image in window groups pairs connected; do
   [ -f "$RESULTS/$image.png" ] && echo "$image image: $RESULTS/$image.png"
 done
 echo "report: $REPORT"

@@ -119,6 +119,13 @@ pub struct GlyphInput {
     /// The sidebearings the glyph has now (fallbacks for broken rules).
     pub cur_lsb: f64,
     pub cur_rsb: f64,
+    /// A connected script's joins: the heights (font units) where this side's
+    /// stroke reaches into the neighbour. Pass 1 spaces the side's body
+    /// without it (the stroke overhangs, like the hook of a j), and a pair
+    /// whose facing sides both join gets no kerning floors: the joins overlap
+    /// as drawn. None: no join (every other glyph).
+    pub join_left: Option<(f64, f64)>,
+    pub join_right: Option<(f64, f64)>,
 }
 
 impl GlyphInput {
@@ -136,6 +143,8 @@ impl GlyphInput {
             rsb_rule: SideRule::Free,
             cur_lsb: f64::NAN,
             cur_rsb: f64::NAN,
+            join_left: None,
+            join_right: None,
         }
     }
 }
@@ -187,11 +196,28 @@ pub struct PreparedGlyph {
     /// Rays a fixed 10-unit comb would need for each side (statistics).
     pub comb_left: u32,
     pub comb_right: u32,
+    /// Join bands (GlyphInput::join_left/right) and each joining side's body:
+    /// the profile with the band left out.
+    pub join_left: Option<(f64, f64)>,
+    pub join_right: Option<(f64, f64)>,
+    pub left_body: Option<SdfProfile>,
+    pub right_body: Option<SdfProfile>,
 }
 
 impl PreparedGlyph {
     fn zone_height(&self) -> f64 {
         (self.zone.1 - self.zone.0).max(1e-6)
+    }
+    /// The profile Pass 1 spaces on each side: the body of a joining side.
+    pub fn spaced_left(&self) -> &SdfProfile {
+        self.left_body.as_ref().unwrap_or(&self.left)
+    }
+    pub fn spaced_right(&self) -> &SdfProfile {
+        self.right_body.as_ref().unwrap_or(&self.right)
+    }
+    /// The pair (self, b) joins: self's right side and b's left side both have joins.
+    pub fn joins(&self, b: &PreparedGlyph) -> bool {
+        self.join_right.is_some() && b.join_left.is_some()
     }
     /// How far the bbox reaches past the zone's extreme ink on each side.
     fn overhang(&self) -> (f64, f64) {
@@ -291,6 +317,7 @@ pub struct GlyphMetrics {
 }
 
 /// Pass 1 over every valid glyph.
+#[derive(Clone)]
 pub struct Pass1 {
     pub lsb: Vec<f64>,
     pub rsb: Vec<f64>,
@@ -454,8 +481,8 @@ impl Context {
                     g.zone = (a, b);
                 }
             }
-            g.zone_left = extreme_within(&g.left, g.zone);
-            g.zone_right = extreme_within(&g.right, g.zone);
+            g.zone_left = extreme_within(g.spaced_left(), g.zone);
+            g.zone_right = extreme_within(g.spaced_right(), g.zone);
         }
 
         // Phase B: the margin white inside each zone.
@@ -465,8 +492,8 @@ impl Context {
                     return false;
                 }
                 if g.valid {
-                    g.white_left = pack_outer(&g.left, g.zone, g.zone_left, depth_pack, &dcfg);
-                    g.white_right = pack_outer(&g.right, g.zone, g.zone_right, depth_pack, &dcfg);
+                    g.white_left = pack_outer(g.spaced_left(), g.zone, g.zone_left, depth_pack, &dcfg);
+                    g.white_right = pack_outer(g.spaced_right(), g.zone, g.zone_right, depth_pack, &dcfg);
                 }
                 progress.add(1);
                 true
@@ -847,6 +874,12 @@ fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig) -> 
     let (right_crevices, right_tips, nr) = facing_series(&right, dcfg, 150.0 * s);
     let bbox = if valid { bbox } else { BBox { x0: 0.0, y0: 0.0, x1: 0.0, y1: 0.0 } };
     let comb = |p: &SdfProfile| p.fixed_comb_equivalent(10.0 * s) as u32;
+    // a joining side's body: the profile without its join band
+    let band = |b: Option<(f64, f64)>| b.filter(|(y0, y1)| valid && y0.is_finite() && y1.is_finite() && y1 > y0);
+    let (join_left, join_right) = (band(inp.join_left), band(inp.join_right));
+    let left_body = join_left.map(|b| left.masked(b)).filter(|p| !p.is_empty());
+    let right_body = join_right.map(|b| right.masked(b)).filter(|p| !p.is_empty());
+    let (join_left, join_right) = (join_left.filter(|_| left_body.is_some()), join_right.filter(|_| right_body.is_some()));
     PreparedGlyph {
         valid,
         fixed_advance: inp.flags & GLYPH_FIXED_ADVANCE != 0,
@@ -885,5 +918,9 @@ fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig) -> 
         rsb_rule: inp.rsb_rule,
         cur_lsb: inp.cur_lsb,
         cur_rsb: inp.cur_rsb,
+        join_left,
+        join_right,
+        left_body,
+        right_body,
     }
 }

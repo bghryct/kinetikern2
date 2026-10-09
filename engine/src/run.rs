@@ -59,6 +59,8 @@ pub struct Params {
     pub fit_frozen: bool,
     /// Corrections toward what well-spaced fonts do, after the solve.
     pub harness: Option<Arc<Harness>>,
+    /// Keep the solve as it was before the harness (`Outcome::bare`).
+    pub keep_bare: bool,
 }
 
 /// The designer harness: where the model consistently spaces differently from
@@ -126,6 +128,9 @@ pub struct Outcome {
     pub classes: Option<Classes>,
     /// Looseness offset found by `fit_frozen` (slider units), else NaN.
     pub fitted: f64,
+    /// With `Params::keep_bare` and a harness: the same solve before the
+    /// harness (the bare model's sidebearings and kerning).
+    pub bare: Option<(Pass1, Vec<Entry>)>,
 }
 
 #[inline]
@@ -257,11 +262,15 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
         progress.begin(3, 3, 1);
         progress.add(1);
         let mut entries = Vec::new();
+        let mut bare = None;
         if let Some(h) = &p.harness {
+            if p.keep_bare {
+                bare = Some((pass1.clone(), entries.clone()));
+            }
             let built = classes.as_ref().unwrap_or(&ctx.classes);
             apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, &frozen, &kern, p.threshold, false);
         }
-        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted });
+        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare });
     }
     let t2 = Instant::now();
     let pool = pool(p.threads);
@@ -288,13 +297,17 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     stats.pass2_ms = t2.elapsed().as_secs_f64() * 1000.0;
     let t3 = Instant::now();
     let mut entries = prune(entries, p.budget, &mut stats);
+    let mut bare = None;
     if let Some(h) = &p.harness {
+        if p.keep_bare {
+            bare = Some((pass1.clone(), entries.clone()));
+        }
         let built = classes.as_ref().unwrap_or(&ctx.classes);
         apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, &frozen, &kern, p.threshold, true);
     }
     stats.prune_ms = t3.elapsed().as_secs_f64() * 1000.0;
     progress.add(1);
-    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted })
+    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare })
 }
 
 /// Applies the designer harness to a finished solve (see `Harness`): after
