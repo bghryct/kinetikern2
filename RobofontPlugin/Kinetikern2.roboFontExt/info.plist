@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>addToMenu</key>
+	<array>
+		<dict>
+			<key>path</key>
+			<string>kk2_menu.py</string>
+			<key>preferredName</key>
+			<string>Kinetikern2…</string>
+			<key>shortKey</key>
+			<string></string>
+		</dict>
+	</array>
+	<key>developer</key>
+	<string>Mirko Velimirovic</string>
+	<key>developerURL</key>
+	<string>https://github.com/bghryct/kinetikern2</string>
+	<key>html</key>
+	<false/>
+	<key>launchAtStartUp</key>
+	<true/>
+	<key>mainScript</key>
+	<string>kk2_startup.py</string>
+	<key>name</key>
+	<string>Kinetikern2</string>
+	<key>requiresVersionMajor</key>
+	<string>4</string>
+	<key>requiresVersionMinor</key>
+	<string>0</string>
+	<key>timeStamp</key>
+	<real>1791554637.584817</real>
+	<key>uninstallScript</key>
+	<string></string>
+	<key>version</key>
+	<string>2.0.0</string>
+</dict>
+</plist>

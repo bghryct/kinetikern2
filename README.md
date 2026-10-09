@@ -24,6 +24,9 @@ What is new is everything around the model:
 [AUDIT.md](AUDIT.md) explains why: it measures where v1 spent its time and
 what each change bought.
 
+**RoboFont:** [RobofontPlugin](RobofontPlugin/README.md) is a port to
+RoboFont 4 with the same engine, window and tools.
+
 All lengths below are in **units per 1000 em** unless a font's own units are
 named. Arial has 2048 UPM, so its default threshold of 5/1000 em is 10.24
 font units.
