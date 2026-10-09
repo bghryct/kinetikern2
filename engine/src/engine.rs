@@ -43,6 +43,11 @@ pub const GLYPH_FIXED_ADVANCE: u32 = 1;
 pub const GLYPH_KERN: u32 = 2;
 /// Right-to-left script: never kerned in left-to-right order.
 pub const GLYPH_RTL: u32 = 4;
+/// A base letter (a–z, A–Z, a Cyrillic or Greek letter without a mark…):
+/// its extents set its group's spacing zone. Accented and other derived
+/// letters reach above or below and outnumber the base letters in most
+/// fonts; without such glyphs every member of the group counts (feature 16).
+pub const GLYPH_ZONE: u32 = 32;
 
 /// "No index" for optional glyph and group references.
 pub const NONE: u32 = u32::MAX;
@@ -453,9 +458,14 @@ impl Context {
         let max_scale = rhythm_scale.iter().cloned().fold(0.0, f64::max);
         let depth_pack = (1.25 * max_scale).clamp(0.15 * upm, 0.6 * upm);
 
-        // Spacing zones from the median extents of each group.
+        // Spacing zones from the median extents of each group: of its base
+        // letters where the caller marks them (GLYPH_ZONE), else of all its
+        // members. Accented letters would lift a lowercase zone to accent
+        // height, where an f's hook decides its right side.
         let zone_of = |id: u32| -> Option<(f64, f64)> {
-            let members: Vec<&PreparedGlyph> = glyphs.iter().filter(|g| g.valid && g.group_id == id).collect();
+            let all: Vec<&PreparedGlyph> = glyphs.iter().filter(|g| g.valid && g.group_id == id).collect();
+            let base: Vec<&PreparedGlyph> = all.iter().copied().filter(|g| g.flags & GLYPH_ZONE != 0).collect();
+            let members = if base.len() >= 3 { base } else { all };
             if members.len() < 3 {
                 return None;
             }
@@ -922,5 +932,43 @@ fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig) -> 
         join_right,
         left_body,
         right_body,
+    }
+}
+
+#[cfg(test)]
+mod zone_tests {
+    use super::*;
+    use crate::geometry::NODE_LINE;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<(Vec2, u32)> {
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].iter().map(|&(x, y)| (Vec2::new(x, y), NODE_LINE)).collect()
+    }
+
+    /// Three base letters (x-height 500) and five accented ones (to 720):
+    /// marked, the base letters set the lowercase zone; unmarked, the
+    /// accented majority lifts it to their height. (A glyph's zone is the
+    /// group's clipped to its own extents: an accented letter's shows it.)
+    fn zone_top(mark: bool) -> f64 {
+        let mut inputs = Vec::new();
+        for k in 0..3 {
+            let mut g = GlyphInput::simple(vec![rect(50.0, 0.0, 450.0 + 10.0 * k as f64, 500.0)], 520.0, GROUP_LOWERCASE);
+            if mark {
+                g.flags |= GLYPH_ZONE;
+            }
+            inputs.push(g);
+        }
+        for k in 0..5 {
+            let body = rect(50.0, 0.0, 450.0, 500.0);
+            let accent = rect(180.0 + 5.0 * k as f64, 600.0, 320.0, 720.0);
+            inputs.push(GlyphInput::simple(vec![body, accent], 520.0, GROUP_LOWERCASE));
+        }
+        let ctx = Context::prepare(inputs, 1000.0, 1, &Progress::new()).unwrap();
+        ctx.glyphs[3].zone.1
+    }
+
+    #[test]
+    fn base_letters_set_the_zone() {
+        assert!((zone_top(true) - 500.0).abs() < 1e-9, "marked: {}", zone_top(true));
+        assert!((zone_top(false) - 720.0).abs() < 1e-9, "unmarked: {}", zone_top(false));
     }
 }

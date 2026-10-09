@@ -1155,10 +1155,11 @@ pub unsafe extern "C" fn kk2_measure(
 /// Bit set of optional features: 1 per-glyph options and the frozen-glyph
 /// Looseness fit (`kk2_solve_start2`, `kk2_fit_looseness`), 2 `kk2_measure`,
 /// 4 the designer harness (`kk2_solve_start3`), 8 connected scripts
-/// (`kk2_prepare_start2`, `kk2_detect_joins`).
+/// (`kk2_prepare_start2`, `kk2_detect_joins`), 16 spacing zones from the base
+/// letters (`GLYPH_ZONE`).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    15
+    31
 }
 
 fn progress_of(job: &KK2Job) -> &job::Progress {

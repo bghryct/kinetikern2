@@ -134,6 +134,7 @@ other two.
 | **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
 | **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
 | **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning, spaces the letter bodies without them and lets two joining letters overlap as drawn. The note beside it says how many letters join, or that none do. Off by default. |
+| **Along the italic angle** | On an italic master (italic angle 3° or more), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is off for an upright master. |
 | **Progress bar, Cancel** | Shows the current step: *Reading outlines*, *Phase 1/3: Analyzing SDFs*, *Phase 2/3: Evaluating pairs* (with seconds elapsed in a whole-font run), *Phase 3/3: Grouping & pruning*, *Planning*, *Applying*, *Reverting*. Cancel stops reading, Phase 1, a preview, a whole-font run or the planning of an Apply. Once Apply or Revert has started writing, it runs to the end. |
 
 The status line under the panes reports the last result. For example:
@@ -174,6 +175,13 @@ The window has three parts:
   **Freeze** and set its sliders. **Put Selected Glyphs into This Group**
   assigns the selection, and **Take Selected Glyphs out of Their Groups** frees
   it. Keep picking until every part of the font has the values you want.
+  **By Category** does the picking for the usual cases: the glyphs in no group
+  yet go into **Figures**, **Punctuation**, **Symbols** and one group for the
+  letters of each script but Latin (**Cyrillic**, **Greek**…), so each kind
+  has a Looseness and kerning force of its own. New groups start at the main
+  settings (nothing changes until a slider moves); a group of one of those
+  names that is there already is used, its settings kept; glyphs already in
+  a group stay where they are. Latin letters keep the main sliders.
 
 **Match the frozen spacing** (on by default) first fits the Looseness to the
 frozen glyphs' own sidebearings, so new glyphs come out as tight or loose as
@@ -343,6 +351,30 @@ machine), then Phase 1 runs again with them. The same detector decides joins
 in Spacing QA, which spaces every connected family this way. The design and
 its evaluation on 365 families are in `notes/connected-scripts.md`.
 
+### Italics
+
+Kinetikern2's model is built on upright letters: it measures the white
+between letters with disks and a distance field, which a slanted design
+fools, so that it looks crammed. Measured upright, an italic comes out too
+loose and uneven. On a master that leans by its italic angle (3° or more),
+**Along the italic angle** (on by default) gives the engine the outlines
+sheared upright about half the x-height, where the eye judges a leaning
+letter's sides and Glyphs measures italic sidebearings. Sidebearings and
+kerning are horizontal offsets, which a shear keeps, so the results apply to
+the slanted outlines as they are; Apply, Revert and the proofs work on the
+outlines as drawn.
+
+What it does, on the 171 italics of the Google Fonts library (Spacing QA,
+the declared italic angle, each italic against its designer's spacing, units
+per 1000 em, medians): the gaps of the GF Latin Kernel's pairs 29.8 → 21.3
+from the designer's (163 of 171 closer), sidebearings 29.9 → 13.4 (164 of
+171), kerning correlation 0.46 → 0.70, best-fit Looseness −0.39 → +0.05
+(measured upright, every italic looked too tight to the model). Uprights of
+the same families: 14.5 and 8.7. Worse: Molle and Kristi, scripts with a
+declared angle, and Josefin Slab Italic (+4.5); a script can switch it off.
+In Glyphs, fitting the Looseness to Playfair Display Italic's own capitals
+gave −6.00 (the limit) measured upright and −0.06 along the angle.
+
 ### What Apply writes
 
 * **Kerning:** in Glyphs' own keys, with Glyphs' precedence (glyph–glyph,
@@ -443,6 +475,21 @@ A solve returns a `Result`. The design rules for both jobs:
   per glyph, kerning entries) that `kk2_bridge.Result` reads without copying.
   `value(left, right)` and `values()` resolve glyph pairs on demand; Python
   never builds an object per pair.
+
+### Spacing zones
+
+Pass 1 spaces each side by the extreme ink inside its group's zone: baseline
+to x-height for lowercase, to cap height for capitals, the median extents of
+the group. Ink outside it, the hook of an f, the tail of a j, an accent, may
+overhang the advance, as designers draw them. The median is taken over the
+base letters (a–z, A–Z, a Cyrillic or Greek letter without a mark: the
+plugin marks them, `GLYPH_ZONE`, engine feature 16); over every member of the
+group, accented letters, which outnumber the base letters in most fonts,
+lifted the lowercase zone to accent height (Arial: 1,466 against an x-height
+of 1,062), and an f's hook and the accents of î ï ĩ set those sides: f was
+spaced 25–60 units per 1000 em too loose (Arial fo +25.4 → −0.2, f row
++34.9 → +3.6; Georgia +61.6 → +19.5), î ï ĩ some 30 looser than i. Spacing
+QA, which reads only the GF Latin Kernel, always had the right zones.
 
 ### Pair scope
 
@@ -807,9 +854,11 @@ Result on the final build: **PASSED** in 33.2 s.
   the master's own spacing and kerning: a script whose letters do not yet
   overlap where they join (a font just drawn, all sidebearings at their
   defaults) has none to find, and is spaced as usual. Space a few letters so
-  that they join, then turn **Connected script** on. Slanted scripts are
-  measured as they are drawn, not along their slant (an experiment in
-  Spacing QA, `spacingqa check --slant`, gave mixed results).
+  that they join, then turn **Connected script** on. A script that declares
+  an italic angle is measured along it (*Italics*); one that declares none is
+  measured as drawn (measuring along a slant measured from the stems, an
+  experiment in Spacing QA, `spacingqa check --slant`, gave mixed results on
+  joined scripts).
 * **Multiple equilibria.** Some pairs have more than one equilibrium gap. The
   window solver picks its root by force signs; v1 searched from the Pass 1
   gap. Most of the time they agree, but on 0.004–0.031 % of pairs the values

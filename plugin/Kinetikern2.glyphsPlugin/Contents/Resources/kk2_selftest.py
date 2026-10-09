@@ -1643,11 +1643,35 @@ class SelfTest(object):
         check(opts is not None and all(opts[index[n]][0] for n in capitals if n in index)
               and all(abs(opts[index[n]][1] - 0.4) < 1e-6 and abs(opts[index[n]][2] - 0.5) < 1e-6 for n in figures if n in index),
               "the engine gets the groups (frozen capitals; figures +0.4 at 50 %)")
+        # By Category: the glyphs in no group yet go into groups by kind, at
+        # the main settings, the painted groups and their glyphs kept; then
+        # everything as it was for the stages that follow
+        before = set(g.gid for g in gw.groups.groups)
+        members_before = dict(gw.groups.members)
+        gw.byCategory(None)
+        new = [g for g in gw.groups.groups if g.gid not in before]
+        snap = self.win.snapshot
+        punct = [n for n in snap.names if getattr(snap.infos.get(n), "category", None) == "Punctuation"
+                 and n not in members_before]
+        pgroup = next((g for g in gw.groups.groups if g.name == "Punctuation"), None)
+        check(pgroup is not None and punct and all(gw.groups.members.get(n) == pgroup.gid for n in punct)
+              and all(gw.groups.members.get(n) == k for n, k in members_before.items())
+              and all(abs(g.looseness) < 1e-9 and abs(g.force - 100.0) < 1e-9 for g in new),
+              "By Category: punctuation (and symbols, the other figures) into groups of their own at the main "
+              "settings, the painted groups kept")
+        for name in set(gw.groups.members) | set(members_before):
+            if gw.groups.members.get(name) != members_before.get(name):
+                gw.groups.assign([name], members_before.get(name))
+        for g in new:
+            gw.choose_group(g.gid)
+            gw.removeGroup(None)
+        check(set(g.gid for g in gw.groups.groups) == before and gw.groups.members == members_before,
+              "the category groups deleted again")
         passed = sum(1 for _, ok in results if ok)
         self.log("groups window ui", checks=results)
         self.note("Spacing Groups window, driven like a user: %d of %d steps as expected (click, Shift-click, "
                   "Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, "
-                  "no group, take out and put back)" % (passed, len(results)))
+                  "no group, take out and put back, By Category)" % (passed, len(results)))
         return capitals, figures
 
     def groups_whole(self):
@@ -1686,7 +1710,7 @@ class SelfTest(object):
             spec = snap.specs[i] if i is not None else None
             if spec is None or spec.cur_lsb != spec.cur_lsb:
                 continue
-            m = res.metrics[i]
+            m = getattr(res, "engine_metrics", res.metrics)[i]  # the engine's frame, as spec.cur_* are
             if abs(m.lsb - spec.cur_lsb) > 1e-3 or abs(m.rsb - spec.cur_rsb) > 1e-3:
                 moved.append([name, round(spec.cur_lsb, 1), round(m.lsb, 1), round(spec.cur_rsb, 1), round(m.rsb, 1)])
         # no entry may lie between two frozen glyphs or classes

@@ -437,7 +437,14 @@ class KK2Window(object):
 
         # row 4: progress
         w.progress = vanilla.ProgressBar((14, 129, 260, 12), minValue=0, maxValue=100, sizeStyle="small")
-        w.phase = vanilla.TextBox((286, 126, -110, 17), "", sizeStyle="small")
+        w.phase = vanilla.TextBox((286, 126, -312, 17), "", sizeStyle="small")
+        w.alongSlant = vanilla.CheckBox((-300, 124, 196, 18), "Along the italic angle", sizeStyle="small",
+                                        value=self._setting("alongSlant", True, bool), callback=self.alongSlantChanged)
+        w.alongSlant.getNSButton().setToolTip_(
+            "Measure an italic master along its italic angle (3° or more): Kinetikern2 sees the outlines sheared "
+            "upright about half the x-height, where Glyphs measures italic sidebearings, the way its model, built "
+            "on upright letters, measures. Sidebearings and kerning are horizontal, so they apply to the slanted "
+            "outlines as they are. Measured upright instead, italics come out too loose and uneven.")
         w.cancel = vanilla.Button((-100, 122, 86, 22), "Cancel", callback=self.cancelJob)
 
         w.line = vanilla.HorizontalLine((0, 152, -0, 1))
@@ -600,6 +607,8 @@ class KK2Window(object):
                         w.scope, w.replace, w.reload):
             control.enable(not busy)
         w.connected.enable(not busy and bool(self.engine.features & kb.FEATURE_JOINS))
+        snap = self.snapshot
+        w.alongSlant.enable(not busy and snap is not None and abs(snap.slant_degrees) >= ks.SLANT_MIN_DEGREES)
         w.apply.enable(not busy and self.context is not None)
         w.revert.enable(not busy and self._reader is None and self.revert_point is not None)
         # a plan can be dropped; writes, once started, run to the end
@@ -719,7 +728,7 @@ class KK2Window(object):
         self._stale = set()
         self._font_metrics = {}
         self._kerning.reset()
-        self._reader = ks.SnapshotReader(self.font, master)
+        self._reader = ks.SnapshotReader(self.font, master, along_slant=self._along_slant())
         self._read_done = False
         self._set_state("reading")
         self._show_progress("Reading outlines [0%]", 0.0)
@@ -745,6 +754,7 @@ class KK2Window(object):
 
     def _snapshot_ready(self, snapshot):
         self.snapshot = snapshot
+        self._update_slant_label()
         self._ruled = set(s.name for s in snapshot.specs
                           if s.lsb_rule != kb.RULE_FREE or s.rsb_rule != kb.RULE_FREE)
         if self.groups_window is not None:
@@ -849,6 +859,35 @@ class KK2Window(object):
         else:
             text = self.join_note
         self.w.connectedValue.set(text)
+
+    # ------------------------------------------------------ italic angle
+    def _along_slant(self):
+        """The Along the italic angle setting."""
+        if self.w is None or getattr(self.w, "alongSlant", None) is None:
+            return bool(self._setting("alongSlant", True, bool))
+        return bool(self.w.alongSlant.get())
+
+    def _update_slant_label(self):
+        """The checkbox names the master's angle, and is off for an upright master."""
+        box = getattr(self.w, "alongSlant", None) if self.w is not None else None
+        if box is None:
+            return
+        snap = self.snapshot
+        degrees = snap.slant_degrees if snap is not None else 0.0
+        if snap is not None and abs(degrees) >= ks.SLANT_MIN_DEGREES:
+            box.setTitle("Along the %s° italic angle" % ("%g" % round(abs(degrees), 1)))
+            box.enable(self.state not in ("applying",) and self._stepper is None)
+        else:
+            box.setTitle("Along the italic angle")
+            box.enable(False)
+
+    def alongSlantChanged(self, sender):
+        self._save("alongSlant", bool(self.w.alongSlant.get()))
+        if self.snapshot is None or self._reader is not None or self._stepper is not None:
+            return  # the next read follows the setting
+        if self._job is not None and self._job_kind == "whole":
+            return
+        self._load_master(self._master())  # the engine's frame changes: read again
 
     def connectedChanged(self, sender):
         self._save("connected", bool(self.w.connected.get()))

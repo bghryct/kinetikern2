@@ -459,8 +459,14 @@ class GroupsWindow(object):
         self.rows_view.kk2_model = self.rows
         w.rowsScroll = vanilla.ScrollView((x, 30, -12, 190), self.rows_view, hasHorizontalScroller=False,
                                           autohidesScrollers=True)
-        w.addGroup = vanilla.Button((x, 228, 140, 22), "New Group", callback=self.addGroup, sizeStyle="small")
-        w.removeGroup = vanilla.Button((x + 148, 228, -12, 22), "Delete Group", callback=self.removeGroup,
+        w.addGroup = vanilla.Button((x, 228, 96, 22), "New Group", callback=self.addGroup, sizeStyle="small")
+        w.byCategory = vanilla.Button((x + 100, 228, 100, 22), "By Category", callback=self.byCategory,
+                                      sizeStyle="small")
+        w.byCategory.getNSButton().setToolTip_(
+            "Puts the glyphs in no group yet into groups by kind — Figures, Punctuation, Symbols, and the letters "
+            "of each script but Latin — so each kind can have its own Looseness and kerning force. New groups "
+            "start at the main settings; groups of those names already there keep theirs.")
+        w.removeGroup = vanilla.Button((x + 204, 228, -12, 22), "Delete Group", callback=self.removeGroup,
                                        sizeStyle="small")
         w.nameLabel = vanilla.TextBox((x, 262, 60, 17), "Name", sizeStyle="small")
         w.name = vanilla.EditText((x + 60, 260, -60, 21), "", callback=self.nameChanged, sizeStyle="small")
@@ -638,6 +644,24 @@ class GroupsWindow(object):
         self._sync_controls()
         self._changed(structure=True)
         self.w.name.getNSTextField().selectText_(None)
+
+    def byCategory(self, sender):
+        """Groups by kind (kk2_groups.by_category), each spaced on its own."""
+        snap = self.main.snapshot
+        if snap is None:
+            return
+        added = kg.by_category(self.groups, kg.snapshot_entries(snap))
+        made = [(name, n) for name, n in added if n]
+        if made:
+            first = next((g for g in self.groups.groups if g.name.strip().lower() == made[0][0].lower()), None)
+            if first is not None:
+                self.current = first.gid
+        self._sync_controls()
+        self._changed(structure=True)
+        self.w.selectionInfo.set("By category: " + (", ".join("%s %d" % m for m in made) if made else
+                                                    "every figure, mark of punctuation, symbol and non-Latin letter "
+                                                    "is in a group already"))
+        return added
 
     def removeGroup(self, sender):
         if self.current is None:
