@@ -320,6 +320,47 @@ def section_of(name, category, subcategory, case, script):
     return category or "Other"
 
 
+# The groups by_category makes, in this order, then one per script
+CATEGORY_GROUPS = ("Figures", "Punctuation", "Symbols")
+
+
+def by_category(group_set, entries):
+    """Puts the glyphs of `entries` [(name, category, subcategory, case,
+    script)] that are in no group yet into groups by kind, so each kind can
+    be spaced on its own: Figures, Punctuation, Symbols, and the letters of
+    every script but Latin (Cyrillic, Greek…: one group each; Latin letters
+    keep the main settings). A group of that name that is there already is
+    used, its settings kept; a new one starts at the main settings, so
+    nothing changes until its Looseness or kerning force is set. Glyphs
+    already in a group stay where they are. Returns [(group name, glyphs
+    added)] in the order the groups are listed."""
+    targets = {}
+    for name, cat, sub, case, script in entries:
+        if name in group_set.members:
+            continue
+        head = section_of(name, cat, sub, case, script).split(" \u00b7 ")[0]
+        if head in CATEGORY_GROUPS or (cat == "Letter" and head not in ("Latin", "Other script")):
+            targets.setdefault(head, []).append(name)
+    order = [k for k in CATEGORY_GROUPS if k in targets] + sorted(k for k in targets if k not in CATEGORY_GROUPS)
+    added = []
+    for target in order:
+        g = next((x for x in group_set.groups if x.name.strip().lower() == target.lower()), None)
+        if g is None:
+            g = group_set.add_group(target)
+        added.append((target, group_set.assign(targets[target], g.gid)))
+    return added
+
+
+def snapshot_entries(snapshot):
+    """[(name, category, subcategory, case, script)] of a snapshot's glyphs."""
+    out = []
+    for name in snapshot.names:
+        info = snapshot.infos.get(name)
+        out.append((name, getattr(info, "category", None), getattr(info, "subcategory", None),
+                    getattr(info, "case", 0) or 0, getattr(info, "script", None)))
+    return out
+
+
 def snapshot_sections(snapshot):
     """sections() of a snapshot's glyphs, from what the snapshot read (no
     font calls: fast for fonts of thousands of glyphs)."""

@@ -22,7 +22,9 @@ architecture (the universal build has both).
    components, anchors, widths), the kerning and the groups with the font
    before: they must be identical, every coordinate to the last bit.
 3. Spacing groups: frozen glyphs keep everything.
-4. ink_x (the ink measure Apply and Revert use) against the pen, on odd
+4. Italics measured along their italic angle: the frame, results back in
+   the font's frame, Apply and Revert on a slanted synthetic font.
+5. ink_x (the ink measure Apply and Revert use) against the pen, on odd
    shapes (transformed and nested components, a contour of off-curve points
    only, curves past their points, open and one-point contours) and on every
    glyph of the fonts given.
@@ -160,6 +162,7 @@ def ttf_font(path):
     f.info.ascender, f.info.descender = os2.sTypoAscender, os2.sTypoDescender
     f.info.capHeight = getattr(os2, "sCapHeight", 0) or int(0.7 * f.info.unitsPerEm)
     f.info.xHeight = getattr(os2, "sxHeight", 0) or int(0.5 * f.info.unitsPerEm)
+    f.info.italicAngle = tt["post"].italicAngle  # as a UFO has it: negative for a font that leans right
     cmap = {}
     for cp, name in tt.getBestCmap().items():
         cmap.setdefault(name, []).append(cp)
@@ -457,6 +460,56 @@ def test_ink_x(fonts):
                        "off: %s)" % (label, exact + near + len(far), exact, near, far[:3]))
 
 
+def italic_font(degrees=12.0):
+    """The synthetic font slanted: every outline sheared about the baseline,
+    the italic angle in its info (a UFO's is counter-clockwise: negative for
+    a font that leans right)."""
+    from fontTools.pens.recordingPen import DecomposingRecordingPen
+    from fontTools.pens.transformPen import TransformPen
+    f = synthetic_font()
+    t = math.tan(math.radians(degrees))
+    layer = f.naked().layers.defaultLayer
+    for name in list(f.keys()):
+        g = f[name]
+        if not g.contours:
+            continue  # composites lean with their components
+        rec = DecomposingRecordingPen(layer)
+        g.draw(rec)
+        g.clearContours()
+        rec.replay(TransformPen(g.getPen(), (1, 0, t, 1, 0, 0)))
+    f.info.italicAngle = -degrees
+    return f
+
+
+def test_slant(engine):
+    """An italic is measured along its italic angle: the engine sees its
+    outlines sheared upright about half the x-height, and every result comes
+    back in the font's frame (a whole-font Apply then puts every glyph where
+    the result says, on the slanted ink). An upright font is measured as it
+    is: no frame at all."""
+    print("\n== measuring along the italic angle")
+    up = read(synthetic_font())[0]
+    check(up.slant == 0.0 and up.packer.frame is None, "an upright font is measured as it is (no frame)")
+    f = italic_font(12.0)
+    snap = read(f)[0]
+    check(abs(snap.slant - math.tan(math.radians(12.0))) < 1e-12 and snap.slant_pivot == 250.0,
+          "a 12° italic is measured along its angle, about half the x-height (slant %.4f, pivot %g)"
+          % (snap.slant, snap.slant_pivot))
+    o = snap.index["o"]
+    sl, sr = snap.frame[o]
+    check(abs(sl) > 1.0 or abs(sr) > 1.0, "the frame moves o's sides (%+.1f, %+.1f)" % (sl, sr))
+    upright = ks.SnapshotReader(f, along_slant=False).read_all()
+    check(upright.slant == 0.0 and upright.packer.frame is None, "Along the italic angle off: measured upright")
+    _context, result = solve_whole(engine, snap)
+    bad = [snap.names[i] for i, (a, b) in enumerate(zip(result.metrics, result.engine_metrics))
+           if a.valid and (abs(a.lsb - (b.lsb - snap.frame[i][0])) > 1e-9 or abs(a.rsb - (b.rsb - snap.frame[i][1])) > 1e-9
+                           or a.advance != b.advance)]
+    check(not bad, "every result side comes back in the font's frame, the advance unchanged (%s)" % bad[:4])
+    result.close()
+    _context.close()
+    apply_and_revert(engine, italic_font(12.0), "the synthetic font at 12°")
+
+
 def apply_and_revert(engine, f, label, harness=False, groups=None):
     print("\n== %s: whole font, Apply, read back, Revert" % label)
     before = copy.deepcopy(font_state(f))
@@ -600,6 +653,51 @@ def test_groups(engine):
     context.close()
 
 
+def test_by_category(engine):
+    """Groups by category: figures, punctuation, symbols and each script's
+    letters but Latin get groups of their own, at the main settings; a second
+    run adds nothing; a Looseness set on Punctuation opens the punctuation
+    and leaves the letters' spacing nearly as it was."""
+    print("\n== spacing groups by category")
+    f = synthetic_font()
+    f.newGlyph("percent").unicodes = [ord("%")]
+    _box(f["percent"].getPen(), 60, 0, 600, 700)
+    f["percent"].width = 660
+    for name, cp in (("zhe-cy", 0x0436), ("de-cy", 0x0434), ("ef-cy", 0x0444), ("alpha", 0x03B1), ("beta", 0x03B2),
+                     ("gamma", 0x03B3)):
+        g = f.newGlyph(name)
+        g.unicodes = [cp]
+        g.width = 560
+        _box(g.getPen(), 60, 0, 500, 500)
+    snap, _ms = read(f)
+    groups = kg.GroupSet()
+    painted = groups.add_group("My figures")
+    groups.assign(["zero", "one"], painted.gid)
+    added = kg.by_category(groups, kg.snapshot_entries(snap))
+    names = [n for n, _k in added]
+    member = lambda n: groups.group_of(n).name if groups.group_of(n) is not None else None
+    check(names[:3] == ["Figures", "Punctuation", "Symbols"] and "Cyrillic" in names and "Greek" in names,
+          "groups by category: Figures, Punctuation, Symbols, then each script (%s)" % names)
+    check(member("zero") == "My figures" and member("two") == "Figures" and member("period") == "Punctuation"
+          and member("percent") == "Symbols" and member("zhe-cy") == "Cyrillic" and member("beta") == "Greek",
+          "each glyph in the group of its kind, the painted ones where they were")
+    check(all(member(n) is None for n in ("H", "a", "o", "aacute", "a.sc")), "Latin letters keep the main settings")
+    check(all(abs(g.looseness) < 1e-9 and abs(g.force - 100.0) < 1e-9 for g in groups.groups),
+          "new groups start at the main settings")
+    check(sum(k for _n, k in kg.by_category(groups, kg.snapshot_entries(snap))) == 0, "a second run adds nothing")
+    _c0, plain = solve_whole(engine, snap, None, groups.opts_for(snap.names))
+    punct = next(g for g in groups.groups if g.name == "Punctuation")
+    groups.update(punct.gid, looseness=0.6)
+    _c1, opened = solve_whole(engine, snap, None, groups.opts_for(snap.names))
+    i = snap.index
+    grew = [n for n in ("period", "comma") if opened.metrics[i[n]].advance > plain.metrics[i[n]].advance + 1.0]
+    letters = max(abs(opened.metrics[i[n]].advance - plain.metrics[i[n]].advance) for n in ("H", "O", "n", "o", "a"))
+    check(grew == ["period", "comma"] and letters < 2.0,
+          "Looseness +0.6 on Punctuation opens the period and comma (letters move %.1f units at most)" % letters)
+    for r in (plain, opened, _c0, _c1):
+        r.close()
+
+
 def test_conflict(engine):
     print("\n== Revert keeps what was changed after Apply")
     f = synthetic_font()
@@ -627,9 +725,11 @@ def main():
         f, _snap = test_snapshot(engine)
         test_glyphs_categories()
         test_ink_x([(os.path.basename(path), load_font(path)) for path in sys.argv[1:]])
+        test_slant(engine)
         apply_and_revert(engine, f, "synthetic font")
         apply_and_revert(engine, synthetic_font(), "synthetic font with the designer harness", harness=True)
         test_groups(engine)
+        test_by_category(engine)
         test_conflict(engine)
         for path in sys.argv[1:]:
             apply_and_revert(engine, load_font(path), os.path.basename(path))

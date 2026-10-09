@@ -7,8 +7,10 @@ seconds later, once RoboFont has finished launching.
 
 Another extension may greet a launch with an alert, which waits for a click
 that nobody gives in a test instance (and holds every ordinary timer while it
-is up). The start timer therefore also fires in modal panels, and in a test
-instance it dismisses such an alert (the self-test reports it).
+is up): Mechanic's update check shows one at launch, or seconds later when the
+network is slow. In a test instance a timer that also fires in modal panels
+therefore dismisses any alert, before the test and while it runs (the
+self-test reports each one).
 
 Everything this extension puts into RoboFont's shared Python interpreter and
 Objective-C runtime carries a name of its own (kk2_* modules, KK2* classes),
@@ -39,26 +41,42 @@ def _alert_text(window):
     return " | ".join(texts)[:300] or "(no text)"
 
 
-def _schedule(delay):
+def _schedule(delay, fn=None):
     from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
-    timer = NSTimer.timerWithTimeInterval_repeats_block_(delay, False, lambda t: _fire())
+    fn = fn or _fire
+    timer = NSTimer.timerWithTimeInterval_repeats_block_(delay, False, lambda t: fn())
     NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
     _timers.append(timer)
 
 
-def _fire():
-    del _timers[:]
+def _dismiss_alert():
+    """Dismisses an alert that is up (its text kept); True if there was one."""
     try:
         from AppKit import NSApp
         modal = NSApp().modalWindow()
         if modal is not None:
             DISMISSED.append(_alert_text(modal))
             NSApp().abortModal()
-            _schedule(1.0)  # once the alert is gone
-            return
+            return True
     except Exception:
         print(traceback.format_exc())
+    return False
+
+
+def _fire():
+    del _timers[:]
+    if _dismiss_alert():
+        _schedule(1.0)  # once the alert is gone
+        return
     _run_unattended()
+    _schedule(1.0, _watch)
+
+
+def _watch():
+    """While the test runs: an alert that turns up later is dismissed too."""
+    del _timers[:]
+    _dismiss_alert()
+    _schedule(1.0, _watch)
 
 
 def _run_unattended():
@@ -73,7 +91,7 @@ def _run_unattended():
                 exec(compile(f.read(), script, "exec"), scope)
             return
         import kk2_selftest
-        kk2_selftest.run(resources, dismissed=list(DISMISSED))
+        kk2_selftest.run(resources, dismissed=DISMISSED)  # the list itself: it grows while the test runs
     except Exception:
         print(traceback.format_exc())
 

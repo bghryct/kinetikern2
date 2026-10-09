@@ -14,7 +14,11 @@ window, the same controls and the same tools:
   display, handwriting);
 - Connected script (joins learned from the font's own spacing);
 - Spacing Groups (frozen glyphs, glyphs spaced looser or tighter, with
-  more or less kerning) and its window;
+  more or less kerning) and its window, with **By Category**: figures,
+  punctuation, symbols and each script's letters in groups of their own,
+  each with its own Looseness and kerning force;
+- italics measured along their italic angle (**Along the 12° italic angle**:
+  the engine sees the outlines sheared upright about half the x-height);
 - the Pairs window (the font's pairs, loosest to tightest, against
   Kinetikern2);
 - an unattended self-test inside RoboFont (`build.sh --verify`).
@@ -77,6 +81,12 @@ own means:
   sized from what the previous batches cost RoboFont (6 to 60 glyphs, about
   0.15 s of redrawing each, at least every half second), so RoboFont
   redraws a few times a second instead of after every slice of work.
+- **Italics.** A font that leans by its italic angle (`italicAngle` in the
+  UFO's info, 3° or more) is measured along it, as in Glyphs: the engine
+  sees the outlines sheared upright about half the x-height, and its
+  sidebearings come back in the font's frame (sidebearings and kerning are
+  horizontal offsets, which a shear keeps). Apply, Revert and the proofs
+  work on the outlines as drawn. The switch is in the progress row.
 - **Looking at a pair** opens it in a Space Center (Glyphs: an Edit tab).
 - The window's settings are kept in RoboFont's extension defaults; the
   spacing groups in the font's lib
@@ -137,8 +147,10 @@ the whole font with and without the designer harness, applies, reads back
 whole, accents moving with their base) and reverts (every outline,
 component, anchor, advance, kerning pair and group exactly as before, to
 the last bit and the number type: a .glif writes 600 and 600.0
-differently); spacing groups (frozen glyphs keep everything) and a Revert
-that keeps a change made after Apply. And the ink measure Apply and Revert
+differently); spacing groups (frozen glyphs keep everything), groups by category (and
+a Looseness on Punctuation that opens the punctuation only), an italic
+measured along its angle (the frame, Apply on the slanted ink, an exact
+Revert) and a Revert that keeps a change made after Apply. And the ink measure Apply and Revert
 use against the pen: on odd shapes (mirrored, rotated, scaled and nested
 components, a contour of off-curve points only, curves reaching past their
 points) and on every glyph of the fonts given.
@@ -170,6 +182,22 @@ period after a joining letter keeps its distance, Apply as previewed, Revert
 exact. Longest stall: 419 ms (Revert redrawing RoboFont's font overview).
 Before the batching and the faster ink measure the same Apply took 32.7 s and
 Revert 21.1 s, with stalls up to 0.8 s.
+
+Later the same day (`--groups`, the Spacing Groups stage with By Category,
+21 of 21 steps): Owners again **PASSED**; a copy of Freight Micro Light
+Italic (a UFO at −12°, measured along its angle) **PASSED**: Apply and Revert
+exact, no frozen glyph moved, the Looseness fitted to its frozen italic
+capitals −0.24 (−0.38 measured upright). Glyphs 3.5.1 with the same changes:
+Arial and Playfair Display Italic **PASSED** (Playfair's capitals: −6.00, the
+limit, measured upright; −0.06 along the angle).
+
+The spacing zones (the engine's, from the base letters since 9 October; see
+the Glyphs plugin's README): in a font with many accented letters, an f's
+hook and the accents of î ï ĩ used to set those sides. Kinetikern2's a–z
+pairs against the designers' (units per 1000 em, the f row: f before every
+letter): Arial +34.9 → +3.6, Georgia +61.6 → +19.5, Verdana +47.4 → +15.7;
+with italics measured along the angle too, Playfair Display Italic +109 → +7,
+Source Serif 4 Italic +106 → +12, EB Garamond Italic +22 → −3.
 
 Headless (`tests/test_headless.py`), Apply, read-back and exact Revert with
 and without the designer harness on: the synthetic test font; the UFOs of

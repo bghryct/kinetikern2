@@ -36,6 +36,8 @@ GLYPH_KERN = 2
 GLYPH_RTL = 4
 GLYPH_LEFT_KEY = 8
 GLYPH_RIGHT_KEY = 16
+# a base letter: its extents set its group's spacing zone (FEATURE_ZONES)
+GLYPH_ZONE = 32
 
 RULE_FREE, RULE_FIXED, RULE_FOLLOW_SAME, RULE_FOLLOW_OPPOSITE = 0, 1, 2, 3
 
@@ -52,6 +54,7 @@ FEATURE_GLYPH_OPTS = 1
 FEATURE_MEASURE = 2
 FEATURE_HARNESS = 4
 FEATURE_JOINS = 8
+FEATURE_ZONES = 16  # spacing zones from the base letters (GLYPH_ZONE)
 
 # kk2_detect_joins: what a glyph is to the joins (only letters join; the
 # lowercase letters are the partners whose overlaps are counted) and what
@@ -230,6 +233,11 @@ class InputPacker(object):
         self.points = bytearray()
         self.lengths = []
         self.glyphs = []  # (point offset, point count, length offset, contour count, spec)
+        # a slanted design measured upright (its outlines sheared): per glyph,
+        # what the engine's frame adds to the font's (LSB, RSB); None upright.
+        # It travels with the Context to every Result, whose metrics are given
+        # back in the font's frame.
+        self.frame = None
 
     def add(self, spec):
         p0 = len(self.points) // _POINT.size
@@ -417,7 +425,7 @@ class Engine(object):
         del keep, arr  # the engine copied the input
         if not ptr:
             raise EngineError(self.last_error())
-        return Job(self, ptr, "prepare", names=[g[4].name for g in packer.glyphs])
+        return Job(self, ptr, "prepare", names=[g[4].name for g in packer.glyphs], frame=packer.frame)
 
     def detect_joins(self, packer, units_per_em, x_height, kinds, current=(), rule=JOINRULE_BOTH):
         """A connected script's joins, found in the font's own spacing: one
@@ -485,7 +493,7 @@ class Engine(object):
         del keep
         if not ptr:
             raise EngineError(self.last_error())
-        return Job(self, ptr, "solve", names=context.names)
+        return Job(self, ptr, "solve", names=context.names, frame=getattr(context, "frame", None))
 
     def fit_looseness(self, context, params, which=None):
         """Looseness offset (slider units, relative to `params`) at which Pass 1
@@ -533,11 +541,12 @@ class Engine(object):
 class Job(object):
     """A running engine job. Poll it; never blocks (except wait())."""
 
-    def __init__(self, engine, ptr, kind, names=None):
+    def __init__(self, engine, ptr, kind, names=None, frame=None):
         self.engine = engine
         self.ptr = ptr
         self.kind = kind
         self.names = names
+        self.frame = frame
         self._progress = KK2Progress()
 
     def poll(self):
@@ -568,11 +577,11 @@ class Job(object):
             ptr = lib.kk2_job_take_context(self.ptr)
             if not ptr:
                 raise EngineError(self.error() or self.engine.last_error())
-            return Context(self.engine, ptr, self.names)
+            return Context(self.engine, ptr, self.names, self.frame)
         ptr = lib.kk2_job_take_result(self.ptr)
         if not ptr:
             raise EngineError(self.error() or self.engine.last_error())
-        return Result(self.engine, ptr, self.names)
+        return Result(self.engine, ptr, self.names, self.frame)
 
     def free(self):
         if self.ptr:
@@ -587,10 +596,11 @@ class Job(object):
 
 
 class Context(object):
-    def __init__(self, engine, ptr, names):
+    def __init__(self, engine, ptr, names, frame=None):
         self.engine = engine
         self.ptr = ptr
         self.names = names or []
+        self.frame = frame  # InputPacker.frame: every Result solved from it uses it
         self.index = dict((n, i) for i, n in enumerate(self.names))
         self.prep_ms = engine.lib.kk2_context_prep_ms(ptr)
 
@@ -620,14 +630,39 @@ def _view(ptr, ctype, n):
     return (ctype * n).from_address(ptr)
 
 
+class FontMetrics(object):
+    """A glyph's metrics from a solve, in the font's frame (see _font_frame)."""
+
+    __slots__ = ("lsb", "rsb", "advance", "x_min", "x_max", "y_min", "y_max", "valid", "flags")
+
+
+def _font_frame(view, frame):
+    """A solve's metrics in the font's frame. The engine measured a slanted
+    design upright, its outlines sheared about a height: a sidebearing there
+    differs from the font's by a per-glyph, per-side amount (`frame`) that
+    moving the glyph does not change, while the advance and the kerning are
+    the same in both frames."""
+    out = []
+    for m, (sl, sr) in zip(view, frame):
+        f = FontMetrics()
+        f.lsb, f.rsb, f.advance = m.lsb - sl, m.rsb - sr, m.advance
+        f.x_min, f.x_max, f.y_min, f.y_max = m.x_min - sl, m.x_max + sr, m.y_min, m.y_max
+        f.valid, f.flags = m.valid, m.flags
+        out.append(f)
+    return out
+
+
 class Result(object):
     """A solve's output, read in place. Keep the Result alive while any view
-    is in use; close() frees the library memory."""
+    is in use; close() frees the library memory. `metrics` are in the font's
+    frame (`engine_metrics` as the engine has them: the same unless the
+    context measured a slanted design upright)."""
 
-    def __init__(self, engine, ptr, names):
+    def __init__(self, engine, ptr, names, frame=None):
         self.engine = engine
         self.ptr = ptr
         self.names = names or []
+        self.frame = frame
         r = KK2Result.from_address(ptr)
         self._r = r
         self.glyph_count = r.glyph_count
@@ -635,7 +670,8 @@ class Result(object):
         self.classes = bool(r.mode)
         self.right_class_count = r.right_class_count
         self.left_class_count = r.left_class_count
-        self.metrics = _view(r.metrics, KK2Metrics, r.glyph_count)
+        self.engine_metrics = _view(r.metrics, KK2Metrics, r.glyph_count)
+        self.metrics = _font_frame(self.engine_metrics, frame) if frame else self.engine_metrics
         self.entries_raw = _view(r.entries, KK2Entry, r.entry_count)
         self.glyph_right_class = _view(r.glyph_right_class, c_uint32, r.glyph_count)
         self.glyph_left_class = _view(r.glyph_left_class, c_uint32, r.glyph_count)
@@ -688,7 +724,7 @@ class Result(object):
     def close(self):
         if self.ptr:
             # drop every view into library memory before freeing it
-            for name in ("metrics", "entries_raw", "glyph_right_class", "glyph_left_class", "right_class_origin",
+            for name in ("metrics", "engine_metrics", "entries_raw", "glyph_right_class", "glyph_left_class", "right_class_origin",
                          "left_class_origin", "right_class_rep", "left_class_rep", "kern_mask", "_r"):
                 setattr(self, name, None)
             self.engine.lib.kk2_result_free(self.ptr)

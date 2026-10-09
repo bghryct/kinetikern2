@@ -48,6 +48,7 @@ follow its base.
 from __future__ import division, print_function, unicode_literals
 
 import bisect
+import math
 import re
 import time
 import unicodedata
@@ -74,6 +75,9 @@ GSUppercase, GSLowercase, GSSmallcaps, GSMinor = 1, 2, 3, 4
 SPACING_CATEGORIES = ("Letter", "Number", "Punctuation", "Symbol")
 UNKERNED_CATEGORIES = ("Mark", "Separator")
 TABULAR_SUFFIXES = (".tf", ".tosf", ".tnum")
+# A font that leans this much or more (its italic angle) is measured along
+# its slant: below it, as upright (Spacing QA's rule for a measured slant).
+SLANT_MIN_DEGREES = 3.0
 SMALLCAP_SUFFIXES = ("sc", "smcp", "c2sc")
 DEFAULT_FIGURES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
 
@@ -185,6 +189,33 @@ def rhythm_group(info):
     return kb.GROUP_OTHER
 
 
+ZONE_SMALLCAP_SUFFIXES = ("sc", "smcp", "c2sc")
+
+
+def zone_reference(name, codepoint, flags_codepoint, category):
+    """True for a base letter, whose extents set its group's spacing zone
+    (kb.GLYPH_ZONE): an encoded letter without a mark or any other
+    decomposition (a–z, A–Z, æ, ø, ß, а–я, α–ω…), or the small cap of one
+    (a.sc). Accented letters reach above or below and outnumber the base
+    letters in most fonts: counted, they lift the lowercase zone to accent
+    height, where an f's hook decides its right side. Ligatures and other
+    alternates are left out too."""
+    if category != "Letter":
+        return False
+    cp = codepoint
+    if cp is None:
+        suffix = name.partition(".")[2].split(".")[0]
+        if "_" in name or suffix not in ZONE_SMALLCAP_SUFFIXES:
+            return False
+        cp = flags_codepoint
+    if cp is None:
+        return False
+    try:
+        return unicodedata.decomposition(chr(cp)) == ""
+    except (ValueError, OverflowError):
+        return False
+
+
 class _NodePen(BasePen if BasePen is not None else object):
     """Records a glyph's closed contours, components decomposed, as the
     engine's nodes: (x, y, kind) with kind 0 on-curve after a line, 1 after a
@@ -260,6 +291,14 @@ def contour_bounds(contours):
     if x0 > x1:
         return None
     return (x0, y0, x1, y1)
+
+
+def shear_nodes(contours, slant, pivot):
+    """Engine contours sheared upright: x − (y − pivot) · slant (slant = tan
+    of the lean, + to the right). A shear keeps every height and every
+    horizontal distance at a height; what the engine measures besides (disks,
+    the distance field) it measures as on an upright design."""
+    return [[(x - (y - pivot) * slant, y, kind) for (x, y, kind) in contour] for contour in contours]
 
 
 def bezier_path(contours):
@@ -767,6 +806,12 @@ class Snapshot(object):
         self.x_height = _number(getattr(info, "xHeight", None), 0.5 * self.upm)
         self.italic_angle = _number(getattr(info, "italicAngle", None), 0.0)
         self.italic = abs(self.italic_angle) > 1e-6
+        # measured along the italic angle (set_slant): the engine sees the
+        # outlines sheared upright about half the x-height, and `frame` holds
+        # per spacing glyph what that adds to its (LSB, RSB)
+        self.slant = 0.0
+        self.slant_pivot = 0.0
+        self.frame = []
 
         self.names = []
         self.index = {}
@@ -798,6 +843,33 @@ class Snapshot(object):
         self._left_of = {}  # glyph → public.kern2 group (short name)
         self._right_of = {}  # glyph → public.kern1 group
         self._stale = set()
+
+    @property
+    def slant_degrees(self):
+        """How far the font leans by its italic angle (degrees, + right)."""
+        return -self.italic_angle
+
+    def set_slant(self, on):
+        """Measure along the italic angle (`on`) when the font leans by
+        SLANT_MIN_DEGREES or more. Kinetikern2's model is built on upright
+        letters: measured upright, an italic comes out too loose and uneven
+        (on 171 Google Fonts italics, gaps 29.8 units per 1000 em from the
+        designers' against 21.3 measured along the angle). Sidebearings and
+        kerning are horizontal offsets, which a shear keeps; about half the
+        x-height, the sides are where the eye (and Glyphs) judges them. Set
+        before the glyphs are read."""
+        self.slant = self.slant_pivot = 0.0
+        if on and abs(self.italic_angle) >= SLANT_MIN_DEGREES:
+            self.slant = math.tan(math.radians(self.slant_degrees))
+            self.slant_pivot = 0.5 * self.x_height
+
+    def engine_sides(self, name):
+        """(LSB, RSB) of a spacing glyph in the engine's frame: as the font
+        has them, or measured along the italic angle."""
+        info = self.infos[name]
+        i = self.index.get(name)
+        sl, sr = self.frame[i] if i is not None and i < len(self.frame) else (0.0, 0.0)
+        return info.lsb + sl, info.rsb + sr
 
     def glyph_info(self, name):
         """GlyphInfo of any exporting glyph; read lazily for glyphs outside
@@ -879,12 +951,13 @@ class SnapshotReader(object):
     LIST_SHARE = 0.08  # progress shares of passes 1 and 2 (pass 3 has the rest)
     READ_SHARE = 0.9
 
-    def __init__(self, font, keep_figure_widths=True):
+    def __init__(self, font, keep_figure_widths=True, along_slant=True):
         self.snapshot = None
         self.fraction = 0.0
         self.done = False
         self.cancelled = False
         self._snap = Snapshot(font)
+        self._snap.set_slant(along_slant)
         self._keep_figure_widths = keep_figure_widths
         self._pass = 1
         self._pos = 0
@@ -1054,11 +1127,21 @@ class SnapshotReader(object):
             flags |= kb.GLYPH_LEFT_KEY
         if info.right_group == name:
             flags |= kb.GLYPH_RIGHT_KEY
-        spec = kb.GlyphSpec(name, info.contours, info.width, rhythm_group(info), flags, info.script, kb.NONE,
+        if zone_reference(name, cp, snap.flags_codepoint(name), info.category):
+            flags |= kb.GLYPH_ZONE
+        contours, sl, sr = info.contours, 0.0, 0.0
+        if snap.slant and not info.empty:
+            # the engine measures along the slant: what that adds to each side
+            contours = shear_nodes(info.contours, snap.slant, snap.slant_pivot)
+            b = contour_bounds(contours)
+            if b is not None:
+                sl, sr = b[0] - info.lsb, (info.width - info.rsb) - b[2]
+        spec = kb.GlyphSpec(name, contours, info.width, rhythm_group(info), flags, info.script, kb.NONE,
                             snap._group_id(True, info.left_group, name),
                             snap._group_id(False, info.right_group, name))
         if not info.empty:
-            spec.cur_lsb, spec.cur_rsb = info.lsb, info.rsb
+            spec.cur_lsb, spec.cur_rsb = info.lsb + sl, info.rsb + sr
+        snap.frame.append((sl, sr))
         k = snap.packer.add(spec)
         assert k == len(snap.names)
         snap.index[name] = k
@@ -1113,9 +1196,11 @@ class SnapshotReader(object):
         """True for a composite built the way Glyphs aligns an accented glyph
         automatically: no contours of its own, one spacing component (a glyph
         that is not a mark) at the origin with no scaling or slanting, marks
-        anywhere, its advance the base's. Glyphs' own data (glyphsLib) can
-        turn the alignment off. A ligature built from components (f_i) is
-        spaced as one shape: its components keep their places."""
+        anywhere, its advance the base's, the base in the spacing set (a base
+        that is not spaced never moves: a composite of an unencoded drawing
+        is spaced as the glyph it is). Glyphs' own data (glyphsLib) can turn
+        the alignment off. A ligature built from components (f_i) is spaced as
+        one shape: its components keep their places."""
         snap = self._snap
         layer = snap.layer
         glyph = layer[name]
@@ -1134,6 +1219,8 @@ class SnapshotReader(object):
                 category = self._category(base, layer[base], _codepoints(layer[base]))
             if category[0] in UNKERNED_CATEGORIES:
                 continue  # a mark: anywhere
+            if base not in snap.index:
+                return False  # nothing to follow
             xx, xy, yx, yy, dx, _dy = comp.transformation
             if abs(xx - 1.0) > 1e-9 or abs(yy - 1.0) > 1e-9 or abs(xy) > 1e-9 or abs(yx) > 1e-9:
                 return False
@@ -1160,8 +1247,9 @@ class SnapshotReader(object):
             # applies side rules to glyphs whose advance it does not keep)
             snap.pinned.add(name)
             spec.flags &= ~kb.GLYPH_FIXED_ADVANCE
-            _set_rule(spec, True, kb.RULE_FIXED, kb.NONE, info.lsb)
-            _set_rule(spec, False, kb.RULE_FIXED, kb.NONE, info.rsb)
+            lsb, rsb = snap.engine_sides(name)
+            _set_rule(spec, True, kb.RULE_FIXED, kb.NONE, lsb)
+            _set_rule(spec, False, kb.RULE_FIXED, kb.NONE, rsb)
             return
         aligned = False
         try:
@@ -1183,18 +1271,19 @@ class SnapshotReader(object):
     def _follow_component(self, spec, info, left, target):
         snap = self._snap
         tinfo = snap.infos.get(target) if target is not None else None
-        cur = info.lsb if left else info.rsb
+        cur = snap.engine_sides(info.name)[0 if left else 1]
         if tinfo is None or tinfo.empty:
             _set_rule(spec, left, kb.RULE_FIXED, kb.NONE, cur)
         else:
-            _set_rule(spec, left, kb.RULE_FOLLOW_SAME, snap.index[target], cur - (tinfo.lsb if left else tinfo.rsb))
+            _set_rule(spec, left, kb.RULE_FOLLOW_SAME, snap.index[target],
+                      cur - snap.engine_sides(target)[0 if left else 1])
 
     def _follow_key(self, i, spec, info, left):
         snap = self._snap
         rule = parse_metrics_key(info.left_key if left else info.right_key)
         if rule is None:
             return
-        cur = info.lsb if left else info.rsb
+        cur = snap.engine_sides(info.name)[0 if left else 1]
         if rule[0] == "follow":
             _, target, opposite, offset = rule
             target = target or info.name
@@ -1206,7 +1295,7 @@ class SnapshotReader(object):
                     # measure a UFO does not keep: the two sides keep the
                     # relation they have now on the ink
                     target_left = left != opposite
-                    offset = cur - (tinfo.lsb if target_left else tinfo.rsb)
+                    offset = cur - snap.engine_sides(target)[0 if target_left else 1]
                 _set_rule(spec, left, kb.RULE_FOLLOW_OPPOSITE if opposite else kb.RULE_FOLLOW_SAME, t, offset)
                 return
         _set_rule(spec, left, kb.RULE_FIXED, kb.NONE, cur)
@@ -1214,6 +1303,7 @@ class SnapshotReader(object):
     def _finish(self, t1):
         snap = self._snap
         snap.spacing_names = set(snap.names)
+        snap.packer.frame = list(snap.frame) if snap.slant else None
         snap.read_ms = 1000.0 * self._busy
         snap.wall_ms = 1000.0 * (t1 - self._started)
         self.snapshot = snap
