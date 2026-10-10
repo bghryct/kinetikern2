@@ -564,6 +564,35 @@ def ink_gap(context, snap, m, a, b, kern):
     return best
 
 
+# The main window's controls a user clicks: each must be what a click on it
+# reaches (a view laid over it, such as a label stretched to the window's
+# edges, takes the clicks without a sign).
+CLICKABLE = ("tightness", "intensity", "threshold", "thresholdField", "harness", "harnessStrength", "harnessButton",
+             "master", "size", "threads", "maxPairs", "connected", "joinMode", "reload", "scope", "replace",
+             "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel")
+
+
+def covered_controls(win):
+    """[(control, the view a click at its centre reaches)] for the controls
+    of CLICKABLE that a click does not reach."""
+    nswindow = win.w.getNSWindow()
+    content = nswindow.contentView()
+    out = []
+    for name in CLICKABLE:
+        control = getattr(win.w, name, None)
+        view = getattr(control, "_nsObject", None) if control is not None else None
+        if view is None or view.isHiddenOrHasHiddenAncestor():
+            continue
+        b = view.bounds()
+        centre = view.convertPoint_toView_((b.origin.x + b.size.width / 2.0, b.origin.y + b.size.height / 2.0), None)
+        sup = content.superview()
+        point = sup.convertPoint_fromView_(centre, None) if sup is not None else centre
+        hit = content.hitTest_(point)
+        if hit is None or not (hit is view or hit.isDescendantOf_(view)):
+            out.append((name, str(hit.className()) if hit is not None else None))
+    return out
+
+
 class SelfTest(object):
 
     def __init__(self, resources):
@@ -915,6 +944,12 @@ class SelfTest(object):
         self.note("preview ready after %.1f s: %d spacing glyphs (outlines read in %.0f ms), %d kerned in the sample, "
                   "%d entries" % (seconds, snap_info["spacing_glyphs"], snap_info["read_ms"] or 0,
                                   info["kerned_glyphs"], info["entries"]))
+        covered = covered_controls(win)
+        self.log("controls a click reaches", covered=covered)
+        if covered:
+            self.error("%d controls of the window do not get a click on them, e.g. %s" % (len(covered), covered[:6]))
+        else:
+            self.note("every control of the window gets a click on it (%d checked)" % len(CLICKABLE))
         self.later(0.2, self.menu_again)
 
     def menu_again(self):
@@ -1342,6 +1377,26 @@ class SelfTest(object):
                           % (worst[0], worst[1], len(gaps)))
                 if worst[1] < -1:
                     self.error("connected script: %s and a period overlap by %.0f units per 1000 em" % (worst[0], -worst[1]))
+        # the Joins window, opened from its button as a user does it: each
+        # view lists its rows, and it closes
+        try:
+            self.call_window(CONNECTED, win.openJoins, win.w.joinsButton)
+            jw = win.joins_window
+            if jw is None or not jw.w.getNSWindow().isVisible():
+                self.error("connected script: the Joins window did not open")
+            else:
+                counts = []
+                for view in range(3):
+                    jw.w.viewPicker.set(view)
+                    jw.viewChanged(jw.w.viewPicker)
+                    counts.append(len(jw.w.list.get()))
+                self.note("connected script: the Joins window opens: %d rows of findings, %d under the preview, "
+                          "%d of drawing advice" % tuple(counts))
+                jw.close()
+                if win.joins_window is not None:
+                    self.error("connected script: the Joins window did not tell the window it closed")
+        except Exception:
+            self.error("connected script: the Joins window failed: %s" % traceback.format_exc().strip().splitlines()[-1])
         self.capture_png("connected.png")
         # the sample's letter pairs that join as drawn (ink contact), to check
         # again on the font after Apply

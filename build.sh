@@ -10,6 +10,8 @@
 #                               /System/Library/Fonts/Supplemental/Arial.ttf
 #   ./build.sh --verify --groups  the self-test also runs its spacing-groups stage
 #                               (frozen capitals, looser figures, the Pairs window)
+#   KK2_SETTINGS="connected NO intensity 200 …" ./build.sh --verify …  the window's settings
+#                               for the test, as the window stores them (a user's, say)
 #   ./build.sh --verify FONT --connected  and its connected-script stage (FONT must
 #                               be a connected script, e.g. an OFL script from Google
 #                               Fonts): Keep joins keeps every join (the join checker),
@@ -181,6 +183,11 @@ PATTERN="$KEY\.selfTestOut $(printf '%s' "$RESULTS" | sed 's/[][\.*^$?+(){}|]/\\
 EXTRA=()
 [ "$SPACING_GROUPS" = 1 ] && EXTRA+=("-$KEY.selfTestGroups" YES)
 [ "$CONNECTED" = 1 ] && EXTRA+=("-$KEY.selfTestConnected" YES)
+# window settings for the test, as the window stores them (KK2_SETTINGS="connected NO intensity 200 …")
+if [ -n "${KK2_SETTINGS:-}" ]; then
+  read -r -a PAIRS <<< "$KK2_SETTINGS"
+  for ((i = 0; i + 1 < ${#PAIRS[@]}; i += 2)); do EXTRA+=("-$KEY.${PAIRS[i]}" "${PAIRS[i+1]}"); done
+fi
 echo "self-test: $(basename "$FONT") in a temporary Glyphs 3 (results in $RESULTS)"
 open -n -a "$GLYPHS_APP" --args -ApplePersistenceIgnoreState YES \
   "-$KEY.selfTestFont" "$FONT" \

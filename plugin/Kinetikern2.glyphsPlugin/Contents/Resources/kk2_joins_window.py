@@ -115,9 +115,10 @@ class JoinsWindow(object):
         w = vanilla.FloatingWindow((760, 560), "Joins — Kinetikern2", minSize=(620, 360))
         self.w = w
         w.summary = vanilla.TextBox((14, 10, -14, 64), "", sizeStyle="small")
-        w.show = vanilla.SegmentedButton((14, 80, 420, 22), [dict(title=t) for t in VIEWS], callback=self.viewChanged,
-                                         sizeStyle="small")
-        w.show.set(FINDINGS)
+        # not w.show: vanilla windows have a show() method, which Glyphs' vanilla refuses to replace
+        w.viewPicker = vanilla.SegmentedButton((14, 80, 420, 22), [dict(title=t) for t in VIEWS],
+                                               callback=self.viewChanged, sizeStyle="small")
+        w.viewPicker.set(FINDINGS)
         w.refresh = vanilla.Button((-110, 79, -14, 22), "Refresh", callback=self.refresh, sizeStyle="small")
         columns = [dict(title="Pair / side", key="what", width=110), dict(title="Finding", key="finding", width=210),
                    dict(title="Value", key="value", width=90), dict(title="Note", key="note")]

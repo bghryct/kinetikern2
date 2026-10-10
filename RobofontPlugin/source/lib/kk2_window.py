@@ -418,7 +418,11 @@ class KK2Window(object):
             "of the kept letters. What it would have done to the joining sides is shown as drawing advice "
             "(Joins…).\n\nSpace joined letters: the letter bodies are spaced without their join strokes and two "
             "joining letters overlap with no kerning; joins whose strokes stop meeting break (Joins… counts them).")
-        w.connectedValue = vanilla.TextBox((0, 0, 0, 0), "", sizeStyle="mini")  # the note lives in Joins…
+        # the note lives in Joins…: the label keeps its text, hidden. (Not
+        # (0, 0, 0, 0): a width or height of 0 stretches a vanilla view to the
+        # window's edge, and the label then covered every control above.)
+        w.connectedValue = vanilla.TextBox((14, 0, 10, 10), "", sizeStyle="mini")
+        w.connectedValue.show(False)
         w.reload = vanilla.Button((-50, 64, 36, 22), "↻", callback=self.reloadOutlines, sizeStyle="small")
         w.reload.getNSButton().setToolTip_("Read the outlines of the font again")
 
