@@ -305,6 +305,15 @@ class KK2Window(object):
         self.join_current = ()
         self.join_check = None  # (stats, sides) of the result shown (kk2_bridge.Engine.join_check)
         self.joins_window = None
+        # a master that leans without declaring an italic angle (by master id):
+        # the slant its stems show (tan; 0 upright), the probe's verdict on
+        # measuring along it ((lean, numbers): kk2_snapshot.SlantProbe), the
+        # user's own choice, and the probe at work
+        self._stem_slants = {}
+        self._lean_verdicts = {}
+        self._lean_choices = {}
+        self._slant_probe = None
+        self._along_declared = None  # the Along the italic angle setting (kept here: tests write no defaults)
         self._timer = None
         self._timer_interval = None
         self._timer_target = None
@@ -771,9 +780,12 @@ class KK2Window(object):
             if self._job is None and self._preview_pending:
                 what = "start preview"
                 self._start_preview()
+            if self._slant_probe is not None:
+                what = "checking the slant"
+                self._step_slant_probe()
             if (self._reader is None and self._job is None and not self._preview_pending and
                     self._join_finder is None and self._stepper is None and not self._left_due and
-                    not self._right_due):
+                    not self._right_due and self._slant_probe is None):
                 self._stop_timer()
         except Exception:
             self._fail("Kinetikern2 stopped on an error — see the Macro panel.", traceback.format_exc())
@@ -794,7 +806,8 @@ class KK2Window(object):
         self._font_metrics = {}
         self._kerning.reset()
         self._join_finder = None
-        self._reader = ks.SnapshotReader(self.font, master, along_slant=self._along_slant())
+        stem = self._stem_slant(master)
+        self._reader = ks.SnapshotReader(self.font, master, along_slant=self._along_slant(master), stem_slant=stem)
         self._read_done = False
         self._set_state("reading")
         self._show_progress("Reading outlines [0%]", 0.0)
@@ -1044,29 +1057,177 @@ class KK2Window(object):
                 "what the preview does to them, and drawing advice for the kept sides, with proofs.")
 
     # ------------------------------------------------------ italic angle
-    def _along_slant(self):
-        """The Along the italic angle setting."""
-        if self.w is None or getattr(self.w, "alongSlant", None) is None:
-            return bool(self._setting("alongSlant", True, bool))
-        return bool(self.w.alongSlant.get())
+    def _stem_slant(self, master):
+        """tan of the slant `master`'s stems show when it declares no italic
+        angle (Spacing QA's detector, in the engine), else 0; read once per
+        master."""
+        mid = str(master.id)
+        if ks.slant_measurable(ks.master_italic_angle(master)):
+            return 0.0
+        if mid not in self._stem_slants:
+            try:
+                self._stem_slants[mid] = ks.stem_slant(self.engine, self.font, master)
+            except Exception:
+                print(traceback.format_exc())
+                self._stem_slants[mid] = 0.0
+        return self._stem_slants[mid]
+
+    def _leans_undeclared(self, master=None):
+        """`master` (the current one) declares no italic angle but its stems
+        lean: whether to measure along them is the probe's or the user's."""
+        master = master if master is not None else self._master()
+        return (not ks.slant_measurable(ks.master_italic_angle(master))
+                and ks.slant_measurable(math.degrees(math.atan(self._stem_slants.get(str(master.id), 0.0)))))
+
+    def _along_slant(self, master=None):
+        """Measure along the slant: the Along the italic angle setting for a
+        master that declares an angle; for one whose stems lean without
+        declaring it, the user's choice for it, else the probe's verdict
+        (upright until it is in)."""
+        if self.w is not None and self._leans_undeclared(master):
+            mid = str((master if master is not None else self._master()).id)
+            if mid in self._lean_choices:
+                return self._lean_choices[mid]
+            verdict = self._lean_verdicts.get(mid)
+            return bool(verdict and verdict[0])
+        if self._along_declared is None:
+            self._along_declared = bool(self._setting("alongSlant", True, bool))
+        return self._along_declared
 
     def _update_slant_label(self):
-        """The checkbox names the master's angle; it is disabled for an upright
-        master (and for an angle of 60° or more, which is an error in the font)."""
+        """The checkbox names the master's angle, or the slant its stems show
+        when it declares none (with what the probe found); it is disabled for
+        an upright master (and for an angle of 60° or more, which is an error
+        in the font)."""
         box = getattr(self.w, "alongSlant", None) if self.w is not None else None
         if box is None:
             return
         snap = self.snapshot
         degrees = snap.slant_degrees if snap is not None else 0.0
-        if snap is not None and ks.slant_measurable(degrees):
-            box.setTitle("Along the %s° italic angle" % ("%g" % round(abs(degrees), 1)))
+        source = snap.slant_source if snap is not None else ""
+        if source:
+            shown = "%g" % round(abs(degrees), 1)
+            box.setTitle(("Along the %s° italic angle" if source == "declared" else "Along the %s° slant of its stems") % shown)
+            box.set(self._along_slant())
             box.enable(self.state not in ("applying",) and self._stepper is None)
         else:
             box.setTitle("Along the italic angle")
             box.enable(False)
+        tip = ("Measure an italic master along its italic angle (3° or more): Kinetikern2 sees the outlines sheared "
+               "upright about half the x-height, where Glyphs measures italic sidebearings, the way its model, built "
+               "on upright letters, measures. Sidebearings and kerning are horizontal, so they apply to the slanted "
+               "outlines as they are. Measured upright instead, italics come out too loose and uneven.")
+        if source == "measured":
+            tip = ("This master declares no italic angle, but its stems lean by %s° (the slant of l i h n m u r k b "
+                   "p, as Spacing QA reads it). Measured along that slant, Kinetikern2 sees the outlines sheared "
+                   "upright about half the x-height, as for an italic. Spacing QA's rule decides the default: along "
+                   "the slant where that leaves at most 80 %% of the shape error upright, or where upright the model "
+                   "cannot follow the font (its fit stops at the limit of the Looseness range) and along the slant "
+                   "it can. %s" % ("%g" % round(abs(degrees), 1), self._verdict_text(snap)))
+        box.getNSButton().setToolTip_(tip)
+
+    def _verdict_text(self, snap=None):
+        """What the probe found for the current master, in words."""
+        mid = str(self._master().id)
+        verdict = self._lean_verdicts.get(mid)
+        if self._slant_probe is not None and self._slant_probe.master_id == mid:
+            return "Checking both ways on the kernel's glyphs…"
+        if verdict is None:
+            return ""
+        if verdict[1] is None:
+            return "The check both ways could not be made: measured upright, as drawn."
+        lean, ((se_up, fit_up), (se_lean, fit_lean)) = verdict
+        limit = lambda f: abs(f) >= 6.0 - 1e-6
+        if lean and limit(fit_up) and not limit(fit_lean):
+            why = ("upright, the model cannot follow this master: its fit stops at the limit (%+.2f); along the "
+                   "slant it fits at %+.2f" % (fit_up, fit_lean))
+        elif lean:
+            why = "it fits clearly better along the slant (shape error %.1f, against %.1f upright)" % (se_lean, se_up)
+        else:
+            why = ("upright fits as well (shape error %.1f at Looseness %+.2f, against %.1f at %+.2f along the slant), "
+                   "so it is measured as drawn" % (se_up, fit_up, se_lean, fit_lean))
+        return "Checked both ways on the kernel's glyphs: %s." % why
+
+    def _start_slant_probe(self):
+        """For a master that leans without declaring an italic angle and has
+        no verdict yet (nor a choice of the user's): Spacing QA's check both
+        ways, in the background (kk2_snapshot.SlantProbe)."""
+        snap = self.snapshot
+        if self._slant_probe is not None or snap is None or self.w is None:
+            return
+        master = self._master()
+        mid = str(master.id)
+        if (not self._leans_undeclared(master) or mid in self._lean_verdicts or mid in self._lean_choices
+                or not self.engine.features & kb.FEATURE_STEM_SLANT):
+            return
+        try:
+            from kk2_pairs_window import current_kerning_steps
+            table = self._kerning.table(snap.master_id)
+            joins = None
+            if self._keeps_joins() and self.joins is not None:
+                joins = (dict((snap.names[i], b) for i, b in enumerate(self.joins) if i < len(snap.names)),
+                         dict((snap.names[i], int(k)) for i, k in enumerate(self.join_kinds or ()) if i < len(snap.names)))
+            style = self.harness_style
+
+            def harness(sub, looseness, kept):
+                try:
+                    return kh.Plan(sub, looseness, 1.0, style=style, kept=kept).engine_arg()
+                except Exception:
+                    print(traceback.format_exc())
+                    return None
+
+            self._slant_probe = ks.SlantProbe(
+                self.engine, self.font, master, self._stem_slants.get(mid, 0.0), snap,
+                physics=lambda looseness: physics_from_sliders(looseness, 100.0), joins=joins,
+                current_steps=lambda sub: current_kerning_steps(sub, table, READ_SLICE),
+                harness=harness if self.engine.features & kb.FEATURE_HARNESS else None,
+                threads=self._threads(), budget_s=READ_SLICE)
+        except Exception:
+            print(traceback.format_exc())
+            self._slant_probe = None
+            return
+        self._update_slant_label()
+        self._run_timer(POLL_INTERVAL)
+
+    def _step_slant_probe(self):
+        """A step of the probe; its verdict sets how the master is measured,
+        read again when that changes (unless the user chose)."""
+        probe = self._slant_probe
+        if not probe.step(READ_SLICE):
+            return
+        self._slant_probe = None
+        if probe.lean is None:
+            if probe.error == "cancelled":
+                return  # a read or a release stopped it: the next context starts it again
+            if probe.trace:
+                print(probe.trace)
+            self._lean_verdicts[probe.master_id] = (None, None)  # upright, and not tried again
+            self._set_status("Could not check whether to measure along the slant of the stems (%s): measured "
+                             "upright, as drawn." % probe.error)
+            self._update_slant_label()
+            return
+        mid = probe.master_id
+        self._lean_verdicts[mid] = (probe.lean, probe.numbers)
+        self._update_slant_label()
+        if mid != str(self._master().id) or mid in self._lean_choices or self.snapshot is None:
+            return
+        if probe.lean == bool(self.snapshot.slant):
+            self._set_status("%s %s" % ("Measured along the slant of the stems." if probe.lean else
+                                       "Measured upright, as drawn.", self._verdict_text()))
+            return
+        if self._reader is not None or self._stepper is not None or (self._job is not None and self._job_kind == "whole"):
+            return  # the next read follows the verdict
+        self._load_master(self._master())
+        self._set_status("Reading again along the %g° slant of the stems: %s" % (
+            round(abs(math.degrees(math.atan(probe.slant))), 1), self._verdict_text()))
 
     def alongSlantChanged(self, sender):
-        self._save("alongSlant", bool(self.w.alongSlant.get()))
+        if self.snapshot is not None and self._leans_undeclared():
+            # the user's choice for this master, over the probe's
+            self._lean_choices[str(self._master().id)] = bool(self.w.alongSlant.get())
+        else:
+            self._along_declared = bool(self.w.alongSlant.get())
+            self._save("alongSlant", self._along_declared)
         if self.snapshot is None or self._reader is not None or self._stepper is not None:
             return  # the next read follows the setting
         if self._job is not None and self._job_kind == "whole":
@@ -1142,6 +1303,7 @@ class KK2Window(object):
 
     def _context_ready(self, context):
         self.context = context
+        self._start_slant_probe()
         # a design whose glyphs touch by construction (underline, charted,
         # guide lines): every touching side is kept, not only the letters'
         self.join_decorated = False
@@ -1412,6 +1574,9 @@ class KK2Window(object):
             self._reader.cancel()
             self._reader = None
         self._join_finder = None
+        if self._slant_probe is not None:
+            self._slant_probe.cancel()
+            self._slant_probe = None
         if self._job is not None:
             self._job.free()
             self._job = None

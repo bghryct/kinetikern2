@@ -33,6 +33,12 @@ not a second one).
                      with every join between the sample's letters still
                      touching (ink contact), Revert exact, Space joined letters
                      counted, off again
+    selfTestSlant    a font that declares no italic angle but leans: the slant
+                     its stems show must be this (degrees, within 1°, as
+                     Spacing QA measures it)
+    selfTestLean     YES: Spacing QA's rule must measure that font along its
+                     slant (the window's probe, then a read along it); NO:
+                     upright. The preview waits for the probe's verdict either way
     selfTestGroups   spacing groups — freeze the capitals, space the figures
                      looser with half the kerning force, By Category, open the
                      Spacing Groups and Pairs windows, run the whole font,
@@ -110,6 +116,10 @@ CANCEL_KEY = PREFIX + "selfTestCancel"
 MAX_STALL_KEY = PREFIX + "selfTestMaxStall"
 GROUPS_KEY = PREFIX + "selfTestGroups"
 CONNECTED_KEY = PREFIX + "selfTestConnected"
+# a font that leans without declaring an italic angle: the slant expected
+# (degrees, Spacing QA's) and whether it is measured along it (YES / NO)
+SLANT_KEY = PREFIX + "selfTestSlant"
+LEAN_KEY = PREFIX + "selfTestLean"
 PROFILE_KEY = PREFIX + "selfTestProfile"
 
 DEFAULT_OUT = os.path.expanduser("~/Desktop/Kinetikern2-selftest")
@@ -641,6 +651,11 @@ class SelfTest(object):
         self.cancel = kk2_args.flag(_argument(CANCEL_KEY))
         self.groups_test = kk2_args.flag(_argument(GROUPS_KEY))
         self.connected_test = kk2_args.flag(_argument(CONNECTED_KEY))
+        # a font that leans without declaring an italic angle: the slant
+        # Spacing QA measures (degrees) and its verdict (along it, or upright)
+        self.expect_slant = kk2_args.number(_argument(SLANT_KEY), None)
+        lean = kk2_args.argument(_argument(LEAN_KEY))
+        self.expect_lean = None if lean is None else kk2_args.flag(_argument(LEAN_KEY))
         self.profile = kk2_args.flag(_argument(PROFILE_KEY))
         self.profiler = None
         self.max_stall = kk2_args.number(_argument(MAX_STALL_KEY), DEFAULT_MAX_STALL_MS)
@@ -965,7 +980,38 @@ class SelfTest(object):
 
     def preview_done(self):
         state = self.window_state("while preparing the preview")
-        return state == "ready" and self.win.result is not None and self.win.snapshot is not None
+        win = self.win
+        if state != "ready" or win.result is None or win.snapshot is None:
+            return False
+        # a font that leans without declaring an italic angle: the probe's
+        # verdict first, then the preview of the font read that way
+        if getattr(win, "_slant_probe", None) is not None:
+            return False
+        leans = getattr(win, "_leans_undeclared", None)
+        if leans is not None and leans():
+            key = win._font_key(win.font)
+            if key in win._lean_choices:
+                return True
+            verdict = win._lean_verdicts.get(key)
+            if verdict is None or (verdict[0] is not None and bool(verdict[0]) != bool(win.snapshot.slant)):
+                return False
+        return True
+
+    def slant_info(self):
+        """How the window measures the font: its italic angle or the slant
+        its stems show, the probe's verdict and the snapshot read."""
+        win = self.win
+        snap = win.snapshot
+        key = win._font_key(win.font)
+        stem = getattr(win, "_stem_slants", {}).get(key)
+        verdict = getattr(win, "_lean_verdicts", {}).get(key)
+        return dict(italic_angle=ks.master_italic_angle(win.font) if hasattr(ks, "master_italic_angle") else None,
+                    stem_degrees=round(math.degrees(math.atan(stem)), 2) if stem else 0.0,
+                    source=getattr(snap, "slant_source", None), slant_from=getattr(snap, "slant_from", None),
+                    measured_along=round(math.degrees(math.atan(snap.slant)), 2) if snap.slant else 0.0,
+                    verdict=None if verdict is None else verdict[0],
+                    numbers=None if verdict is None or verdict[1] is None else [list(x) for x in verdict[1]],
+                    label=_text(win.w.alongSlant.getNSButton().title()))
 
     def preview_ready(self):
         win = self.win
@@ -975,6 +1021,24 @@ class SelfTest(object):
         info = self.result_info(res)
         self.preview_kerned = info["kerned_glyphs"]
         snap_info = self.snapshot_info(snap)
+        slant = self.slant_info()
+        self.log("slant", **slant)
+        if slant["source"] == "measured":
+            self.note("the font declares no italic angle; its stems lean %.1f°: %s (%s)" % (
+                slant["stem_degrees"], "measured along that slant" if snap.slant else "measured upright",
+                slant["label"]))
+        if slant["source"] == "measured" and slant["verdict"] is None:
+            # the check both ways failed and left the design upright: an error, whatever was expected
+            status = getattr(getattr(self.win, "w", None), "status", None)
+            self.error("the check of the slant both ways failed: %s" % (_text(status.get()) if status is not None else "?"))
+        if self.expect_slant is not None:
+            if abs(abs(slant["stem_degrees"] or slant["measured_along"]) - self.expect_slant) > 1.0:
+                self.error("the slant measured is %.2f°, expected %.1f° (Spacing QA's)" % (
+                    slant["stem_degrees"] or slant["measured_along"], self.expect_slant))
+        if self.expect_lean is not None and bool(snap.slant) != self.expect_lean:
+            self.error("the font is measured %s, expected %s (Spacing QA's rule): %r" % (
+                "along the slant" if snap.slant else "upright", "along the slant" if self.expect_lean else "upright",
+                slant))
         self.log("preview", seconds=round(seconds, 2), snapshot=snap_info, gc_tracked=len(gc.get_objects()),
                  context_prep_ms=round(ctx.prep_ms, 1) if ctx is not None else None,
                  pairs=self.sample_pairs(snap, res), metrics=self.sample_metrics(snap, res),

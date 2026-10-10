@@ -726,8 +726,8 @@ impl Context {
         let mut step: f64 = 0.5;
         while fb.signum() == fa.signum() {
             b += dir * step;
-            if b.abs() > 6.0 {
-                return Some(b.clamp(-6.0, 6.0));
+            if b.abs() > crate::slant::FIT_LIMIT {
+                return Some(b.clamp(-crate::slant::FIT_LIMIT, crate::slant::FIT_LIMIT));
             }
             fb = f(b);
             if !fb.is_finite() {

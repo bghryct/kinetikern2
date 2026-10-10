@@ -16,6 +16,11 @@
 #   ./build.sh --verify --groups  the self-test also runs its spacing-groups stage
 #   ./build.sh --verify FONT --connected  and its connected-script stage (FONT must be a
 #                               connected script, e.g. an OFL script from Google Fonts)
+#   ./build.sh --verify FONT --slant DEG --lean YES|NO  a font that declares no italic angle
+#                               but leans: the slant its stems show must be DEG (within
+#                               1°, Spacing QA's), and Spacing QA's rule must measure it
+#                               along that slant (YES) or upright (NO); the whole-font
+#                               run, Apply and Revert then run that way
 #   ./build.sh --verify --profile  profiles the main thread from Apply to the end of Revert
 #                               (profile.txt next to the report)
 #
@@ -48,6 +53,8 @@ TEST=0
 VERIFY=0
 SPACING_GROUPS=0
 CONNECTED=0
+SLANT=""
+LEAN=""
 PROFILE=0
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 while [ $# -gt 0 ]; do
@@ -59,12 +66,14 @@ while [ $# -gt 0 ]; do
     --test) TEST=1 ;;
     --groups) SPACING_GROUPS=1 ;;
     --connected) CONNECTED=1 ;;
+    --slant) SLANT="$2"; shift ;;
+    --lean) LEAN="$2"; shift ;;
     --profile) PROFILE=1 ;;
     --verify)
       VERIFY=1
       # an optional font path follows (anything not starting with "-")
       if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then FONT="$2"; shift; fi ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -218,6 +227,8 @@ PATTERN="$KEY\.selfTestOut $(printf '%s' "$RESULTS" | sed 's/[][\.*^$?+(){}|]/\\
 EXTRA=()
 [ "$SPACING_GROUPS" = 1 ] && EXTRA+=("-$KEY.selfTestGroups" YES)
 [ "$CONNECTED" = 1 ] && EXTRA+=("-$KEY.selfTestConnected" YES)
+[ -n "$SLANT" ] && EXTRA+=("-$KEY.selfTestSlant" "$SLANT")
+[ -n "$LEAN" ] && EXTRA+=("-$KEY.selfTestLean" "$LEAN")
 [ "$PROFILE" = 1 ] && EXTRA+=("-$KEY.selfTestProfile" YES)
 echo "self-test: $(basename "$FONT") in a temporary RoboFont (results in $RESULTS)"
 open -n -a "$ROBOFONT_APP" --args -ApplePersistenceIgnoreState YES \

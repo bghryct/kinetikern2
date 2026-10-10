@@ -63,6 +63,13 @@ SLANT_MAX_DEGREES = 60.0
 def slant_measurable(degrees):
     """An italic angle the glyphs are measured along: 3° to under 60°."""
     return SLANT_MIN_DEGREES <= abs(degrees) < SLANT_MAX_DEGREES
+
+
+# The GF Latin Kernel as Spacing QA checks it (crates/spacingqa/src/glyphset.rs):
+# A–Z, a–z and 14 punctuation marks fit the Looseness; they and these symbols
+# are compared. The slant probe reads these glyphs only.
+KERNEL_FIT = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,:;!?-'\"()/&\u2019"
+KERNEL_SCORED = "%*@[\\]`{|}\u00a9\u00ae\u00b0\u00b7\u2013\u2014\u2018\u201c\u201d\u2022\u2026\u2122"
 DEFAULT_FIGURES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
 
 # Unicode blocks of symbols that are spaced but never kerned (as tools/kk2_fonts.py)
@@ -520,6 +527,10 @@ class Snapshot(object):
         self.slant = 0.0
         self.slant_pivot = 0.0
         self.frame = []
+        # tan of the slant the stems show (stem_slant), for a master that
+        # declares no italic angle; where the slant measured along comes from
+        self.stem_slant = 0.0
+        self.slant_from = ""
 
         self.names = []
         self.index = {}
@@ -576,22 +587,40 @@ class Snapshot(object):
 
     @property
     def slant_degrees(self):
-        """How far the master leans by its italic angle (degrees, + right)."""
-        return self.italic_angle
+        """How far the master leans (degrees, + right): by its italic angle
+        where it declares one of SLANT_MIN_DEGREES or more, else by the slant
+        its stems show (stem_slant), else its italic angle."""
+        if slant_measurable(self.italic_angle) or not self.stem_slant:
+            return self.italic_angle
+        return math.degrees(math.atan(self.stem_slant))
 
-    def set_slant(self, on):
-        """Measure along the italic angle (`on`) when the master leans by
-        SLANT_MIN_DEGREES or more (less than SLANT_MAX_DEGREES). Kinetikern2's model is built on upright
+    @property
+    def slant_source(self):
+        """Where the slant to measure along comes from: "declared" (the
+        italic angle), "measured" (the stems), or "" (upright)."""
+        if slant_measurable(self.italic_angle):
+            return "declared"
+        return "measured" if self.stem_slant and slant_measurable(self.slant_degrees) else ""
+
+    def set_slant(self, on, stem=0.0):
+        """Measure along the slant (`on`): the italic angle when the master
+        leans by SLANT_MIN_DEGREES or more (less than SLANT_MAX_DEGREES), else
+        the slant its stems show (`stem`: tan, stem_slant), for a design that
+        leans without declaring it. Kinetikern2's model is built on upright
         letters: measured upright, an italic comes out too loose and uneven
         (on 171 Google Fonts italics, gaps 29.8 units per 1000 em from the
         designers' against 21.3 measured along the angle). Sidebearings and
         kerning are horizontal offsets, which a shear keeps; about half the
         x-height, the sides are where the eye (and Glyphs' italic
         sidebearings) judge them. Set before the glyphs are read."""
+        self.stem_slant = float(stem or 0.0)
         self.slant = self.slant_pivot = 0.0
-        if on and slant_measurable(self.italic_angle):
+        self.slant_from = ""
+        source = self.slant_source
+        if on and source:
             self.slant = math.tan(math.radians(self.slant_degrees))
             self.slant_pivot = 0.5 * self.x_height
+            self.slant_from = source
 
     def engine_sides(self, name):
         """(LSB, RSB) of a spacing glyph in the engine's frame: on the ink, or
@@ -652,7 +681,10 @@ class SnapshotReader(object):
     LIST_SHARE = 0.08  # progress shares of passes 1 and 2 (pass 3 has the rest)
     READ_SHARE = 0.9
 
-    def __init__(self, font, master, keep_figure_widths=True, along_slant=True):
+    def __init__(self, font, master, keep_figure_widths=True, along_slant=True, stem_slant=0.0, only=None):
+        """`stem_slant`: tan of the slant the master's stems show (stem_slant),
+        measured along with `along_slant` where it declares no italic angle;
+        `only`: the names of the spacing glyphs to read (None: every one)."""
         if isinstance(master, str):  # a master id
             master = next(m for m in font.masters if str(m.id) == master)
         self.snapshot = None
@@ -660,7 +692,8 @@ class SnapshotReader(object):
         self.done = False
         self.cancelled = False
         self._snap = Snapshot(font, master)
-        self._snap.set_slant(along_slant)
+        self._snap.set_slant(along_slant, stem_slant)
+        self._only = frozenset(only) if only is not None else None
         self._keep_figure_widths = keep_figure_widths
         self._pass = 1
         self._pos = 0
@@ -730,7 +763,7 @@ class SnapshotReader(object):
                 if name == "space":
                     snap.space_name = name
                 category = _string(glyph.category)
-                if category in SPACING_CATEGORIES:
+                if category in SPACING_CATEGORIES and (self._only is None or name in self._only):
                     self._candidates.append((glyph, name, category, cps[0] if cps else None))
                 else:
                     self._note_components(glyph, name)
@@ -1021,3 +1054,205 @@ def tokenize(text, snapshot):
             tokens.append(snapshot.char_map.get(ch, MISSING))
         i += 1
     return tokens
+
+
+# ------------------------------------------------------------ measured slant
+def master_italic_angle(master):
+    """A master's italic angle (degrees, + leans right; 0 when it has none)."""
+    return _number(getattr(master, "italicAngle", None), 0.0)
+
+
+def stem_slant(engine, font, master):
+    """tan of the slant a master's stems show (+ leans right), or 0 for an
+    upright design: Spacing QA's detector, in the engine (kk2_stem_slant), on
+    the glyphs it names (l i h n m u r k b p) and the top of the x. 0 with an
+    older engine, or without an x."""
+    names = engine.stem_glyphs()
+    if not names:
+        return 0.0
+    mid = str(master.id)
+
+    def contours(name):
+        glyph = font.glyphs[name]
+        layer = _layer(glyph, mid) if glyph is not None else None
+        return bezier_contours(layer_path(layer)) if layer is not None else []
+
+    x = contours("x")
+    if not x:
+        return 0.0
+    packer = kb.InputPacker()
+    for name in names:
+        packer.add(kb.GlyphSpec(name, contours(name), 0.0))
+    return engine.stem_slant(packer, max(p[1] for c in x for p in c), float(font.upm))
+
+
+class SlantProbe(object):
+    """Whether a master that declares no italic angle but whose stems lean
+    is measured along that slant: Spacing QA's rule (kk2_lean_wins), on the
+    glyphs of the GF Latin Kernel the way Spacing QA checks them. They are
+    read upright and along the slant; each set is prepared (a connected
+    script with its joins: bands are heights, which a shear keeps), fitted
+    to the font's own spacing (its letters and punctuation; the kept joins
+    of a connected script, as Keep joins does), solved there, pair by pair
+    with the designer harness when there is one, and measured against the
+    font's spacing. The slant wins where that leaves at most 80 % of the
+    shape error upright, or where upright the fit stops at the limit of the
+    Looseness range and along the slant it does not.
+
+    Call step() from a timer until it returns True: `lean` is then the
+    verdict (None: it could not tell, `error` says why) and `numbers` what
+    it measured: ((shape error, fit) upright, (shape error, fit) along the
+    slant), shape errors in units per 1000 em."""
+
+    def __init__(self, engine, font, master, slant, snapshot, physics, joins=None, current_steps=None,
+                 harness=None, threads=0, budget_s=0.008):
+        """`snapshot`: the master as read (its glyph names and characters);
+        `physics`: Looseness → (spring, repulsion, coupling) at 100 %
+        intensity; `joins`: None, or ({name: (left band, right band)},
+        {name: join kind}) of a connected script whose joins are kept;
+        `current_steps`: snapshot → a generator returning the master's
+        kerning as engine input (kk2_pairs_window.current_kerning_steps);
+        `harness`: (snapshot, Looseness, kept sides) → the solve's harness
+        argument, or None."""
+        self.engine = engine
+        self.master_id = str(master.id)
+        self.slant = float(slant)
+        self.lean = None
+        self.numbers = None
+        self.error = None
+        self.trace = None
+        self.done = False
+        self._physics = physics
+        self._joins = joins
+        self._current_steps = current_steps
+        self._harness = harness
+        self._threads = int(threads)
+        self._budget = float(budget_s)
+        chars = KERNEL_FIT + KERNEL_SCORED
+        names = []
+        for ch in chars:
+            name = snapshot.char_map.get(ch)
+            if name and name in snapshot.index and name not in names:
+                names.append(name)
+        self._fit_names = set(snapshot.char_map.get(ch) for ch in KERNEL_FIT)
+        self._readers = [SnapshotReader(font, master, along_slant=False, only=names),
+                         SnapshotReader(font, master, along_slant=True, stem_slant=self.slant, only=names)]
+        self._held = []  # contexts, results and jobs to free
+        self._steps = self._run()
+
+    def step(self, budget_s=None):
+        """Works for about `budget_s` seconds (reading in slices; engine jobs
+        are polled). True when done."""
+        if self.done:
+            return True
+        if budget_s is not None:
+            self._budget = float(budget_s)
+        try:
+            next(self._steps)
+        except StopIteration:
+            self.done = True
+        except Exception as e:
+            import traceback
+            self.error, self.trace, self.done = str(e) or e.__class__.__name__, traceback.format_exc(), True
+        if self.done:
+            self._free()
+        return self.done
+
+    def cancel(self):
+        for reader in self._readers:
+            reader.cancel()
+        self.error = self.error or "cancelled"
+        self.done = True
+        self._free()
+
+    def _free(self):
+        """Frees what the probe holds: a job still running is cancelled."""
+        for obj in self._held:
+            try:
+                if isinstance(obj, kb.Job):
+                    obj.free()  # cancels a running job; never blocks
+                else:
+                    obj.close()
+            except Exception:
+                pass
+        self._held = []
+
+    def _run(self):
+        snaps = []
+        for reader in self._readers:
+            while not reader.step(self._budget):
+                yield
+            if reader.snapshot is None:
+                raise RuntimeError("reading cancelled")
+            snaps.append(reader.snapshot)
+            yield
+        if any(len(s.names) < 20 for s in snaps):
+            raise RuntimeError("too few of the kernel's glyphs to compare")
+        # the master's kerning as engine input: both sets read the same
+        # glyphs in the same order, so their indices and group ids agree
+        current = []
+        if self._current_steps is not None:
+            current = (yield from self._current_steps(snaps[0])) or []
+        out = []
+        for snap in snaps:
+            ctx = yield from self._wait(self._prepare(snap, current))
+            fit, result = yield from self._fit_and_solve(snap, ctx)
+            stats = self.engine.measure(ctx, result, current, mask=None, scope_scripts=True, cap=1)[0]
+            out.append((stats["mae"] * 1000.0 / snap.upm, fit))
+            yield
+        self.numbers = (out[0], out[1])
+        self.lean = self.engine.lean_wins(out[0], out[1])
+
+    def _wait(self, job):
+        """Polls `job` a tick at a time; its Context or Result."""
+        self._held.append(job)
+        while job.poll()[0] == kb.STATE_RUNNING:
+            yield
+        state = job.poll()[0]
+        if state != kb.STATE_DONE:
+            raise kb.EngineError(job.error() or self.engine.last_error() or "the engine stopped")
+        out = job.take()
+        self._held.remove(job)
+        job.free()
+        self._held.append(out)
+        return out
+
+    def _prepare(self, snap, current):
+        if self._joins is None:
+            return self.engine.prepare(snap.packer, snap.upm, self._threads)
+        bands_of, kinds_of = self._joins
+        bands = [bands_of.get(name) or (None, None) for name in snap.names]
+        if self.engine.features & kb.FEATURE_JOIN_CHECK:
+            kinds = bytearray(int(kinds_of.get(name, 0)) for name in snap.names)
+            return self.engine.prepare(snap.packer, snap.upm, self._threads, joins=bands, join_kinds=kinds,
+                                       current=current, keep_joins=True)
+        return self.engine.prepare(snap.packer, snap.upm, self._threads, joins=bands)
+
+    def _params(self, looseness, fit_frozen=False, skip_pass2=False):
+        """Spacing QA's solve: pair by pair, every pair, no threshold."""
+        spring, repulsion, coupling = self._physics(looseness)
+        return kb.make_params(spring=spring, repulsion=repulsion, coupling=coupling, classes=False, window=True,
+                              scope_scripts=True, threshold=0.0, budget=0, threads=self._threads,
+                              fit_frozen=fit_frozen, skip_pass2=skip_pass2)
+
+    def _fit_and_solve(self, snap, ctx):
+        """The Looseness fitted to the font's spacing, and the solve there."""
+        kept = None
+        if self._joins is not None:
+            # Keep joins: matched to the joined letters (Pass 1 is enough)
+            first = yield from self._wait(self.engine.solve(ctx, self._params(0.0, fit_frozen=True, skip_pass2=True)))
+            fit = first.fitted_looseness  # a property
+            try:
+                bits = self.engine.join_sides(ctx)
+                left = [i for i, b in enumerate(bits) if b & kb.JOINSIDE_LEFT_KEPT]
+                right = [i for i, b in enumerate(bits) if b & kb.JOINSIDE_RIGHT_KEPT]
+                kept = (left, right) if left or right else None
+            except Exception:
+                kept = None
+        else:
+            which = [1 if name in self._fit_names else 0 for name in snap.names]
+            fit = self.engine.fit_looseness(ctx, self._params(0.0), which)
+        fit = 0.0 if fit is None else float(fit)
+        harness = self._harness(snap, fit, kept) if self._harness is not None else None
+        result = yield from self._wait(self.engine.solve(ctx, self._params(fit), harness=harness))
+        return fit, result

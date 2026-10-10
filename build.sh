@@ -19,6 +19,11 @@
 #                               distance kept, Apply then the font read back with every
 #                               join still touching (ink contact), Revert exact, Space
 #                               joined letters counted, off again
+#   ./build.sh --verify FONT --slant DEG --lean YES|NO  a master that declares no italic
+#                               angle but leans: the slant its stems show must be DEG
+#                               (within 1°, Spacing QA's), and Spacing QA's rule must
+#                               measure it along that slant (YES) or upright (NO);
+#                               the whole-font run, Apply and Revert then run that way
 #
 # The library is replaced atomically (built into a staging file, signed, then renamed
 # over the old one), so a Glyphs or a tool that has the old one loaded keeps it.
@@ -47,6 +52,8 @@ TEST=0
 VERIFY=0
 SPACING_GROUPS=0
 CONNECTED=0
+SLANT=""
+LEAN=""
 FONT="/System/Library/Fonts/Supplemental/Arial.ttf"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,11 +62,13 @@ while [ $# -gt 0 ]; do
     --test) TEST=1 ;;
     --groups) SPACING_GROUPS=1 ;;
     --connected) CONNECTED=1 ;;
+    --slant) SLANT="$2"; shift ;;
+    --lean) LEAN="$2"; shift ;;
     --verify)
       VERIFY=1
       # an optional font path follows (anything not starting with "-")
       if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then FONT="$2"; shift; fi ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -183,6 +192,8 @@ PATTERN="$KEY\.selfTestOut $(printf '%s' "$RESULTS" | sed 's/[][\.*^$?+(){}|]/\\
 EXTRA=()
 [ "$SPACING_GROUPS" = 1 ] && EXTRA+=("-$KEY.selfTestGroups" YES)
 [ "$CONNECTED" = 1 ] && EXTRA+=("-$KEY.selfTestConnected" YES)
+[ -n "$SLANT" ] && EXTRA+=("-$KEY.selfTestSlant" "$SLANT")
+[ -n "$LEAN" ] && EXTRA+=("-$KEY.selfTestLean" "$LEAN")
 # window settings for the test, as the window stores them (KK2_SETTINGS="connected NO intensity 200 …")
 if [ -n "${KK2_SETTINGS:-}" ]; then
   read -r -a PAIRS <<< "$KK2_SETTINGS"

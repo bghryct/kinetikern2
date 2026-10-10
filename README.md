@@ -43,6 +43,8 @@ Kinetikern2/
 │       ├── classes.rs                side classes, member differences
 │       ├── pass2.rs                  the pair kernel and the window solver
 │       ├── measure.rs                the font's pairs against a solve (Pairs window)
+│       ├── slant.rs                  the slant a design's stems show, and when to measure
+│       │                             along it (Spacing QA's detector and rule)
 │       ├── joins.rs                  connected scripts: the detector, join bands
 │       ├── contact.rs                ink contact: touch sets, windows, crossings
 │       ├── checker.rs                the join checker, Keep joins, the decoration test
@@ -149,7 +151,7 @@ other two.
 | **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
 | **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
 | **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning. A font whose letters do not join is spaced as usual, so it is on by default. The menu beside it: **Keep joins** (default) keeps every joining side's sidebearing and the master's kerning between two joining sides, so every join stays as drawn and the rest of the font is spaced around the letters; **Space joined letters** spaces the letter bodies without their join strokes and lets two joining letters overlap with no kerning (joins can break; Joins… counts them). A design whose glyphs touch by construction (a line or a grid through every glyph) keeps every side that touches. |
-| **Along the italic angle** | On an italic master (italic angle 3° or more, under 60°), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is disabled for an upright master (and for an angle of 60° or more, an error in the font). |
+| **Along the italic angle** | On an italic master (italic angle 3° or more, under 60°), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is disabled for an upright master (and for an angle of 60° or more, an error in the font). On a master that declares no angle but whose stems lean, it reads **Along the N° slant of its stems**, and Spacing QA's rule sets it (*Designs that lean without an italic angle* below); a click overrides the rule for that master. |
 | **Progress bar, Cancel** | Shows the current step: *Reading outlines*, *Phase 1/3: Analyzing SDFs*, *Phase 2/3: Evaluating pairs* (with seconds elapsed in a whole-font run), *Phase 3/3: Grouping & pruning*, *Planning*, *Applying*, *Reverting*. Cancel stops reading, Phase 1, a preview, a whole-font run or the planning of an Apply. Once Apply or Revert has started writing, it runs to the end. |
 
 The status line under the panes reports the last result. For example:
@@ -481,6 +483,31 @@ from the designer's (163 of 171 closer), sidebearings 29.9 → 13.4 (164 of
 (measured upright, every italic looked too tight to the model). Uprights of
 the same families: 14.5 and 8.7. Worse: Molle and Kristi, scripts with a
 declared angle, and Josefin Slab Italic (+4.5); a script can switch it off.
+
+#### Designs that lean without an italic angle
+
+Many hands lean without declaring an italic angle (calligraphic italics,
+scripts drawn on a slant). The window reads the slant their stems show —
+the first ink run of l i h n m u r k b p between a quarter and three
+quarters of the x-height, the median of at least four near-straight stems
+that agree, 3° or more — with the same detector Spacing QA uses (the
+engine's `kk2_stem_slant`). Whether to measure along it is Spacing QA's
+rule too (`kk2_lean_wins`): after the master is read, a check in the
+background reads the GF Latin Kernel's glyphs upright and along the slant,
+fits each to the master's own spacing (a connected script to its kept
+joins), solves pair by pair with the designer harness and measures the
+master's spacing against it. The slant wins where that leaves at most 80 %
+of the shape error upright, or where upright the model cannot follow the
+master at all — its fit stops at the limit of the Looseness range — and
+along the slant it can. When the check says so, the window reads the
+master again along the slant; the checkbox's tooltip says what it found,
+and a click decides for that master instead. Explora (no italic angle, its
+stems at 21.5°): upright the fit stops at −6.00, along the slant it is
+−0.95, and the master is measured along it, as Spacing QA measures the
+family. Most leaning hands fit as well upright and stay upright: of the
+163 handwriting families on Google Fonts that Spacing QA measures upright
+although their stems lean, the shape error along the slant is a median
+11 % higher.
 In Glyphs, fitting the Looseness to Playfair Display Italic's own capitals
 gave −6.00 (the limit) measured upright and −0.06 along the angle.
 
@@ -714,7 +741,7 @@ class pairs and 25,166 exceptions.
 |---|---|
 | `plugin.py` | Registers Filter ▸ Kinetikern2… (a GeneralPlugin) and, only when launched with test arguments, the unattended hook. |
 | `kk2_window.py` | The window. One NSTimer in the common run-loop modes drives reading, job polling, Apply/Revert slices and pane layout, so it keeps working during slider drags and open menus. At most one engine job runs at a time; for a preview, the newest request wins. |
-| `kk2_snapshot.py` | `SnapshotReader` copies a master in three passes of at most 8 ms per tick: list glyphs, read outlines and properties, resolve references (metrics keys, components, tabular figures). It builds the engine input as it goes. |
+| `kk2_snapshot.py` | `SnapshotReader` copies a master in three passes of at most 8 ms per tick: list glyphs, read outlines and properties, resolve references (metrics keys, components, tabular figures). It builds the engine input as it goes. `stem_slant` reads the slant of a master's stems, and `SlantProbe` checks the kernel's glyphs upright and along it in the background (Spacing QA's rule). |
 | `kk2_proof.py` | TextKit 1 panes whose glyphs are attachment cells. Kerning goes into each cell's width, because TextKit ignores the kerning attribute on attachments. Right-to-left runs are set right to left. |
 | `kk2_apply.py` | `Planner` (what will be written), `Applier` (writes, read-back), `RevertPoint` and `Restorer`. All of them step in slices from the window's timer. `plan()`, `apply()` and `restore()` run them to the end for tools. |
 | `kk2_bridge.py` | ctypes structs, with their sizes checked against the library; `Engine`, `InputPacker`, `Job`, `Context`, `Result`. It has no Glyphs imports, so the tools use it too. |
@@ -1041,7 +1068,8 @@ Result on the final build: **PASSED** in 33.2 s.
   defaults) has none to find, and is spaced as usual. Space at least half
   the lowercase a–z so that each joins most of its partners, then read the
   master again (↻). A script that declares an italic angle is measured
-  along it (*Italics*); one that declares none is measured as drawn.
+  along it (*Italics*); one that declares none is measured along the slant
+  its stems show where Spacing QA's rule says so, else as drawn.
 * **Scripts that join through contextual alternates.** The plugin finds joins
   between the glyphs as drawn, without features: a script whose letters join
   only through calt alternates and connector glyphs (TypeTogether's

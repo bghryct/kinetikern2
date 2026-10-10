@@ -33,7 +33,9 @@ window, the same controls and the same tools:
   of their own, each with its own Looseness and kerning force (Latin
   letters keep the main sliders);
 - italics measured along their italic angle (**Along the 12° italic angle**:
-  the engine sees the outlines sheared upright about half the x-height);
+  the engine sees the outlines sheared upright about half the x-height), and
+  designs that lean without declaring one along the slant their stems show
+  where Spacing QA's rule says so (**Along the 21.5° slant of its stems**);
 - the Pairs window (the font's pairs, loosest to tightest, against
   Kinetikern2);
 - an unattended self-test inside RoboFont (`build.sh --verify`).
@@ -102,7 +104,12 @@ own means:
   its sidebearings come back in the font's frame (sidebearings and kerning
   are horizontal offsets, which a shear keeps). Apply, Revert and the
   proofs work on the outlines as drawn. The switch is in the progress row,
-  disabled for an upright font.
+  disabled for an upright font. A font that declares no italic angle but
+  whose stems lean is measured along that slant where Spacing QA's rule
+  says so, as in Glyphs: the engine reads the stems' slant
+  (`kk2_stem_slant`), a check in the background compares the kernel's
+  glyphs upright and along it (`kk2_lean_wins`), and the font is read again
+  along the slant when that wins; a click on the switch decides instead.
 - **Looking at a pair** opens it in a Space Center (Glyphs: an Edit tab).
 - The window's settings are kept in RoboFont's extension defaults; the
   spacing groups in the font's lib

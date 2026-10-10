@@ -70,6 +70,9 @@ FEATURE_JOIN_PARTLY = 256
 # with PARAM_FIT_FROZEN the Looseness of the params is an offset from the
 # fitted one (kk2_result_fitted_looseness is the fitted Looseness itself)
 FEATURE_FIT_OFFSET = 512
+# the slant a design's stems show, and when to measure along it: Spacing QA's
+# detector and rule (kk2_stem_glyphs, kk2_stem_slant, kk2_lean_wins)
+FEATURE_STEM_SLANT = 1024
 
 # kk2_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
@@ -447,6 +450,9 @@ class Engine(object):
                                    ctypes.c_int32),
             "kk2_detect_partly": ([c_void_p, c_uint32, c_double, c_double, c_void_p, c_void_p, c_uint32, c_void_p],
                                   ctypes.c_int32),
+            "kk2_stem_glyphs": ([], c_char_p),
+            "kk2_stem_slant": ([c_void_p, c_uint32, c_double, c_double], c_double),
+            "kk2_lean_wins": ([c_double, c_double, c_double, c_double], c_uint32),
         }
         self.features = 0
         for name, (args, res) in optional.items():
@@ -581,6 +587,39 @@ class Engine(object):
         if v < 0:
             raise EngineError(self.last_error())
         return bool(v), tuple(int(c) for c in counts)
+
+    def stem_glyphs(self):
+        """The glyphs stem_slant reads, by name and in its order (() with an
+        older engine)."""
+        if not self.features & FEATURE_STEM_SLANT or getattr(self.lib, "kk2_stem_glyphs", None) is None:
+            return ()
+        return tuple((self.lib.kk2_stem_glyphs() or b"").decode("ascii", "replace").split())
+
+    def stem_slant(self, packer, x_height, units_per_em):
+        """tan of the slant a design's stems show (+ leans right), or 0 for
+        an upright design: `packer` holds the glyphs stem_glyphs() names, in
+        that order (no contours for one the font lacks), `x_height` is the
+        top of the x. Spacing QA's detector (kinetikern2::slant). 0 with an
+        older engine."""
+        if not self.features & FEATURE_STEM_SLANT or getattr(self.lib, "kk2_stem_slant", None) is None:
+            return 0.0
+        arr, n, keep = packer.build()
+        v = self.lib.kk2_stem_slant(ctypes.addressof(arr), n, float(x_height), float(units_per_em))
+        del keep, arr
+        if v != v:
+            raise EngineError(self.last_error())
+        return float(v)
+
+    def lean_wins(self, upright, lean):
+        """Whether a design that leans without declaring an italic angle is
+        measured along the slant its stems show, from (shape error, best-fit
+        Looseness) upright and along the slant: where that leaves at most 80 %
+        of the shape error upright, or where upright the fit stops at the
+        limit of the Looseness range and along the slant it does not — Spacing
+        QA's rule (kinetikern2::slant). False with an older engine."""
+        if not self.features & FEATURE_STEM_SLANT or getattr(self.lib, "kk2_lean_wins", None) is None:
+            return False
+        return bool(self.lib.kk2_lean_wins(float(upright[0]), float(upright[1]), float(lean[0]), float(lean[1])))
 
     def join_check(self, context, result=None, scope=None, side_cap=64):
         """What `result` (None: the font as it is) does to a connected

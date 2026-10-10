@@ -50,6 +50,7 @@ mod pass2;
 mod physics;
 mod profile;
 mod run;
+pub mod slant;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1416,10 +1417,42 @@ pub unsafe extern "C" fn kk2_measure(
 /// that join by touching (`kk2_detect_contact`), 256 hands that join only in
 /// part (`kk2_detect_partly`), 512 the Looseness of the params as an offset
 /// from the one fitted with `PARAM_FIT_FROZEN` (`kk2_result_fitted_looseness`
-/// is the fitted Looseness itself).
+/// is the fitted Looseness itself), 1024 the slant a design's stems show and
+/// when to measure along it (`kk2_stem_glyphs`, `kk2_stem_slant`,
+/// `kk2_lean_wins`).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    1023
+    2047
+}
+
+/// The glyphs `kk2_stem_slant` reads, by name, space separated and in its
+/// order (static, NUL-terminated).
+#[no_mangle]
+pub extern "C" fn kk2_stem_glyphs() -> *const c_char {
+    static NAMES: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| CString::new(slant::STEMS.join(" ")).unwrap_or_default()).as_ptr()
+}
+
+/// tan of the slant a design's stems show (+ leans right), or 0 for an
+/// upright design (`slant::stem_slant`): `glyphs` holds the outlines of the
+/// glyphs `kk2_stem_glyphs` names, `glyph_count` of them in that order (no
+/// points for a glyph the font lacks; only the outlines are read), and
+/// `x_height` is the top of the x. NaN on failure (`kk2_last_error`).
+#[no_mangle]
+pub unsafe extern "C" fn kk2_stem_slant(glyphs: *const KK2Glyph, glyph_count: u32, x_height: f64, units_per_em: f64) -> f64 {
+    guard(f64::NAN, || {
+        let inputs = read_inputs(glyphs, glyph_count)?;
+        let stems: Vec<&[Vec<(Vec2, u32)>]> = inputs.iter().map(|g| &g.contours[..]).collect();
+        Ok(slant::stem_slant(&stems, x_height, units_per_em))
+    })
+}
+
+/// Whether a design that leans without declaring an italic angle is measured
+/// along the slant its stems show (`slant::lean_wins`), from the shape error
+/// and the best-fit Looseness of a check upright and along the slant: 1 or 0.
+#[no_mangle]
+pub extern "C" fn kk2_lean_wins(upright_shape: f64, upright_fit: f64, lean_shape: f64, lean_fit: f64) -> u32 {
+    slant::lean_wins((upright_shape, upright_fit), (lean_shape, lean_fit)) as u32
 }
 
 /// The scope a check of `res` uses: `scope` (NULL = the glyphs the solve kerned).
