@@ -272,6 +272,127 @@ pub fn letters_touching(inputs: &[GlyphInput], upm: f64, kinds: &[JoinKind], ker
     (joining, az.len())
 }
 
+/// A hand that joins only in part still joins by design when its joins
+/// reach letters that print and display faces never join: at least this
+/// share of the basic a–z pairs join (`PartlyJoined`)…
+pub const PARTLY_PAIRS: f64 = 1.0 / 6.0;
+/// …and at least this share of the pairs of two stem letters (`STEM_RIGHT`
+/// before `STEM_LEFT`: n n, m i, u n …), where only an exit stroke reaches
+/// the next letter. On Google Fonts the scripts that join in part reach
+/// 0.23–1.00 of their stem pairs (Cherish, Ruthie … Ephesis 0.85, Felipa 1),
+/// display faces whose letters touch at most 0.15 (Metal Mania), print hands
+/// whose a and d flick into the next letter 0.22 with 0.12 of all pairs.
+pub const PARTLY_STEMS: f64 = 0.2;
+/// Joins count from this height up (x-heights): a serif or a flick that
+/// meets its neighbour on the baseline is not a join.
+pub const PARTLY_ABOVE: f64 = 0.15;
+/// Letters whose print forms end in a stem on the right…
+pub const STEM_RIGHT: &[u8] = b"adhilmnu";
+/// …and those that begin with one on the left.
+pub const STEM_LEFT: &[u8] = b"bhijklmnpru";
+/// Pairs a test needs at the least (of 676, and of 88 stem pairs).
+const PARTLY_MIN_PAIRS: usize = 300;
+const PARTLY_MIN_STEMS: usize = 40;
+
+/// The test for a hand that joins only in part (`PARTLY_PAIRS`,
+/// `PARTLY_STEMS`), from the basic a–z pairs: counted by
+/// `letters_partly_joined` on the glyphs as the font sets them (the
+/// plugins), and by Spacing QA on the pairs as a browser sets them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PartlyJoined {
+    /// a–z pairs measured, and those that join above the baseline zone.
+    pub pairs: usize,
+    pub joined: usize,
+    /// Pairs of two stem letters measured, and those that join.
+    pub stem_pairs: usize,
+    pub stem_joined: usize,
+}
+
+impl PartlyJoined {
+    /// Counts the pair `left` `right` (ASCII a–z): whether its inks touch,
+    /// and where (mean contact height, font units; `x_height` too).
+    pub fn add(&mut self, left: u8, right: u8, joins: bool, height: f64, x_height: f64) {
+        let joined = joins && height.is_finite() && height >= PARTLY_ABOVE * x_height;
+        self.pairs += 1;
+        self.joined += joined as usize;
+        if STEM_RIGHT.contains(&left) && STEM_LEFT.contains(&right) {
+            self.stem_pairs += 1;
+            self.stem_joined += joined as usize;
+        }
+    }
+
+    /// The hand joins by design, though only in part.
+    pub fn joins(&self) -> bool {
+        self.pairs >= PARTLY_MIN_PAIRS
+            && self.stem_pairs >= PARTLY_MIN_STEMS
+            && self.joined as f64 >= PARTLY_PAIRS * self.pairs as f64
+            && self.stem_joined as f64 >= PARTLY_STEMS * self.stem_pairs as f64
+    }
+}
+
+/// A hand that joins only in part, on the glyphs as the font sets them
+/// (offset = advance + the font's kerning; touching within one scanline):
+/// `letters` holds each glyph's basic a–z letter (ASCII) or 0. For a font the
+/// detector (`joins::detect`) and the touching rule (`letters_touching`)
+/// leave unjoined because fewer than half its letters join: scripts whose
+/// exit strokes reach some partners but not others (Ephesis, Beau Rivage,
+/// Ruthie). `x_height` in font units.
+pub fn letters_partly_joined(inputs: &[GlyphInput], upm: f64, x_height: f64, letters: &[u8], kerning: &[KernIn]) -> PartlyJoined {
+    let mut out = PartlyJoined::default();
+    if !(x_height.is_finite() && x_height > 0.0) {
+        return out;
+    }
+    let n = inputs.len();
+    let mut az: Vec<(u8, usize)> = (0..n)
+        .filter_map(|i| {
+            let c = letters.get(i).copied().unwrap_or(0);
+            (c.is_ascii_lowercase() && !inputs[i].contours.is_empty() && inputs[i].advance.is_finite()).then_some((c, i))
+        })
+        .collect();
+    // one glyph per letter (the first), as Spacing QA measures them
+    az.sort_by_key(|&(c, i)| (c, i));
+    az.dedup_by_key(|&mut (c, _)| c);
+    let step = contact::row_step(upm);
+    let ink: Vec<Option<InkRows>> = az
+        .iter()
+        .map(|&(_, i)| Some(InkRows::of_contours(&inputs[i].contours, step, 0.0, 0.0)).filter(|r| !r.is_empty()))
+        .collect();
+    let current = CurrentKerning::new(kerning);
+    let kern = |a: usize, b: usize| {
+        let v = current.value_in(a as u32, b as u32, inputs[a].right_group, inputs[b].left_group);
+        if v.is_finite() {
+            v
+        } else {
+            0.0
+        }
+    };
+    let fragile = FRAGILE * upm / 1000.0;
+    let counted: Vec<(u8, u8, bool, f64)> = (0..az.len())
+        .into_par_iter()
+        .flat_map_iter(|x| {
+            let (ca, a) = az[x];
+            let ink = &ink;
+            let kern = &kern;
+            let az = &az;
+            (0..az.len()).filter_map(move |y| {
+                let (cb, b) = az[y];
+                let (ra, rb) = (ink[x].as_ref()?, ink[y].as_ref()?);
+                let dx = inputs[a].advance + kern(a, b);
+                if !dx.is_finite() {
+                    return None;
+                }
+                let c = contact::contact_both(&contact::touch_set_rows(ra, rb, false), &contact::touch_set(ra, rb), dx, fragile, step);
+                let h = if c.joins { contact::contact_height(ra, rb, dx) } else { f64::NAN };
+                Some((ca, cb, c.joins, h))
+            })
+        })
+        .collect();
+    for (a, b, joins, h) in counted {
+        out.add(a, b, joins, h, x_height);
+    }
+    out
+}
+
 impl FontJoins {
     /// Measures the glyphs of `inputs` and finds the pairs of a letter
     /// (`setup.kinds`) and an a–z letter that join as the font sets them —

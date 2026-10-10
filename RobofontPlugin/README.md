@@ -192,7 +192,9 @@ construction: `test_joins_window`); an underline drawn exactly from edge to
 edge, which the decoration test finds and Keep joins keeps whole, every
 glyph keeping both sides (`test_decorated`); and a script whose strokes
 meet exactly flush, which the touching rule finds connected
-(`test_flush_joins`).
+(`test_flush_joins`); and a hand that joins only in part, whose stem letters
+carry exit strokes, which the test for hands that join in part finds
+connected while letters that touch at the top do not (`test_partly_joins`).
 
 ## Verified (9 October 2026, RoboFont 4.4 on an Apple M1, under Rosetta)
 

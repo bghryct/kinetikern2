@@ -1103,12 +1103,19 @@ class SelfTest(object):
         n, joins = win.join_count, win.joins
         self.log("connected script on", joins=n, note=win.join_note, detect_ms=round(win.join_ms, 1),
                  mode=win._join_mode(), button=win.w.joinsButton.getTitle())
-        if not n or joins is None:
+        if joins is None:
             self.error("connected script: no joins found (%s): a connected script is needed for this stage" % win.join_note)
             self.connected_off()
             return
         lower = [i for i, sp in enumerate(snap.specs) if sp.group == kb.GROUP_LOWERCASE]
-        joining_lower = [i for i in lower if joins[i][1]]
+        # the sides that join: the detector's bands, else (letters that touch,
+        # a hand that joins in part) the checker's sides that join in the font
+        side_bits = win.engine.join_sides(win.context) if win.engine.features & kb.FEATURE_JOIN_CHECK else []
+
+        def right_joins(i):
+            return bool(joins[i][1]) or (i < len(side_bits) and bool(side_bits[i] & kb.JOINSIDE_RIGHT_JOINS))
+
+        joining_lower = [i for i in lower if right_joins(i)]
         self.note("connected script: %s (found in %.0f ms on the main thread); %d of %d lowercase letters join on the right"
                   % (win.join_note, win.join_ms, len(joining_lower), len(lower)))
         sample = sorted(win._sample_indices())
@@ -1176,7 +1183,7 @@ class SelfTest(object):
         if period is not None and period in sample and m[period].valid:
             gaps = []
             for a in sample:
-                if not joins[a][1] or not m[a].valid:
+                if not right_joins(a) or not m[a].valid:
                     continue
                 g = ink_gap(win.context, snap, m, a, period, kern(a, period))
                 if g is not None:
@@ -1195,7 +1202,11 @@ class SelfTest(object):
         letters = [i for i in sample if i < len(kinds) and kinds[i] != kb.JOINKIND_OTHER]
         self.joined_before = set()
         if win.engine.features & kb.FEATURE_JOIN_CHECK and letters:
-            drawn = win.engine.join_pairs(win.context, [(a, b) for a in letters for b in letters])
+            # the joins Keep joins keeps: a letter and a basic a–z letter,
+            # either way round (two capitals whose swashes touch are spaced)
+            pairs = [(a, b) for a in letters for b in letters
+                     if kb.JOINKIND_LOWER in (kinds[a], kinds[b])]
+            drawn = win.engine.join_pairs(win.context, pairs)
             self.joined_before = set((snap.names[d["left"]], snap.names[d["right"]]) for d in drawn if d["joins"])
         # Apply the preview with the joins, then Revert
         self.before = self.font_state(snap.names, snap.master_id)

@@ -363,8 +363,17 @@ in whole rows and columns of the pair table (`notes/connected-scripts-deep-dive.
   least half of their a–z partners at some height, as the master is spaced
   and kerned. Failing that, when at least half the a–z touch at least half
   of the a–z set after them: strokes that meet flush, without overlapping,
-  join too. Text faces never are, nor are scripts and casual hands whose
-  strokes reach past the advance but stop short of the next letter.
+  join too. Failing both, a hand that joins only in part: when at least 1 in
+  6 of the a–z pairs join above the baseline zone (0.15 of the x-height) and
+  at least 1 in 5 of the pairs of two stem letters (a d h i l m n u before
+  b h i j k l m n p r u: n n, m i, u n …), which print and display faces
+  never join. On Google Fonts that adds 26 scripts whose exit strokes reach
+  some partners but not others (Ephesis, Beau Rivage, Ruthie …), while
+  display faces whose letters touch elsewhere (Metal Mania: 0.15 of its stem
+  pairs) and print hands whose a and d flick into the next letter (0.12 of
+  all pairs) stay unjoined. Text faces never are, nor are scripts and casual
+  hands whose strokes reach past the advance but stop short of the next
+  letter.
 - **Which sides join?** Every side with a join band (the heights where it
   overlaps most of its a–z partners, or reaches past its advance), and every
   side that touches an a–z letter in the master as spaced and kerned (the
@@ -443,7 +452,8 @@ Spacing QA uses the same detector, checker and decoration test, with two
 differences. It sets every a–z pair inside a word (n + pair + n, the default
 features), so it also sees joins made by contextual alternates and connector
 glyphs (TypeTogether's Playwrite), which the plugins cannot, and it applies
-the touching rule to those shaped pairs. And it skips a design whose glyphs
+the touching rule and the test for a hand that joins in part to those
+shaped pairs. And it skips a design whose glyphs
 touch by construction (`spacing/decorated`). It keeps the joins the same way.
 
 ### Italics

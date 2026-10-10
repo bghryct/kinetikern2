@@ -960,7 +960,27 @@ class KK2Window(object):
                 self.join_note = "%s of %s lowercase letters join, touching without overlapping" % (
                     _count(joining), _count(measured))
                 return bands
-            self.join_note = "no joins: the letters neither overlap nor touch"
+            # a hand that joins only in part: its exit strokes reach letters
+            # print faces never join (n n, m i, u n): Spacing QA's rule
+            partly, counts = False, None
+            try:
+                letters_az = bytearray(len(snap.names))
+                for i, kind in enumerate(kinds):
+                    if kind == kb.JOINKIND_LOWER:
+                        letters_az[i] = getattr(snap.infos.get(snap.names[i]), "unicode", 0) or 0
+                partly, counts = self.engine.detect_partly(snap.packer, snap.upm, self._x_height(snap), letters_az,
+                                                           current)
+            except Exception:
+                print(traceback.format_exc())
+            if partly:
+                self.joins, self.join_count = bands, 0
+                self.join_kinds, self.join_current = kinds, current
+                pairs, joined, stem_pairs, stem_joined = counts
+                self.join_note = ("joins in part: %s of %s lowercase pairs and %s of %s pairs of two stem letters "
+                                  "(n n, m i, u n …), which print faces never join, join above the baseline" % (
+                                      _count(joined), _count(pairs), _count(stem_joined), _count(stem_pairs)))
+                return bands
+            self.join_note = "no joins: its letters do not join as a script's do"
             return None
         self.joins, self.join_count = bands, n
         self.join_kinds, self.join_current = kinds, current

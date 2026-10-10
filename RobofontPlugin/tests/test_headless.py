@@ -1151,6 +1151,79 @@ def test_flush_joins(engine):
     ctx.close()
 
 
+def partly_font(exits, y0, y1):
+    """An alphabet of bodies 380 wide on 500 advances, 120 apart; the letters
+    of `exits` carry a stroke from the body to the right between heights y0
+    and y1, 20 units into the next letter."""
+    f = fontshell.RFont()
+    f.info.familyName, f.info.styleName = "Kinetikern Partly Test", "Regular"
+    f.info.unitsPerEm, f.info.ascender, f.info.descender = 1000, 750, -250
+    f.info.capHeight, f.info.xHeight = 700, 500
+    for ch in "abcdefghijklmnopqrstuvwxyz":
+        g = f.newGlyph(ch)
+        g.unicodes = [ord(ch)]
+        g.width = 500
+        p = g.getPen()
+        _box(p, 60, 0, 440, 500)
+        if ch in exits:
+            _box(p, 440, y0, 580, y1)
+    g = f.newGlyph("period")
+    g.unicodes = [ord(".")]
+    g.width = 260
+    _box(g.getPen(), 80, 0, 180, 100)
+    f.lib["public.glyphOrder"] = list(f.keys())
+    return f
+
+
+def test_partly_joins(engine):
+    """A hand that joins only in part: eleven letters, the stem letters among
+    them, carry exit strokes. Too few for the detector and the touching rule;
+    the test for hands that join in part finds it connected, and Keep joins
+    keeps every join. Letters that touch only at the top do not join."""
+    print("\n== a hand that joins in part")
+    if not engine.features & kb.FEATURE_JOIN_PARTLY:
+        check(False, "this engine build has no test for hands that join in part")
+        return
+
+    def arrays(snap):
+        n = len(snap.names)
+        kinds, letters = bytearray(n), bytearray(n)
+        for i, name in enumerate(snap.names):
+            if snap.specs[i].group in (kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE):
+                cp = snap.infos[name].unicode
+                lower = cp is not None and 0x61 <= cp <= 0x7A
+                kinds[i] = kb.JOINKIND_LOWER if lower else kb.JOINKIND_UPPER
+                letters[i] = cp if lower else 0
+        return kinds, letters
+
+    snap, _ms = read(partly_font("acdehilmntu", 150, 190))
+    kinds, letters = arrays(snap)
+    bands = engine.detect_joins(snap.packer, snap.upm, 500.0, kinds, [])
+    check(not any(left or right for left, right in bands), "the detector finds no joins: 11 of 26 letters overlap")
+    joining, measured = engine.detect_contact(snap.packer, snap.upm, kinds, [])
+    check((joining, measured) == (11, 26), "the touching rule: %d of %d letters join, fewer than half" % (joining, measured))
+    partly, counts = engine.detect_partly(snap.packer, snap.upm, 500.0, letters, [])
+    check(partly and counts == (676, 286, 88, 88),
+          "joins in part: %s (a–z pairs measured, joined; stem pairs measured, joined)" % (counts,))
+    job = engine.prepare(snap.packer, snap.upm, joins=bands, join_kinds=kinds, current=[], keep_joins=True)
+    job.wait(120.0)
+    ctx = job.take()
+    job.free()
+    job = engine.solve(ctx, kb.make_params(threshold=5.0, fit_frozen=True), None)
+    job.wait(300.0)
+    res = job.take()
+    job.free()
+    st, _sides = engine.join_check(ctx, res)
+    check(st["joins"] == 286 and st["broken"] == 0, "Keep joins keeps every join (%d of %d)" % (st["kept"], st["joins"]))
+    res.close()
+    ctx.close()
+    snap, _ms = read(partly_font("fkvwxy", 460, 500))
+    kinds, letters = arrays(snap)
+    partly, counts = engine.detect_partly(snap.packer, snap.upm, 500.0, letters, [])
+    check(not partly and counts[3] == 0,
+          "letters that touch only at the top do not join: %s" % (counts,))
+
+
 def main():
     engine = load_engine()
     print("engine %s, features %d, %d threads" % (engine.version, engine.features, engine.default_threads))
@@ -1168,6 +1241,7 @@ def main():
         test_joins_window(engine)
         test_decorated(engine)
         test_flush_joins(engine)
+        test_partly_joins(engine)
         for path in sys.argv[1:]:
             apply_and_revert(engine, load_font(path), os.path.basename(path))
             apply_and_revert(engine, load_font(path), os.path.basename(path) + " with the designer harness",

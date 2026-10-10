@@ -77,13 +77,38 @@ detector needs overlap. Two more rules work on contact:
   the line stays whole. The plugins run the test when the detector finds no
   joins (an underline drawn exactly from edge to edge) and inside the
   checker otherwise. Spacing QA skips such a font (`spacing/decorated`).
+- *Hands that join in part* (`checker::PartlyJoined`,
+  `letters_partly_joined`, `kk2_detect_partly`; 9 October): a script whose
+  exit strokes reach some partners but not others has fewer than half its
+  letters joining, so the detector and the touching rule pass it by, and
+  spacing it broke the joins it has. It joins by design when at least 1 in 6
+  (`PARTLY_PAIRS`) of the a–z pairs join above the baseline zone
+  (`PARTLY_ABOVE`, 0.15 x-height: a serif or a flick that meets its
+  neighbour on the baseline is not a join) and at least 1 in 5
+  (`PARTLY_STEMS`) of the pairs of two stem letters (`STEM_RIGHT` a d h i l
+  m n u before `STEM_LEFT` b h i j k l m n p r u: n n, m i, u n …): only an
+  exit stroke reaches across two stems, which print and display faces never
+  join. Found on Google Fonts by measuring every family both ways (as drawn
+  and as shaped) and labelling the 82 that join at least 8 % of their pairs
+  from rendered samples: the 26 scripts that join in part reach 0.23–1.00 of
+  their stem pairs (Cherish 0.23, Ruthie 0.25 … Ephesis 0.85, Felipa 1) and
+  0.21–0.44 of all pairs; display faces whose letters touch reach at most
+  0.15 of the stem pairs (Metal Mania, though it joins 0.26 of all pairs;
+  Gloock's serifs 0 above the baseline), print hands whose a and d flick
+  into the next letter 0.22 of the stem pairs but 0.12 of all pairs (Over
+  the Rainbow). Spacing QA applies it to its shaped pairs (27 families:
+  the 26 and Zeyada), the plugins to the pairs as drawn (26: Cherish joins
+  enough only through contextual alternates). The plugins run it after the
+  touching rule; Keep joins then keeps every side that joins, as for any
+  connected script.
 
 **C ABI.** `kk2_prepare_start3` (letter kinds, the font's kerning,
 `PREPARE_KEEP_JOINS`), `kk2_join_check`, `kk2_join_pairs` (with
 `JOINPAIR_FIX_CROSSES` when the kern that would join a pair makes its
 strokes cross), `kk2_join_sides`, `kk2_result_wanted`, `kk2_join_decorated`,
-`kk2_detect_decorated`, `kk2_detect_contact`; `kk2_features()` 255 (32 the
-checker and Keep joins, 64 the decoration test, 128 touching letters).
+`kk2_detect_decorated`, `kk2_detect_contact`, `kk2_detect_partly`;
+`kk2_features()` 511 (32 the checker and Keep joins, 64 the decoration test,
+128 touching letters, 256 hands that join in part).
 
 **Plugins** (Glyphs and RoboFont). Connected script is on by default (a font
 whose letters do not join is spaced as usual) with a menu: Keep joins

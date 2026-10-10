@@ -65,6 +65,8 @@ FEATURE_JOIN_CHECK = 32
 FEATURE_JOIN_DECORATED = 64
 # letters that join by touching, without overlapping (kk2_detect_contact)
 FEATURE_JOIN_CONTACT = 128
+# hands that join only in part (kk2_detect_partly)
+FEATURE_JOIN_PARTLY = 256
 
 # kk2_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
@@ -440,6 +442,8 @@ class Engine(object):
             "kk2_detect_decorated": ([c_void_p, c_uint32, c_double, c_void_p, c_void_p, c_uint32], ctypes.c_int32),
             "kk2_detect_contact": ([c_void_p, c_uint32, c_double, c_void_p, c_void_p, c_uint32, c_void_p],
                                    ctypes.c_int32),
+            "kk2_detect_partly": ([c_void_p, c_uint32, c_double, c_double, c_void_p, c_void_p, c_uint32, c_void_p],
+                                  ctypes.c_int32),
         }
         self.features = 0
         for name, (args, res) in optional.items():
@@ -552,6 +556,28 @@ class Engine(object):
         if v < 0:
             raise EngineError(self.last_error())
         return int(v), int(measured.value)
+
+    def detect_partly(self, packer, units_per_em, x_height, letters, current=()):
+        """A hand that joins only in part, as the font sets it: (joins,
+        (a–z pairs measured, joined; stem pairs measured, joined)). joins:
+        at least 1 in 6 of the basic a–z pairs join above the baseline zone,
+        and 1 in 5 of the pairs of two stem letters (n n, m i, u n …), which
+        print and display faces never join — Spacing QA's rule, on the pairs
+        as drawn. `letters`: each glyph's basic a–z letter as a byte (b"a"…),
+        else 0. (False, None) with an older engine."""
+        if not self.features & FEATURE_JOIN_PARTLY or getattr(self.lib, "kk2_detect_partly", None) is None:
+            return False, None
+        arr, n, keep = packer.build()
+        letters_buf = (c_uint8 * max(n, 1)).from_buffer_copy(bytes(bytearray(letters[:n])).ljust(max(n, 1), b"\0"))
+        cur = pack_kern_in(current)
+        counts = (c_uint32 * 4)()
+        v = self.lib.kk2_detect_partly(ctypes.addressof(arr), n, float(units_per_em), float(x_height),
+                                       ctypes.addressof(letters_buf), ctypes.addressof(cur), len(current),
+                                       ctypes.addressof(counts))
+        del keep, arr
+        if v < 0:
+            raise EngineError(self.last_error())
+        return bool(v), tuple(int(c) for c in counts)
 
     def join_check(self, context, result=None, scope=None, side_cap=64):
         """What `result` (None: the font as it is) does to a connected

@@ -1117,6 +1117,43 @@ pub unsafe extern "C" fn kk2_detect_contact(
     })
 }
 
+/// A hand that joins only in part, on the glyphs alone
+/// (`checker::letters_partly_joined`): 1 when its letters join by design
+/// though fewer than half of them join — at least 1 in 6 of the basic a–z
+/// pairs join above the baseline zone (0.15 x-height), and at least 1 in 5
+/// of the pairs of two stem letters (a d h i l m n u before b h i j k l m n p
+/// r u: n n, m i, u n …), which print and display faces never join — else
+/// 0; -1 on failure. `letters`: each glyph's basic a–z letter (ASCII), or 0;
+/// `x_height` in font units. `counts` (may be NULL) receives 4 numbers: a–z
+/// pairs measured and joined, stem pairs measured and joined. Prepared with
+/// the join checker and Keep joins, such a font keeps every side that joins.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_detect_partly(
+    glyphs: *const KK2Glyph,
+    glyph_count: u32,
+    units_per_em: f64,
+    x_height: f64,
+    letters: *const u8,
+    kerning: *const KK2KernIn,
+    kerning_count: u32,
+    counts: *mut u32,
+) -> i32 {
+    guard(-1, || {
+        if glyph_count > 0 && letters.is_null() {
+            return Err("letters is NULL".into());
+        }
+        let inputs = read_inputs(glyphs, glyph_count)?;
+        let letters = slice(letters, glyph_count).to_vec();
+        let entries = read_kerning(kerning, kerning_count);
+        let p = checker::letters_partly_joined(&inputs, units_per_em, x_height, &letters, &entries);
+        if !counts.is_null() {
+            let out = std::slice::from_raw_parts_mut(counts, 4);
+            out.copy_from_slice(&[p.pairs as u32, p.joined as u32, p.stem_pairs as u32, p.stem_joined as u32]);
+        }
+        Ok(p.joins() as i32)
+    })
+}
+
 /// Starts a solve (Phases 2/3 and 3/3) on a prepared context. `kern_mask`
 /// (NULL = every glyph) selects the glyphs to kern; `params` is copied.
 #[no_mangle]
@@ -1362,10 +1399,11 @@ pub unsafe extern "C" fn kk2_measure(
 /// (`kk2_join_decorated`, `kk2_detect_decorated`; the join checker measures
 /// every glyph, and in a design whose glyphs touch by construction keeps
 /// every touching side; glyph flag 64 marks the default figures), 128 letters
-/// that join by touching (`kk2_detect_contact`).
+/// that join by touching (`kk2_detect_contact`), 256 hands that join only in
+/// part (`kk2_detect_partly`).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    255
+    511
 }
 
 /// The scope a check of `res` uses: `scope` (NULL = the glyphs the solve kerned).

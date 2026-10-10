@@ -23,8 +23,9 @@ pub use crate::engine::{
 };
 pub use crate::geometry::{Vec2, NODE_CURVE, NODE_LINE, NODE_OFFCURVE, NODE_QCURVE};
 pub use crate::checker::{
-    decorated_design, letters_touching, FontJoin, JoinCheck, JoinSetup, PairCheck, SideBreaks, DECORATED as JOIN_DECORATED,
-    FRAGILE as JOIN_FRAGILE, MIN_CROSSING_CELLS,
+    decorated_design, letters_partly_joined, letters_touching, FontJoin, JoinCheck, JoinSetup, PairCheck, PartlyJoined,
+    SideBreaks, DECORATED as JOIN_DECORATED, FRAGILE as JOIN_FRAGILE, MIN_CROSSING_CELLS, PARTLY_ABOVE, PARTLY_PAIRS,
+    PARTLY_STEMS, STEM_LEFT, STEM_RIGHT,
 };
 pub use crate::contact::{
     contact as join_contact, contact_both, contact_height, contact_in, crossings, row_step, touch_heights, touch_set,
@@ -673,6 +674,74 @@ mod tests {
         // the Looseness fitted to the kept sides
         let fitted = e.solve(&Settings { fit_frozen: true, ..Settings::new() }).unwrap();
         assert!(fitted.fitted.is_some());
+    }
+
+    /// An alphabet a–z of bodies 380 wide on 500 advances (120 units apart);
+    /// the letters of `exits` carry a stroke from their body to the right
+    /// between heights `y0` and `y1`, 20 units into the next body.
+    fn alphabet(exits: &str, y0: f64, y1: f64) -> (Vec<GlyphInput>, Vec<u8>) {
+        let letters: Vec<u8> = (b'a'..=b'z').collect();
+        let inputs = letters
+            .iter()
+            .map(|&c| {
+                let mut contours = vec![rect(60.0, 0.0, 440.0, 500.0)];
+                if exits.as_bytes().contains(&c) {
+                    contours.push(rect(440.0, y0, 580.0, y1));
+                }
+                let mut g = GlyphInput::simple(contours, 500.0, GROUP_LOWERCASE);
+                g.cur_lsb = 60.0;
+                g.cur_rsb = if exits.as_bytes().contains(&c) { -80.0 } else { 60.0 };
+                g
+            })
+            .collect();
+        (inputs, letters)
+    }
+
+    #[test]
+    fn a_hand_that_joins_in_part_joins_where_print_faces_never_do() {
+        // eleven letters with exit strokes, the stem letters among them: too
+        // few for the detector and the touching rule, a script all the same
+        let (inputs, letters) = alphabet("acdehilmntu", 150.0, 190.0);
+        let kinds = vec![JoinKind::Lower; 26];
+        assert_eq!(letters_touching(&inputs, 1000.0, &kinds, &[]), (11, 26));
+        let p = letters_partly_joined(&inputs, 1000.0, 500.0, &letters, &[]);
+        assert_eq!(p, PartlyJoined { pairs: 676, joined: 286, stem_pairs: 88, stem_joined: 88 });
+        assert!(p.joins());
+        // Keep joins keeps every exit that joins and every entry it joins
+        let e = Engine::prepare_with_joins(inputs, 1000.0, 1, &JoinSetup { kinds, kerning: Vec::new(), keep: true }).unwrap();
+        assert_eq!(e.font_joins().len(), 286);
+        let kept = e.kept_sides();
+        for (k, c) in letters.iter().enumerate() {
+            assert!(kept[k].0, "{} left", *c as char);
+            assert_eq!(kept[k].1, b"acdehilmntu".contains(c), "{} right", *c as char);
+        }
+        let sol = e.solve(&Settings::new()).unwrap();
+        let check = e.check_joins(&sol, None).unwrap();
+        assert_eq!((check.joins, check.kept, check.broken), (286, 286, 0));
+    }
+
+    #[test]
+    fn letters_that_touch_elsewhere_do_not_join_in_part() {
+        let letters_of = |exits: &str, y0: f64, y1: f64| {
+            let (inputs, letters) = alphabet(exits, y0, y1);
+            letters_partly_joined(&inputs, 1000.0, 500.0, &letters, &[])
+        };
+        // a display face whose diagonals and hooks touch at the top: no stem pair joins
+        let display = letters_of("fkvwxy", 460.0, 500.0);
+        assert_eq!((display.joined, display.stem_joined), (156, 0));
+        assert!(!display.joins());
+        // serifs or flicks that meet on the baseline do not count
+        let flicks = letters_of("adhilmnu", 0.0, 40.0);
+        assert_eq!(flicks.joined, 0);
+        assert!(!flicks.joins());
+        // a print hand whose a and d alone reach the next letter: a quarter of
+        // the stem pairs, too few pairs in all
+        let ad = letters_of("ad", 150.0, 190.0);
+        assert_eq!((ad.joined, ad.stem_joined), (52, 22));
+        assert!(!ad.joins());
+        // without the x-height there is no test
+        let (inputs, letters) = alphabet("acdehilmntu", 150.0, 190.0);
+        assert!(!letters_partly_joined(&inputs, 1000.0, 0.0, &letters, &[]).joins());
     }
 
     #[test]
