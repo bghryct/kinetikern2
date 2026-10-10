@@ -907,8 +907,9 @@ class SelfTest(object):
         setting changes it (the Looseness, the intensity, the designer
         harness; the threshold may leave the sample's kerns as they are),
         then every setting back as it was. While the window matches the
-        Looseness to kept joins or frozen glyphs, the solve takes the
-        Looseness from them and the slider's value is not used."""
+        Looseness to kept joins or frozen glyphs, the slider moves the rest of
+        the font from the matched Looseness (an engine without
+        FEATURE_FIT_OFFSET takes the Looseness from them alone)."""
         win = self.win
         w = win.w
         self.heartbeat.stage(SLIDERS)
@@ -963,9 +964,10 @@ class SelfTest(object):
                  self.result_signature(win.result))
         seconds = time.time() - t
         self.slider_times.append(seconds)
-        # the Looseness of a solve that matches it to kept joins or frozen
-        # glyphs comes from them
-        matched = self.slider_fitted and "Looseness" in what
+        # an engine without FEATURE_FIT_OFFSET takes the Looseness of a solve
+        # that matches it to kept joins or frozen glyphs from them alone
+        matched = (self.slider_fitted and "Looseness" in what and
+                   not win.engine.features & kb.FEATURE_FIT_OFFSET)
         self.log("slider", what=what, seconds=round(seconds, 2), metrics_changed=after[0] != before[0],
                  kerning_changed=after[1] != before[1], preview_changed=after[2] != before[2],
                  looseness_matched=matched)
@@ -1001,10 +1003,14 @@ class SelfTest(object):
                   self.sliders_done, 90.0, "after putting the sliders back")
 
     def sliders_done(self):
+        if not self.slider_fitted:
+            how = ""
+        elif self.win.engine.features & kb.FEATURE_FIT_OFFSET:
+            how = "; the Looseness moved the rest of the font from the one matched to the kept joins or frozen glyphs"
+        else:
+            how = "; the Looseness is matched to the kept joins or frozen glyphs, so its slider's value is not used"
         self.note("sliders: %d moves, each answered by a new preview (%.1f–%.1f s)%s"
-                  % (len(self.slider_times), min(self.slider_times), max(self.slider_times),
-                     "; the Looseness is matched to the kept joins or frozen glyphs, so its slider's value is not "
-                     "used" if self.slider_fitted else ""))
+                  % (len(self.slider_times), min(self.slider_times), max(self.slider_times), how))
         self.later(0.2, self.menu_again)
 
     def menu_again(self):

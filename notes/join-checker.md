@@ -107,8 +107,10 @@ detector needs overlap. Two more rules work on contact:
 `JOINPAIR_FIX_CROSSES` when the kern that would join a pair makes its
 strokes cross), `kk2_join_sides`, `kk2_result_wanted`, `kk2_join_decorated`,
 `kk2_detect_decorated`, `kk2_detect_contact`, `kk2_detect_partly`;
-`kk2_features()` 511 (32 the checker and Keep joins, 64 the decoration test,
-128 touching letters, 256 hands that join in part).
+`kk2_features()` 1023 (32 the checker and Keep joins, 64 the decoration test,
+128 touching letters, 256 hands that join in part, 512 the Looseness slider as
+an offset from the one fitted to the kept joins: at 0 the rest of the font
+matches them).
 
 **Plugins** (Glyphs and RoboFont). Connected script is on by default (a font
 whose letters do not join is spaced as usual) with a menu: Keep joins

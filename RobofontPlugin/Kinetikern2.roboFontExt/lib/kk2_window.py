@@ -285,7 +285,9 @@ class KK2Window(object):
         self._harness_cache = None
         self._job_harness = None
         self._result_harness = None
-        self._fitted = None  # Looseness offset the last solve fitted to the frozen glyphs
+        # the Looseness the last solve fitted to the frozen glyphs or kept joins;
+        # it ran at that plus the slider's (FEATURE_FIT_OFFSET)
+        self._fitted = None
         # a connected script: the joins the context was prepared with (None: none)
         self.joins = None
         self.join_count = 0
@@ -611,8 +613,14 @@ class KK2Window(object):
             gap = " · rest gap " + ", ".join(parts) if parts else ""
         fitted = ""
         if self._fitted is not None:
-            fitted = " · matched to the %s: %+.2f" % (
-                "kept joins" if self._keeps_joins() else "frozen glyphs", self._fitted)
+            what = "kept joins" if self._keeps_joins() else "frozen glyphs"
+            if self.engine.features & kb.FEATURE_FIT_OFFSET:
+                # the solve ran at the fitted Looseness plus the slider's
+                spring, repulsion, _c = physics_from_sliders(self.w.tightness.get() + self._fitted,
+                                                             self.w.intensity.get())
+                fitted = " · 0 = the %s' Looseness, %+.2f" % (what, self._fitted)
+            else:
+                fitted = " · matched to the %s: %+.2f" % (what, self._fitted)
         self.w.tightValue.set("spring %.2f · repulsion %.2f%s%s" % (spring, repulsion, gap, fitted))
         self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
         t = self._threshold()
@@ -1948,9 +1956,8 @@ class KK2Window(object):
             frozen = bool(self.groups is not None and self.groups.frozen_names())
             what = ("the frozen glyphs and the kept joins" if frozen and self._keeps_joins() else
                     "the kept joins" if self._keeps_joins() else "the frozen glyphs")
-            return ("\n%s %s spaced at Looseness %+.2f of Kinetikern2's: new glyphs follow them "
-                    "(plus the main slider)." % (what[0].upper() + what[1:], "is" if what == "the kept joins" else "are",
-                                                 self._fitted))
+            return ("\n%s are spaced at Looseness %+.2f of Kinetikern2's: new glyphs follow them "
+                    "(plus the main slider)." % (what[0].upper() + what[1:], self._fitted))
         return ""
 
     def windowClosed(self, sender):

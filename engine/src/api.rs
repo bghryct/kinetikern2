@@ -306,6 +306,7 @@ impl Engine {
             threads: s.threads,
             glyph_opts: s.glyph_opts.clone().map(Arc::new),
             fit_frozen: s.fit_frozen,
+            looseness: s.looseness,
             harness: s.harness.clone().map(Arc::new),
             keep_bare,
         };
@@ -340,7 +341,7 @@ impl Engine {
                 advance: m.iter().map(|x| x.advance).collect(),
                 valid: m.iter().map(|x| x.valid).collect(),
                 kerned: out.kern.clone(),
-                fitted: if out.fitted.is_finite() { Some(s.looseness + out.fitted) } else { None },
+                fitted: if out.fitted.is_finite() { Some(out.fitted) } else { None },
                 rest_gap: pass1.rest_gap,
                 right_class: classes.right.class_of.clone(),
                 left_class: classes.left.class_of.clone(),
@@ -403,7 +404,8 @@ pub struct Solution {
     pub valid: Vec<bool>,
     /// Glyphs kerned in this solve.
     pub kerned: Vec<bool>,
-    /// Looseness the solve moved to with `fit_frozen` (absolute slider units).
+    /// With `fit_frozen`, the Looseness fitted to the frozen glyphs and kept
+    /// joins (slider units): the solve ran at it plus `Settings::looseness`.
     pub fitted: Option<f64>,
     /// Pass-1 rest gap per rhythm group id (NaN where unused).
     pub rest_gap: [f64; MAX_GROUPS as usize],
@@ -674,6 +676,32 @@ mod tests {
         // the Looseness fitted to the kept sides
         let fitted = e.solve(&Settings { fit_frozen: true, ..Settings::new() }).unwrap();
         assert!(fitted.fitted.is_some());
+    }
+
+    #[test]
+    fn the_looseness_moves_the_rest_from_the_one_fitted_to_the_kept_joins() {
+        // with fit_frozen the solve runs at the Looseness fitted to the kept
+        // joins plus the settings' own: 0 matches them, and the slider moves
+        // the rest of the font from there
+        let e = script_font(true);
+        let at = |looseness: f64| e.solve(&Settings { fit_frozen: true, looseness, ..Settings::new() }).unwrap();
+        let (base, looser, tighter) = (at(0.0), at(0.6), at(-0.6));
+        let fitted = base.fitted.unwrap();
+        for sol in [&looser, &tighter] {
+            // the fit does not depend on where the slider is (within its tolerance)
+            assert!((sol.fitted.unwrap() - fitted).abs() < 0.05, "{:?} {fitted}", sol.fitted);
+            // kept sides stay as drawn
+            for i in 0..3 {
+                assert_eq!((sol.lsb[i], sol.rsb[i]), (-20.0, -20.0), "letter {i}");
+            }
+        }
+        // the period is not kept: it moves with the slider
+        let white = |s: &Solution| s.lsb[3] + s.rsb[3];
+        assert!(white(&looser) > white(&base) && white(&base) > white(&tighter),
+                "{} {} {}", white(&looser), white(&base), white(&tighter));
+        // at the slider's 0 the solve is the one at the fitted Looseness
+        let plain = e.solve(&Settings { looseness: fitted, ..Settings::new() }).unwrap();
+        assert!((white(&plain) - white(&base)).abs() < 1e-6, "{} {}", white(&plain), white(&base));
     }
 
     /// An alphabet a–z of bodies 380 wide on 500 advances (120 units apart);

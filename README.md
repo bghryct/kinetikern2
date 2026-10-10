@@ -388,8 +388,8 @@ in whole rows and columns of the pair table (`notes/connected-scripts-deep-dive.
   and kerns everything else — punctuation, figures, capitals that do not
   join, a letter next to a period (it keeps clear of the exit stroke) — at
   the tightness of the kept lowercase letters: the Looseness is fitted to
-  them (the label says *matched to the kept joins*) and the slider moves
-  from there. The designer harness leaves the kept sides and pairs alone,
+  them (the label says *0 = the kept joins' Looseness*) and the slider moves
+  the rest of the font from there. The designer harness leaves the kept sides and pairs alone,
   and the sides of any glyph that keeps its advance.
   The kept pairs' entries come on top of Max pairs, as the harness's do; the
   status line counts them apart.
@@ -923,9 +923,14 @@ Results (Glyphs 3.5.1, M1, 9 October 2026):
   2,199 kept sides, the Looseness matched +0.21; the 1,406 sample pairs of
   two kept sides kept the master's kerning; all 1,170 joins still touch
   after Apply; Revert exact; Space joined letters breaks 5,436.
-- The re-runs on the evening build are pending. Its Pacifico run found the
-  same joins and failed only on one 740 ms main-thread pause during the
-  whole-font run, under heavy machine load.
+- **10 October**, with composites that Glyphs aligns in part following
+  their base, the Looseness slider as an offset from the kept joins' own,
+  and the self-test's composite and slider checks: **PASSED** on Pacifico
+  (44,642 of 44,642 joins kept), Ephesis (8,815 of 8,815), Ruthie (5,320 of
+  5,320) and Great Vibes (56,355 of 56,355). After Apply every join between
+  the sample's letters still touched and every composite had moved as one
+  piece; Revert was exact. With Keep joins on, moving the Looseness slider
+  changed the spacing of everything that does not join.
 
 `./build.sh --verify [font] --groups` adds a spacing-groups stage after
 those:

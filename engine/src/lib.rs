@@ -128,9 +128,10 @@ pub const PARAM_CLASSES: u32 = 2;
 pub const PARAM_WINDOW: u32 = 4;
 /// Pairs only within one script plus Common/Inherited.
 pub const PARAM_SCOPE_SCRIPTS: u32 = 8;
-/// With frozen glyphs (`kk2_solve_start2`): first move the Looseness to the
-/// frozen glyphs' own tightness, so new glyphs match the spacing that is
-/// already there; the solve's Looseness is then an offset from it.
+/// With frozen glyphs (`kk2_solve_start2`) or kept joins: first move the
+/// Looseness to their own tightness, so new glyphs match the spacing that is
+/// already there; the solve's Looseness (the one `spring` stands for,
+/// `physics_for_looseness`) is then an offset from it.
 pub const PARAM_FIT_FROZEN: u32 = 16;
 
 /// `KK2GlyphOpt.flags`: keep the glyph's sidebearings, and never kern a pair
@@ -675,6 +676,7 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
     if c.flags & PARAM_SKIP_PASS2 != 0 {
         o.coupling = 0.0;
     }
+    let looseness = looseness_of(o.spring);
     Ok(Params {
         options: o,
         mode: if c.flags & PARAM_CLASSES != 0 { Mode::Classes } else { Mode::Pairs },
@@ -686,9 +688,20 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
         threads: c.threads as usize,
         glyph_opts: None,
         fit_frozen: c.flags & PARAM_FIT_FROZEN != 0,
+        looseness,
         harness: None,
         keep_bare: false,
     })
+}
+
+/// The Looseness (slider units) a spring stands for: `physics_for_looseness`
+/// gives a Looseness t the spring e^(−LOOSENESS_GAIN·t).
+fn looseness_of(spring: f64) -> f64 {
+    if spring.is_finite() && spring > 0.0 {
+        -spring.ln() / crate::engine::LOOSENESS_GAIN
+    } else {
+        0.0
+    }
 }
 
 fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
@@ -1273,8 +1286,9 @@ pub unsafe extern "C" fn kk2_solve_start3(
     })
 }
 
-/// Looseness offset (slider units) the solve moved to with
-/// `PARAM_FIT_FROZEN`; NaN if it did not fit.
+/// With `PARAM_FIT_FROZEN`, the Looseness (slider units) fitted to the frozen
+/// glyphs and kept joins: the solve ran at it plus the Looseness of its
+/// params. NaN if it did not fit.
 #[no_mangle]
 pub unsafe extern "C" fn kk2_result_fitted_looseness(res: *const KK2Result) -> f64 {
     if res.is_null() {
@@ -1400,10 +1414,12 @@ pub unsafe extern "C" fn kk2_measure(
 /// every glyph, and in a design whose glyphs touch by construction keeps
 /// every touching side; glyph flag 64 marks the default figures), 128 letters
 /// that join by touching (`kk2_detect_contact`), 256 hands that join only in
-/// part (`kk2_detect_partly`).
+/// part (`kk2_detect_partly`), 512 the Looseness of the params as an offset
+/// from the one fitted with `PARAM_FIT_FROZEN` (`kk2_result_fitted_looseness`
+/// is the fitted Looseness itself).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    511
+    1023
 }
 
 /// The scope a check of `res` uses: `scope` (NULL = the glyphs the solve kerned).

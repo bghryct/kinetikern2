@@ -57,6 +57,10 @@ pub struct Params {
     /// Move the solve's Looseness to the frozen glyphs' own tightness first
     /// (`Context::fit_looseness` on the frozen glyphs).
     pub fit_frozen: bool,
+    /// The Looseness `options` stand for (slider units). With `fit_frozen`
+    /// it is an offset from the fitted Looseness: 0 matches the frozen glyphs
+    /// and kept joins, the slider moves the rest of the font from there.
+    pub looseness: f64,
     /// Corrections toward what well-spaced fonts do, after the solve.
     pub harness: Option<Arc<Harness>>,
     /// Keep the solve as it was before the harness (`Outcome::bare`).
@@ -126,7 +130,9 @@ pub struct Outcome {
     pub stats: RunStats,
     /// Classes built for this solve (frozen glyphs); None = the context's.
     pub classes: Option<Classes>,
-    /// Looseness offset found by `fit_frozen` (slider units), else NaN.
+    /// With `fit_frozen`, the Looseness fitted to the frozen glyphs and kept
+    /// joins (slider units; the solve ran at it plus `Params::looseness`),
+    /// else NaN.
     pub fitted: f64,
     /// With `Params::keep_bare` and a harness: the same solve before the
     /// harness (the bare model's sidebearings and kerning).
@@ -228,8 +234,10 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
         let fit_l: Vec<bool> = (0..n).map(|i| frozen[i] || (ctx.glyphs[i].kept_left && counts(i))).collect();
         let fit_r: Vec<bool> = (0..n).map(|i| frozen[i] || (ctx.glyphs[i].kept_right && counts(i))).collect();
         if let Some(dt) = ctx.fit_looseness_sides(&options, &fit_l, &fit_r) {
-            fitted = dt;
-            options = options.shifted(dt);
+            // the fit, at `looseness + dt`, plus the slider's own Looseness
+            let looseness = if p.looseness.is_finite() { p.looseness } else { 0.0 };
+            fitted = looseness + dt;
+            options = options.shifted(fitted);
         }
     }
     let p_local;

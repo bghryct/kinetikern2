@@ -67,6 +67,9 @@ FEATURE_JOIN_DECORATED = 64
 FEATURE_JOIN_CONTACT = 128
 # hands that join only in part (kk2_detect_partly)
 FEATURE_JOIN_PARTLY = 256
+# with PARAM_FIT_FROZEN the Looseness of the params is an offset from the
+# fitted one (kk2_result_fitted_looseness is the fitted Looseness itself)
+FEATURE_FIT_OFFSET = 512
 
 # kk2_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1

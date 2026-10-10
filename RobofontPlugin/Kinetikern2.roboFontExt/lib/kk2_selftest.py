@@ -118,6 +118,7 @@ DEADLINE_S = 540.0      # selftest.json is written before build.sh stops waiting
 SETTLE_S = 1.5          # lets RoboFont draw the new font's window before anything is measured
 CANCEL_AT = 0.3
 KERNING_READBACK = 200
+SHAPE_TOLERANCE = 0.01  # units: a composite's outline moved as a whole
 MODAL_GRACE_S = 2.0
 MENU_TITLE = "Kinetikern2…"
 
@@ -132,7 +133,8 @@ GROUPS = "spacing groups"
 GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not judged
 HARNESS = "designer harness"
 CONNECTED = "connected script"
-JUDGED = (PREVIEW, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, CONNECTED)
+SLIDERS = "sliders"
+JUDGED = (PREVIEW, SLIDERS, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, CONNECTED)
 BUSY_STATES = ("reading", "preparing", "previewing", "solving", "applying")
 
 PHASE_TEXT = re.compile(r"Phase\s*(\d+)\s*/\s*(\d+).*?\[\s*(\d+(?:\.\d+)?)\s*%\s*\]")
@@ -316,6 +318,41 @@ def diff_outlines(before, after):
     was (a Revert puts every coordinate back to the last bit)."""
     a, b = before.get("outlines", {}), after.get("outlines", {})
     return [[name, "outline"] for name in sorted(set(a) | set(b)) if a.get(name) != b.get(name)]
+
+
+def composite_outlines(font):
+    """{composite: the points of its decomposed outline} for every glyph with
+    components in the font's default layer."""
+    layer = _layer(font)
+    out = {}
+    for name in layer.keys():
+        glyph = layer[name]
+        if not glyph.components:
+            continue
+        try:
+            out[name] = [p for contour in ks.draw_contours(glyph, layer) for p in contour]
+        except RecursionError:
+            continue
+    return out
+
+
+def shape_changes(before, after):
+    """[name, dx, off by] for the composites whose outline did not move as a
+    whole: every point by the same dx along x and none along y. Apply may move
+    a composite but must keep it as drawn (an accent stays on its letter)."""
+    bad = []
+    for name, a in sorted(before.items()):
+        b = after.get(name)
+        if b is None or len(a) != len(b):
+            bad.append([name, "points", len(a), len(b) if b is not None else None])
+            continue
+        if not a:
+            continue
+        dx = b[0][0] - a[0][0]
+        off = max(max(abs(q[0] - p[0] - dx), abs(q[1] - p[1])) for p, q in zip(a, b))
+        if off > SHAPE_TOLERANCE:
+            bad.append([name, round(dx, 2), round(off, 2)])
+    return bad
 
 
 def diff_components(before, after):
@@ -632,6 +669,7 @@ class SelfTest(object):
         self.before_run = None
         self.plan = None
         self.before = None
+        self.before_shapes = None
         self.phase_times = {}
 
     # --- bookkeeping -------------------------------------------------------
@@ -950,6 +988,120 @@ class SelfTest(object):
             self.error("%d controls of the window do not get a click on them, e.g. %s" % (len(covered), covered[:6]))
         else:
             self.note("every control of the window gets a click on it (%d checked)" % len(CLICKABLE))
+        self.later(0.2, self.sliders_step)
+
+    # --- sliders ------------------------------------------------------------
+
+    def sliders_step(self):
+        """The sliders, moved as a user moves them: each change brings a new
+        preview, with other spacing or kerning somewhere in it where the
+        setting changes it (the Looseness, the intensity, the designer
+        harness; the threshold may leave the sample's kerns as they are),
+        then every setting back as it was. While the window matches the
+        Looseness to kept joins or frozen glyphs, the slider moves the rest of
+        the font from the matched Looseness (an engine without
+        FEATURE_FIT_OFFSET takes the Looseness from them alone)."""
+        win = self.win
+        w = win.w
+        self.heartbeat.stage(SLIDERS)
+        saved = (w.tightness.get(), w.intensity.get(), w.threshold.get(), w.thresholdField.get(), bool(w.harness.get()))
+        self.slider_saved = saved
+        # each slider moved from where the settings put it (a user's settings
+        # may already sit at an end)
+        loose = saved[0] - 0.4 if saved[0] - 0.4 >= w.tightness.getNSSlider().minValue() else saved[0] + 0.4
+        strong = 100.0 if abs(saved[1] - 100.0) > 1.0 else 160.0
+        higher = min(w.threshold.getNSSlider().maxValue(), saved[2] + 6.0)
+
+        def threshold(v):
+            w.threshold.set(v)
+            w.thresholdField.set("%.1f" % v)
+
+        self.slider_steps = [
+            ("the Looseness from %+.2f to %+.2f" % (saved[0], loose), lambda: w.tightness.set(loose),
+             win.physicsChanged, w.tightness),
+            ("the intensity from %.0f to %.0f %%" % (saved[1], strong), lambda: w.intensity.set(strong),
+             win.physicsChanged, w.intensity),
+            ("the threshold from %.1f to %.1f" % (saved[2], higher), lambda: threshold(higher), win.thresholdChanged,
+             w.threshold),
+            ("the designer harness %s" % ("off" if saved[4] else "on"), lambda: w.harness.set(not saved[4]),
+             win.harnessChanged, w.harness),
+            ("the Looseness back to %+.2f" % saved[0], lambda: w.tightness.set(saved[0]), win.physicsChanged,
+             w.tightness),
+        ]
+        self.slider_index = 0
+        self.slider_times = []
+        self.slider_fitted = False
+        self.slider_next()
+
+    def slider_next(self):
+        win = self.win
+        if self.slider_index >= len(self.slider_steps):
+            self.sliders_restore()
+            return
+        what, setter, handler, sender = self.slider_steps[self.slider_index]
+        old = win.result
+        before = (self.sample_metrics(win.snapshot, old), self.sample_pairs(win.snapshot, old),
+                  self.result_signature(old))
+        self.slider_fitted = getattr(win, "_fitted", None) is not None
+        setter()
+        self.call_window(SLIDERS, handler, sender)
+        t = time.time()
+        self.wait(lambda: self._new_preview(old, "waiting for the preview after moving %s" % what),
+                  lambda: self.slider_after(what, before, t), 90.0, "after moving %s" % what)
+
+    def slider_after(self, what, before, t):
+        win = self.win
+        after = (self.sample_metrics(win.snapshot, win.result), self.sample_pairs(win.snapshot, win.result),
+                 self.result_signature(win.result))
+        seconds = time.time() - t
+        self.slider_times.append(seconds)
+        # an engine without FEATURE_FIT_OFFSET takes the Looseness of a solve
+        # that matches it to kept joins or frozen glyphs from them alone
+        matched = (self.slider_fitted and "Looseness" in what and
+                   not win.engine.features & kb.FEATURE_FIT_OFFSET)
+        self.log("slider", what=what, seconds=round(seconds, 2), metrics_changed=after[0] != before[0],
+                 kerning_changed=after[1] != before[1], preview_changed=after[2] != before[2],
+                 looseness_matched=matched)
+        if after[2] == before[2] and "threshold" not in what and not matched:
+            # (a higher threshold may leave every kern of the sample as it is)
+            self.error("sliders: moving %s brought a preview with the same spacing and kerning" % what)
+        self.slider_index += 1
+        self.later(0.1, self.slider_next)
+
+    def result_signature(self, res):
+        """Every glyph's sidebearings and every kerning entry of a result, to
+        a tenth of a unit: what a setting may change anywhere in a preview."""
+        if res is None or not res.ptr:
+            return None
+        metrics = tuple((round(m.lsb, 1), round(m.rsb, 1)) if m.valid else None for m in res.metrics)
+        entries = tuple(sorted((k, l, r, round(v, 1)) for k, l, r, v, _imp in res.iter_entries()))
+        return metrics, entries
+
+    def sliders_restore(self):
+        win = self.win
+        w = win.w
+        tightness, intensity, threshold, field, harness = self.slider_saved
+        w.tightness.set(tightness)
+        w.intensity.set(intensity)
+        w.threshold.set(threshold)
+        w.thresholdField.set(field)
+        w.harness.set(harness)
+        old = win.result
+        self.call_window(SLIDERS, win.harnessChanged, w.harness)
+        self.call_window(SLIDERS, win.thresholdChanged, w.threshold)
+        self.call_window(SLIDERS, win.physicsChanged, w.tightness)
+        self.wait(lambda: self._new_preview(old, "waiting for the preview with the settings back"),
+                  self.sliders_done, 90.0, "after putting the sliders back")
+
+    def sliders_done(self):
+        if not self.slider_fitted:
+            how = ""
+        elif self.win.engine.features & kb.FEATURE_FIT_OFFSET:
+            how = "; the Looseness moved the rest of the font from the one matched to the kept joins or frozen glyphs"
+        else:
+            how = "; the Looseness is matched to the kept joins or frozen glyphs, so its slider's value is not used"
+        self.note("sliders: %d moves, each answered by a new preview (%.1f–%.1f s)%s"
+                  % (len(self.slider_times), min(self.slider_times), max(self.slider_times), how))
         self.later(0.2, self.menu_again)
 
     def menu_again(self):
@@ -1080,6 +1232,7 @@ class SelfTest(object):
         mid = snap.master_id
         t = time.time()
         self.before = self.font_state(snap.names, mid)
+        self.before_shapes = composite_outlines(self.font)
         capture_s = time.time() - t
         # The plan the window is about to carry out, for the read-back: the
         # same snapshot, the same result, the font as it is now.
@@ -1145,6 +1298,7 @@ class SelfTest(object):
                     group_bad.append([name, side, want, _text(have)])
 
         spacing_checked, spacing_bad = self.spacing_differences(snap, win.result, mid)
+        shape_bad = shape_changes(self.before_shapes, composite_outlines(font))
 
         self.log("applied", seconds=round(apply_s, 3), call_s=round(self.apply_call_s, 3), summary=win.last_apply,
                  kerning_entries_after=count_entries(kerning_table(font, mid)),
@@ -1152,11 +1306,14 @@ class SelfTest(object):
                  kerning_checked=len(sample), kerning_mismatches=len(kern_bad), kerning_examples=kern_bad[:20],
                  groups_checked=group_sides, group_mismatches=len(group_bad), group_examples=group_bad[:20],
                  spacing_checked=spacing_checked, spacing_mismatches=len(spacing_bad),
-                 spacing_examples=spacing_bad[:20], labels=_labels(self.nswindow()))
+                 spacing_examples=spacing_bad[:20], composites_checked=len(self.before_shapes),
+                 composites_reshaped=len(shape_bad), composite_examples=shape_bad[:20],
+                 labels=_labels(self.nswindow()))
         self.note("Apply %.2f s: %d kerning entries, %d group sides, %d sidebearings; read back %d entries and all "
-                  "groups and sidebearings: %d mismatches"
+                  "groups and sidebearings: %d mismatches; %d of %d composites moved as drawn"
                   % (apply_s, len(kerning), group_sides, metric_sides, len(sample),
-                     len(kern_bad) + len(metric_bad) + len(group_bad)))
+                     len(kern_bad) + len(metric_bad) + len(group_bad), len(self.before_shapes) - len(shape_bad),
+                     len(self.before_shapes)))
         if metric_bad:
             self.error("%d sidebearings differ from the plan after Apply, e.g. %s" % (len(metric_bad), metric_bad[:5]))
         if kern_bad:
@@ -1168,6 +1325,10 @@ class SelfTest(object):
             self.error("after Apply %d of %d glyphs are spaced more than a unit away from the result (metrics keys "
                        "and aligned composites included), e.g. [glyph, LSB, result, RSB, result] %s"
                        % (len(spacing_bad), spacing_checked, spacing_bad[:5]))
+        if shape_bad:
+            self.error("after Apply %d of %d composites are no longer as drawn (a part moved against the rest), "
+                       "e.g. [glyph, dx, off by] %s" % (len(shape_bad), len(self.before_shapes), shape_bad[:5]))
+        self.before_shapes = None
         self.later(0.3, self.revert_step)
 
     def revert_step(self):

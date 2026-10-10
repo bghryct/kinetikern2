@@ -196,6 +196,26 @@ meet exactly flush, which the touching rule finds connected
 carry exit strokes, which the test for hands that join in part finds
 connected while letters that touch at the top do not (`test_partly_joins`).
 
+## Verified again (10 October 2026)
+
+The Looseness slider is now an offset from the Looseness fitted to kept joins
+or frozen glyphs, as it was meant to be (it used to be ignored there). The
+self-test also moves each slider and checks that every composite moved as
+one piece after Apply. Inside RoboFont, both **PASSED**:
+
+- **Ephesis** (`--connected`): every slider move answered by a new preview,
+  the Looseness moving the rest of the font from the joins; 343 of 343
+  composites moved as drawn; Revert exact to every outline coordinate;
+  8,806 of 8,806 joins kept.
+- **Arial**: the whole font in 36.6 s; Apply 4.96 s, 1,433 of 1,433
+  composites moved as drawn; Revert 6.66 s, every outline coordinate of
+  2,795 glyphs exactly as before; longest main-thread stall 449 ms (the
+  designer harness; limit 500 ms).
+
+The headless suite PASSED. Run alone: opening Arial.ttf takes RoboFont over
+two minutes under Rosetta, so a busy machine can push the test past
+`build.sh`'s ten minutes.
+
 ## Verified (9 October 2026, RoboFont 4.4 on an Apple M1, under Rosetta)
 
 Inside RoboFont (`./build.sh --verify FONT --groups`), on a copy of Owners
@@ -264,7 +284,11 @@ kept), with `test_by_category`, `test_conflict` and, with glyphsLib,
 second instance started with its parameters on the command line (nothing is
 written to your preferences; your own RoboFont is never touched): it opens a
 copy of the font, chooses Extensions ▸ Kinetikern2… as a click does, waits
-for the preview, cancels a whole-font run, runs one, applies it, reads the
-font back, reverts and compares, then the designer harness (and with
-`--groups` the spacing groups and the Pairs window, with `--connected` a
-connected script), measuring the longest main-thread stall throughout.
+for the preview, checks that a click reaches every control, moves each
+slider and waits for the new preview (with Keep joins too: the Looseness
+moves the rest of the font from the one matched to the joins), cancels a
+whole-font run, runs one, applies it, reads the font back and checks that
+every composite moved as one piece, reverts and compares every outline
+coordinate, then the designer harness (and with `--groups` the spacing
+groups and the Pairs window, with `--connected` a connected script),
+measuring the longest main-thread stall throughout.
