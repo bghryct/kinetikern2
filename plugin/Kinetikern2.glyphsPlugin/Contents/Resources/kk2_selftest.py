@@ -112,6 +112,7 @@ SETTLE_S = 1.5          # lets Glyphs draw the new font's window before anything
 CANCEL_AT = 0.3
 KERNING_READBACK = 200
 NOT_FOUND = 1e9         # Glyphs answers a missing kerning entry with NSNotFound (as a float)
+SHAPE_TOLERANCE = 0.01  # units: a composite's outline moved as a whole, or is back where it was
 MODAL_GRACE_S = 2.0
 
 CLASSIC = ["AV", "AT", "LT", "To", "Te", "Ta", "Yo", "VA", "P.", "F.", "r.", "y.", "HH", "nn", "oo", "HO"]
@@ -256,6 +257,73 @@ def diff_kerning(before, after):
             if va is None or vb is None or abs(va - vb) > 1e-6:
                 out.append([left, right, va, vb])
     return out
+
+
+def composite_outlines(font, master_id):
+    """{composite: (the points of its decomposed outline, how far a part may
+    end off)} for every glyph with components on the master. Glyphs keeps
+    component positions on the font's grid, so a component scaled or turned
+    (a unit move of its glyph lands off the grid) can be held in place only
+    to within the grid: such a composite may end up to a grid step off."""
+    try:
+        grid = max(0.0, float(font.gridLength))
+    except (AttributeError, TypeError, ValueError):
+        grid = 1.0
+    turned = {}
+
+    def off_grid(glyph, seen=()):
+        """A part of the glyph, at any depth, is scaled or turned."""
+        name = str(glyph.name)
+        if name not in turned:
+            layer = glyph.layers[master_id]
+            found = False
+            for c in (layer.components if layer is not None else None) or ():
+                if any(float(v) != round(float(v)) for v in list(c.transform)[:2]):
+                    found = True
+                    break
+                inner = c.component
+                if inner is not None and str(inner.name) not in seen + (name,) and off_grid(inner, seen + (name,)):
+                    found = True
+                    break
+            turned[name] = found
+        return turned[name]
+
+    out = {}
+    for glyph in font.glyphs:
+        layer = glyph.layers[master_id]
+        if layer is None or not layer.components:
+            continue
+        out[str(glyph.name)] = ([p for contour in ks.bezier_contours(ks.layer_path(layer)) for p in contour],
+                                SHAPE_TOLERANCE + (grid if off_grid(glyph) else 0.0))
+    return out
+
+
+def shape_changes(before, after, moved):
+    """[name, dx, off by] for the composites whose outline did not move as a
+    whole: every point by the same dx along x (any dx when `moved`, else
+    none) and none along y, within the composite's tolerance
+    (composite_outlines). Apply may move a composite but must keep it as
+    drawn (an accent stays on its letter, the comma of ; under its dot);
+    Revert puts it back where it was."""
+    bad = []
+    for name, (a, tolerance) in sorted(before.items()):
+        b = (after.get(name) or (None,))[0]
+        if b is None or len(a) != len(b):
+            bad.append([name, "points", len(a), len(b) if b is not None else None])
+            continue
+        if not a:
+            continue
+        dx = b[0][0] - a[0][0] if moved else 0.0
+        off = max(max(abs(q[0] - p[0] - dx), abs(q[1] - p[1])) for p, q in zip(a, b))
+        if off > (tolerance if moved else SHAPE_TOLERANCE):
+            bad.append([name, round(dx, 2), round(off, 2)])
+    return bad
+
+
+def grid_held(shapes):
+    """How many of the composites have a scaled or turned part (held to
+    within the grid; composite_outlines)."""
+    return sum(1 for _points, tolerance in shapes.values() if tolerance > SHAPE_TOLERANCE)
 
 
 GLYPH_FIELDS = ("left group", "right group", "LSB", "RSB", "width")
@@ -525,6 +593,7 @@ class SelfTest(object):
         self.before_run = None
         self.plan = None
         self.before = None
+        self.before_shapes = None
         self.phase_times = {}
 
     # --- bookkeeping -------------------------------------------------------
@@ -834,9 +903,12 @@ class SelfTest(object):
 
     def sliders_step(self):
         """The sliders, moved as a user moves them: each change brings a new
-        preview, with other spacing where the setting changes it (the
-        Looseness, the intensity, the designer harness, the threshold on the
-        kerning), then every setting back as it was."""
+        preview, with other spacing or kerning somewhere in it where the
+        setting changes it (the Looseness, the intensity, the designer
+        harness; the threshold may leave the sample's kerns as they are),
+        then every setting back as it was. While the window matches the
+        Looseness to kept joins or frozen glyphs, the solve takes the
+        Looseness from them and the slider's value is not used."""
         win = self.win
         w = win.w
         self.heartbeat.stage(SLIDERS)
@@ -866,6 +938,7 @@ class SelfTest(object):
         ]
         self.slider_index = 0
         self.slider_times = []
+        self.slider_fitted = False
         self.slider_next()
 
     def slider_next(self):
@@ -875,7 +948,9 @@ class SelfTest(object):
             return
         what, setter, handler, sender = self.slider_steps[self.slider_index]
         old = win.result
-        before = (self.sample_metrics(win.snapshot, old), self.sample_pairs(win.snapshot, old))
+        before = (self.sample_metrics(win.snapshot, old), self.sample_pairs(win.snapshot, old),
+                  self.result_signature(old))
+        self.slider_fitted = getattr(win, "_fitted", None) is not None
         setter()
         self.call_window(SLIDERS, handler, sender)
         t = time.time()
@@ -884,16 +959,30 @@ class SelfTest(object):
 
     def slider_after(self, what, before, t):
         win = self.win
-        after = (self.sample_metrics(win.snapshot, win.result), self.sample_pairs(win.snapshot, win.result))
+        after = (self.sample_metrics(win.snapshot, win.result), self.sample_pairs(win.snapshot, win.result),
+                 self.result_signature(win.result))
         seconds = time.time() - t
         self.slider_times.append(seconds)
+        # the Looseness of a solve that matches it to kept joins or frozen
+        # glyphs comes from them
+        matched = self.slider_fitted and "Looseness" in what
         self.log("slider", what=what, seconds=round(seconds, 2), metrics_changed=after[0] != before[0],
-                 kerning_changed=after[1] != before[1])
-        if after == before and "threshold" not in what:
-            # (a higher threshold leaves the sample's larger kerns as they are)
+                 kerning_changed=after[1] != before[1], preview_changed=after[2] != before[2],
+                 looseness_matched=matched)
+        if after[2] == before[2] and "threshold" not in what and not matched:
+            # (a higher threshold may leave every kern of the sample as it is)
             self.error("sliders: moving %s brought a preview with the same spacing and kerning" % what)
         self.slider_index += 1
         self.later(0.1, self.slider_next)
+
+    def result_signature(self, res):
+        """Every glyph's sidebearings and every kerning entry of a result, to
+        a tenth of a unit: what a setting may change anywhere in a preview."""
+        if res is None or not res.ptr:
+            return None
+        metrics = tuple((round(m.lsb, 1), round(m.rsb, 1)) if m.valid else None for m in res.metrics)
+        entries = tuple(sorted((k, l, r, round(v, 1)) for k, l, r, v, _imp in res.iter_entries()))
+        return metrics, entries
 
     def sliders_restore(self):
         win = self.win
@@ -912,8 +1001,10 @@ class SelfTest(object):
                   self.sliders_done, 90.0, "after putting the sliders back")
 
     def sliders_done(self):
-        self.note("sliders: %d moves, each answered by a new preview (%.1f–%.1f s)"
-                  % (len(self.slider_times), min(self.slider_times), max(self.slider_times)))
+        self.note("sliders: %d moves, each answered by a new preview (%.1f–%.1f s)%s"
+                  % (len(self.slider_times), min(self.slider_times), max(self.slider_times),
+                     "; the Looseness is matched to the kept joins or frozen glyphs, so its slider's value is not "
+                     "used" if self.slider_fitted else ""))
         self.later(0.2, self.menu_again)
 
     def menu_again(self):
@@ -1040,6 +1131,7 @@ class SelfTest(object):
         mid = snap.master_id
         t = time.time()
         self.before = self.font_state(snap.names, mid)
+        self.before_shapes = composite_outlines(self.font, mid)
         capture_s = time.time() - t
         # The plan the window is about to carry out, for the read-back: the
         # same snapshot, the same result, the font as it is now.
@@ -1105,7 +1197,8 @@ class SelfTest(object):
                 if _text(have) != want:
                     group_bad.append([name, side, want, _text(have)])
 
-        spacing_checked, spacing_bad = self.spacing_differences(snap, win.result, mid)
+        spacing_checked, spacing_bad = self.spacing_differences(snap, win.result, mid, self.before_shapes)
+        shape_bad = shape_changes(self.before_shapes, composite_outlines(font, mid), True)
 
         self.log("applied", seconds=round(apply_s, 3), call_s=round(self.apply_call_s, 3), summary=win.last_apply,
                  kerning_entries_after=count_entries(kerning_table(font, mid)),
@@ -1113,11 +1206,15 @@ class SelfTest(object):
                  kerning_checked=len(sample), kerning_mismatches=len(kern_bad), kerning_examples=kern_bad[:20],
                  groups_checked=group_sides, group_mismatches=len(group_bad), group_examples=group_bad[:20],
                  spacing_checked=spacing_checked, spacing_mismatches=len(spacing_bad),
-                 spacing_examples=spacing_bad[:20], labels=_labels(self.nswindow()))
+                 spacing_examples=spacing_bad[:20], composites_checked=len(self.before_shapes),
+                 composites_reshaped=len(shape_bad), composite_examples=shape_bad[:20],
+                 labels=_labels(self.nswindow()))
         self.note("Apply %.2f s: %d kerning entries, %d group sides, %d sidebearings; read back %d entries and all "
-                  "groups and sidebearings: %d mismatches"
+                  "groups and sidebearings: %d mismatches; %d of %d composites moved as drawn (%d with a scaled or "
+                  "turned part to within the grid)"
                   % (apply_s, len(kerning), group_sides, metric_sides, len(sample),
-                     len(kern_bad) + len(metric_bad) + len(group_bad)))
+                     len(kern_bad) + len(metric_bad) + len(group_bad), len(self.before_shapes) - len(shape_bad),
+                     len(self.before_shapes), grid_held(self.before_shapes)))
         if metric_bad:
             self.error("%d sidebearings differ from the plan after Apply, e.g. %s" % (len(metric_bad), metric_bad[:5]))
         if kern_bad:
@@ -1129,6 +1226,9 @@ class SelfTest(object):
             self.error("after Apply %d of %d glyphs are spaced more than a unit away from the result (metrics keys "
                        "and aligned composites included), e.g. [glyph, LSB, result, RSB, result] %s"
                        % (len(spacing_bad), spacing_checked, spacing_bad[:5]))
+        if shape_bad:
+            self.error("after Apply %d of %d composites are no longer as drawn (a part moved against the rest), "
+                       "e.g. [glyph, dx, off by] %s" % (len(shape_bad), len(self.before_shapes), shape_bad[:5]))
         self.later(0.3, self.revert_step)
 
     def revert_step(self):
@@ -1145,12 +1245,15 @@ class SelfTest(object):
         after = self.font_state(snap.names, snap.master_id)
         kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
         glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"])
+        shape_bad = shape_changes(self.before_shapes, composite_outlines(self.font, snap.master_id), False)
         entries = count_entries(after["kerning"])
         self.log("reverted", seconds=round(seconds, 3), counts=getattr(self.win, "last_revert", None),
                  kerning_entries=entries,
                  kerning_differences=len(kern_diff), kerning_examples=kern_diff[:20],
                  glyphs_checked=len(after["glyphs"]), glyph_differences=len(glyph_diff),
-                 glyph_examples=glyph_diff[:20], labels=_labels(self.nswindow()))
+                 glyph_examples=glyph_diff[:20], composites_checked=len(self.before_shapes),
+                 composites_not_back=len(shape_bad), composite_examples=shape_bad[:20],
+                 labels=_labels(self.nswindow()))
         if kern_diff or glyph_diff:
             self.note("Revert %.2f s: %d kerning entries and %d glyph values differ from before Apply"
                       % (seconds, len(kern_diff), len(glyph_diff)))
@@ -1163,7 +1266,10 @@ class SelfTest(object):
         if glyph_diff:
             self.error("after Revert %d glyph values differ from before Apply, e.g. %s"
                        % (len(glyph_diff), glyph_diff[:5]))
-        self.before = None
+        if shape_bad:
+            self.error("after Revert %d of %d composites are not back where they were, e.g. [glyph, dx, off by] %s"
+                       % (len(shape_bad), len(self.before_shapes), shape_bad[:5]))
+        self.before = self.before_shapes = None
         if self.win.harness_available():
             self.later(0.3, self.harness_step)
         else:
@@ -2182,11 +2288,15 @@ class SelfTest(object):
             glyphs[name] = (_text(glyph.leftKerningGroup), _text(glyph.rightKerningGroup)) + glyph_metrics(layer)
         return {"kerning": kerning_table(self.font, master_id), "glyphs": glyphs}
 
-    def spacing_differences(self, snap, res, master_id):
+    def spacing_differences(self, snap, res, master_id, shapes=None):
         """(glyphs checked, [[name, LSB, result LSB, RSB, result RSB]]) for
         the glyphs whose ink sidebearings in the font are more than a unit
         (whole-unit moves plus rounding) away from the result: what the left
-        pane shows after Apply against what the right pane showed."""
+        pane shows after Apply against what the right pane showed. A
+        composite with a scaled or turned part (`shapes`, composite_outlines)
+        may be a grid step further: its part is held only to within the grid,
+        and Glyphs evaluates its metrics keys on rounded sidebearings."""
+        loose = dict((name, tolerance - SHAPE_TOLERANCE) for name, (_points, tolerance) in (shapes or {}).items())
         checked, bad = 0, []
         for i, name in enumerate(snap.names):
             m = res.metrics[i]
@@ -2200,7 +2310,7 @@ class SelfTest(object):
             if lsb is None:
                 continue
             checked += 1
-            if max(abs(lsb - m.lsb), abs(rsb - m.rsb)) > 1.01:
+            if max(abs(lsb - m.lsb), abs(rsb - m.rsb)) > 1.01 + loose.get(name, 0.0):
                 bad.append([name, round(lsb, 1), round(m.lsb, 1), round(rsb, 1), round(m.rsb, 1)])
         return checked, bad
 

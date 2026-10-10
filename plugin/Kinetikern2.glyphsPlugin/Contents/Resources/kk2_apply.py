@@ -32,10 +32,13 @@ base has it, so moving a base (a new LSB) would move that part inside every
 composite built from it: the accent of Aacute would slide off its A, and the
 composite's own new sidebearings (computed by the engine for its shape as it
 was) would land wrong. Whenever Apply moves an outline it therefore moves each
-component drawing it (unless Glyphs aligns that component automatically) back
-by the same amount. Glyphs caches a layer's LSB / RSB and does not refresh a
-composite's when a base moves, so composites are refreshed (updateMetrics)
-before they are read.
+component drawing it back by the same amount, unless Glyphs places that
+component itself (kk2_snapshot.glyphs_aligns; its automaticAlignment flag
+alone does not say so). A composite Glyphs aligns in part (its base kept at
+x 0, the rest where it was put: kk2_snapshot.aligned_base) follows its base
+instead, as an aligned one does. Glyphs caches a layer's LSB / RSB and does
+not refresh a composite's when a base moves, so composites are refreshed
+(updateMetrics) before they are read.
 """
 
 from __future__ import division, print_function, unicode_literals
@@ -45,6 +48,7 @@ import time
 import traceback
 
 import kk2_bridge as kb
+import kk2_snapshot as ks
 
 try:
     from GlyphsApp import LTR
@@ -213,6 +217,39 @@ def _xy(point):
         return float(point[0]), float(point[1])
 
 
+def _x_column(comp):
+    """Where a unit move along x of the component's glyph lands in the
+    composite: the first column of its transform ((-1, 0) mirrored)."""
+    t = getattr(comp, "transform", None)
+    return (float(t[0]), float(t[1])) if t is not None and len(t) >= 2 else (1.0, 0.0)
+
+
+def _rest_geometry(layer):
+    """A layer's own outline points and anchors, to put back exactly."""
+    nodes = [[_xy(node.position) for node in path.nodes] for path in list(getattr(layer, "paths", None) or ())]
+    anchors = [(_text(a.name), _xy(a.position)) for a in list(getattr(layer, "anchors", None) or ())]
+    return nodes, anchors
+
+
+def _put_rest_geometry(layer, geometry, dx=0.0):
+    """Puts back _rest_geometry, moved by dx along x; False where the
+    outline's structure changed since."""
+    nodes, anchors = geometry
+    paths = list(getattr(layer, "paths", None) or ())
+    if len(paths) != len(nodes) or any(len(p.nodes) != len(n) for p, n in zip(paths, nodes)):
+        return False
+    for path, points in zip(paths, nodes):
+        for node, (x, y) in zip(path.nodes, points):
+            if _xy(node.position) != (x + dx, y):
+                node.position = (x + dx, y)
+    by_name = dict(anchors)
+    for anchor in list(getattr(layer, "anchors", None) or ()):
+        xy = by_name.get(_text(anchor.name))
+        if xy is not None and _xy(anchor.position) != (xy[0] + dx, xy[1]):
+            anchor.position = (xy[0] + dx, xy[1])
+    return True
+
+
 def _refresh(glyph, layer):
     """Makes a composite's cached LSB / RSB current (Glyphs does not refresh
     them when a base glyph moves). Layers with metrics keys are left to
@@ -227,9 +264,9 @@ def _refresh(glyph, layer):
 def _component_users(font, master_id, bases, candidates=None, users=None):
     """Fills `users` (a new dict if None) with {base glyph: [(composite,
     component index, component, dx, dy)]} for every component on this master
-    that draws one of `bases` and that Glyphs does not align by itself; (dx,
-    dy) is where a base outline moved by one unit along x lands in the
-    composite (the component's first matrix column). `candidates`: names of
+    that draws one of `bases` and that Glyphs does not place by itself
+    (kk2_snapshot.glyphs_aligns); (dx, dy) is where a base outline moved by
+    one unit along x lands in the composite (_x_column). `candidates`: names of
     the glyphs that may hold such components (the snapshot knows them); None
     looks at every glyph of the font. A generator: it yields after every few
     glyphs (a composite costs ~60 µs to look at), so the Applier can slice it."""
@@ -255,10 +292,9 @@ def _component_users(font, master_id, bases, candidates=None, users=None):
             continue
         for k, comp in enumerate(comps):
             base = _text(getattr(comp, "componentName", None))
-            if base not in bases or getattr(comp, "automaticAlignment", False) or getattr(comp, "position", None) is None:
+            if base not in bases or getattr(comp, "position", None) is None or ks.glyphs_aligns(comp):
                 continue
-            t = getattr(comp, "transform", None)
-            dx, dy = (float(t[0]), float(t[1])) if t is not None and len(t) >= 2 else (1.0, 0.0)
+            dx, dy = _x_column(comp)
             users.setdefault(base, []).append((str(glyph.name), k, comp, dx, dy))
     return users
 
@@ -945,7 +981,9 @@ class RevertPoint(object):
     decides otherwise. `sync_names`: glyphs that follow others (metrics keys,
     aligned components), targets first: a follower is put back directly like
     any other glyph (what was captured is what Glyphs had computed), except
-    an auto-aligned composite, which Glyphs re-aligns once its base is back.
+    an auto-aligned composite, which Glyphs re-aligns once its base is back,
+    and one aligned in part, whose base is back with the base glyph and whose
+    other parts and advance go back as they were.
     """
 
     def __init__(self, font, master_id, sync_names=()):
@@ -957,7 +995,12 @@ class RevertPoint(object):
         self.ink_lsb = {}  # name → LSB on the ink (exact; see _ink)
         self.composed = {}  # composite name → its component glyph names
         self.aligned = set()  # layers Glyphs aligns itself: never set directly
+        # composites Glyphs aligns in part (kk2_snapshot.aligned_base) →
+        # (base, base index): they follow the base, never set directly
+        self.partly = {}
+        self.rest = {}  # those → their own outline points and anchors (_rest_geometry)
         self.components = []  # (composite, index, x, y)
+        self._positions = {}  # (composite, index) → (x, y), the same
         self.sync_names = list(sync_names)
         # as the Apply left them; None until it finished (then a revert
         # restores everything captured, unconditionally)
@@ -985,6 +1028,14 @@ class RevertPoint(object):
             self.composed[name] = [_text(getattr(c, "componentName", None)) for c in comps]
             if getattr(layer, "isAligned", False):
                 self.aligned.add(name)
+            else:
+                b = ks.aligned_base(layer)
+                if b is not None:
+                    self.partly[name] = (_text(getattr(comps[b], "componentName", None)), b)
+                    self.rest[name] = _rest_geometry(layer)
+                    for k, comp in enumerate(comps):
+                        if not ks.glyphs_aligns(comp):
+                            self.capture_component(name, k)
             _refresh(glyph, layer)
         self.metrics[name] = (float(layer.LSB), float(layer.RSB), float(layer.width))
         ink_l, _ink_r = _ink(layer)
@@ -992,9 +1043,16 @@ class RevertPoint(object):
             self.ink_lsb[name] = ink_l
 
     def capture_component(self, name, k):
+        if (name, k) in self._positions:
+            return
         comp = self._component(name, k)
         if comp is not None:
-            self.components.append((name, k) + _xy(comp.position))
+            xy = _xy(comp.position)
+            self.components.append((name, k) + xy)
+            self._positions[(name, k)] = xy
+
+    def captured_position(self, name, k):
+        return self._positions.get((name, k))
 
     def capture_kerning(self, getk, lk, rk):
         if (lk, rk) not in self.kerning:
@@ -1024,7 +1082,8 @@ class RevertPoint(object):
         composites before the glyphs they are built from (outermost first:
         until their components move they are exactly as Apply left them, so
         their own LSB moves back exactly), then plain glyphs. Auto-aligned
-        composites are left to Glyphs."""
+        composites are left to Glyphs, those aligned in part to the
+        Restorer's "followed" step (they follow their base)."""
         depth = {}
 
         def depth_of(name, seen=()):
@@ -1035,7 +1094,7 @@ class RevertPoint(object):
                                        if c is not None and c not in seen] or [0])
             return depth[name]
 
-        out = [n for n in self.metrics if n in names and n not in self.aligned]
+        out = [n for n in self.metrics if n in names and n not in self.aligned and n not in self.partly]
         return sorted(out, key=lambda n: -depth_of(n))
 
     def restorer(self, overwrite=False):
@@ -1155,7 +1214,7 @@ class Restorer(_Stepper):
         setk = font.setKerningForFontMasterID_leftKey_rightKey_value_direction_
         remove = font.removeKerningForFontMasterID_leftKey_rightKey_direction_
         counts = {"kerning_set": 0, "kerning_removed": 0, "groups": 0, "metrics": 0, "components": 0, "synced": 0,
-                  "kept_kerning": 0, "kept_glyphs": 0, "kept_components": 0}
+                  "followed": 0, "kept_kerning": 0, "kept_glyphs": 0, "kept_components": 0}
         keys = list(point.kerning)
         names = list(point.metrics) + [n for n in point.groups if n not in point.metrics]
         total = max(1, len(keys) + 2 * len(names) + len(point.components))
@@ -1241,6 +1300,26 @@ class Restorer(_Stepper):
                 comp.position = (x, y)
                 counts["components"] += 1
             yield
+        # a composite aligned in part: its base is back with the base glyph,
+        # its other components were put back above; its own outline points
+        # and anchors go back exactly, and its advance
+        self.phase = "followed"
+        for name in point.partly:
+            if name not in restore:
+                continue
+            glyph = _glyph(font, name)
+            layer = _layer(glyph, mid)
+            saved = point.metrics.get(name)
+            if layer is None or saved is None:
+                continue
+            self._undo.add(glyph)
+            if name in point.rest:
+                _put_rest_geometry(layer, point.rest[name])
+            if math.isfinite(saved[2]) and abs(float(layer.width) - saved[2]) > 1e-9:
+                layer.width = saved[2]
+            _refresh(glyph, layer)
+            counts["followed"] += 1
+            yield
         self.phase = "sync"
         for name in point.sync_names:
             if name in point.aligned and name in restore:
@@ -1251,6 +1330,14 @@ class Restorer(_Stepper):
                     layer.alignComponents()
                     _refresh(glyph, layer)
                     counts["synced"] += 1
+                yield
+        # Glyphs does not refresh a composite's cached LSB / RSB when a glyph
+        # it is built from moves back
+        self.phase = "refresh"
+        for k, name in enumerate(n for n in point.composed if n in restore):
+            glyph = _glyph(font, name)
+            _refresh(glyph, _layer(glyph, mid))
+            if not k & 7:
                 yield
 
         # 3. kerning
@@ -1353,7 +1440,8 @@ class Applier(_Stepper):
         self._undo = None
         self._counts = {"kerning": 0, "removed": 0, "groups": 0, "respaced": 0, "synced": 0}
         self._detail = {"group_conflicts": 0, "missing_glyphs": 0, "metric_sides": 0, "composites": 0,
-                        "components_held": 0, "realigned": 0, "readback_metrics": 0, "readback_kerning": 0,
+                        "components_held": 0, "realigned": 0, "followed": 0, "readback_metrics": 0,
+                        "readback_kerning": 0,
                         "readback_removals": 0}
         self._examples = []
         self._bad = [0, 0]  # metric, kerning mismatches
@@ -1653,6 +1741,15 @@ class Applier(_Stepper):
         if layer is None:
             return
         self._undo.add(glyph)
+        if name in revert.partly:
+            # it moves with its base as an aligned composite does; then its
+            # right side and advance follow their metrics keys. Not its left
+            # side: Glyphs keeps the base where it is, so a left key could
+            # only move the rest off it (the snapshot has the left side follow
+            # the base)
+            self._follow_base(name, glyph, layer, users, revert)
+            self._sync_right(glyph, layer)
+            return
         if _has_metrics_key(glyph, layer):
             before = float(layer.LSB)
             layer.syncMetrics()
@@ -1670,6 +1767,73 @@ class Applier(_Stepper):
             after = float(layer.LSB)
             if saved is not None and math.isfinite(saved[0]) and math.isfinite(after):
                 self._held(users, name, after - saved[0])
+
+    def _follow_base(self, name, glyph, layer, users, revert):
+        """A composite Glyphs aligns in part (kk2_snapshot.aligned_base)
+        follows its base as an aligned one does. Glyphs keeps the base where
+        it is, so the base's part moved with the base's outline (by dx);
+        every other part goes to where it was before the Apply plus dx: a
+        component less what its own glyph's outline moved since (_held may
+        have taken that back already), the layer's own paths and anchors. Its
+        advance changes by the base's."""
+        base, b = revert.partly[name]
+        base_layer = _layer(_glyph(self.font, base), self.plan.master_id)
+        saved, saved_base = revert.metrics.get(name), revert.metrics.get(base)
+        comps = list(getattr(layer, "components", None) or ())
+        if base_layer is None or saved is None or saved_base is None or b >= len(comps):
+            return
+        dx = _x_column(comps[b])[0] * self._outline_moved(base, base_layer, revert)
+        for k, comp in enumerate(comps):
+            if k == b or ks.glyphs_aligns(comp):
+                continue
+            before = revert.captured_position(name, k)
+            if before is None:
+                continue
+            moved = self._outline_moved(_text(getattr(comp, "componentName", None)), None, revert)
+            cx, cy = _x_column(comp)
+            want = (before[0] + dx - cx * moved, before[1] - cy * moved)
+            if _xy(comp.position) != want:
+                comp.position = want
+        rest = revert.rest.get(name)
+        if rest is not None:
+            _put_rest_geometry(layer, rest, dx)
+        width = saved[2] + (float(base_layer.width) - saved_base[2])
+        if math.isfinite(width) and abs(float(layer.width) - width) > 1e-9:
+            layer.width = width
+        _refresh(glyph, layer)
+        self._detail["followed"] += 1
+        # the composites drawing this one: its outline moved by dx
+        self._held(users, name, dx)
+
+    def _outline_moved(self, name, layer, revert):
+        """How far a glyph's outline moved along x since the revert point was
+        taken, on the ink (0 for a glyph it did not capture: Apply moves
+        none of those)."""
+        before = revert.ink_lsb.get(name)
+        if before is None:
+            return 0.0
+        if layer is None:
+            layer = _layer(_glyph(self.font, name), self.plan.master_id)
+        now, _r = _ink(layer) if layer is not None else (None, None)
+        if now is None:
+            return 0.0
+        d = now - before
+        return float(round(d)) if abs(d - round(d)) < 1e-6 else d
+
+    def _sync_right(self, glyph, layer):
+        """Glyphs sets the advance of a composite aligned in part by its
+        right and width metrics keys (syncRightMetrics, syncWidthMetrics):
+        the width changes, nothing moves."""
+        synced = False
+        for attr, method in (("rightMetricsKey", "syncRightMetrics"), ("widthMetricsKey", "syncWidthMetrics")):
+            if not (_text(getattr(layer, attr, None)) or _text(getattr(glyph, attr, None))):
+                continue
+            sync = getattr(layer, method, None)
+            if sync is not None:
+                sync()
+                synced = True
+        if synced:
+            self._counts["synced"] += 1
 
     def _read_back_metrics(self, row):
         """A written glyph ends within half a unit of its targets (whole-unit

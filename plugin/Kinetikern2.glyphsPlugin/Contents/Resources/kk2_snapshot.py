@@ -355,6 +355,49 @@ def _layer(glyph, master_id):
         return None
 
 
+# ------------------------------------------------------------- components
+def _alignment(comp):
+    """GSComponent.isAligned(): what Glyphs does with the component (2 or 3
+    when it aligns it, -2 when it does not, in Glyphs 3.5), or None."""
+    state = getattr(comp, "isAligned", None)
+    try:
+        return int(state() if callable(state) else state)
+    except (TypeError, ValueError):
+        return None
+
+
+def glyphs_aligns(comp):
+    """True when Glyphs places this component itself: the base it keeps at
+    x 0 of a composite, a mark it attaches by an anchor. The component's
+    automaticAlignment flag does not say so: Glyphs 3 leaves the flag on for
+    components it cannot align (a mark without anchors, a base in a layer
+    that also has paths, a second base), and those stay where they were put,
+    so moving their glyph moves them inside the composite. Where Glyphs does
+    not say (_alignment), the flag decides."""
+    state = _alignment(comp)
+    if state is None:
+        return bool(getattr(comp, "automaticAlignment", False))
+    return state > 0
+
+
+def aligned_base(layer):
+    """The index of the base component of a composite that Glyphs aligns in
+    part, else None: Glyphs keeps that base at x 0 but does not align the
+    layer as a whole (Aacute built without anchors: the acute stays where it
+    was put, and the advance stays when A's changes). Setting such a layer's
+    LSB moves everything but the base; kk2_apply makes the composite follow
+    its base as an aligned one does (Applier._follow_base)."""
+    comps = getattr(layer, "components", None)
+    if not comps or getattr(layer, "isAligned", False):
+        return None
+    for k, comp in enumerate(comps):
+        state = _alignment(comp)
+        if state is not None and state > 0 and \
+                _string(getattr(getattr(comp, "component", None), "category", None)) != "Mark":
+            return k
+    return None
+
+
 # ------------------------------------------------------------- glyph info
 class GlyphInfo(object):
     """One glyph on the snapshot master, as the font has it now.
@@ -368,7 +411,7 @@ class GlyphInfo(object):
 
     __slots__ = ("name", "glyph_id", "unicode", "char", "path", "width", "lsb", "rsb", "bounds", "empty",
                  "font_lsb", "font_rsb", "category", "subcategory", "case", "script", "rtl", "kern", "left_group", "right_group",
-                 "left_key", "right_key", "width_key", "components", "aligned")
+                 "left_key", "right_key", "width_key", "components", "aligned", "aligned_base")
 
     @property
     def advance(self):
@@ -443,6 +486,9 @@ def read_glyph_info(glyph, layer, name=None, category=None, unicode=None, flags_
     comps = getattr(layer, "components", None)
     info.components = tuple(n for n in (_string(c.componentName) for c in (comps or ())) if n)
     info.aligned = bool(info.components) and bool(getattr(layer, "isAligned", False))
+    # aligned in part: the base Glyphs keeps at x 0 (see aligned_base)
+    b = aligned_base(layer) if info.components and not info.aligned else None
+    info.aligned_base = _string(comps[b].componentName) if b is not None else None
     return info
 
 
@@ -851,6 +897,18 @@ class SnapshotReader(object):
             spacing = [c for c in info.components if c in snap.index and c != name]
             self._follow_component(spec, info, True, spacing[0] if spacing else None)
             self._follow_component(spec, info, False, spacing[-1] if spacing else None)
+        elif info.aligned_base is not None:
+            # aligned in part: it follows its base as an aligned composite
+            # does (Apply moves the rest with the base). The left side always:
+            # Glyphs keeps the base where it is, so a left metrics key could
+            # only move the rest off it. The right side by its metrics key if
+            # it has one (Apply lets Glyphs set the advance by it).
+            base = info.aligned_base if info.aligned_base != name else None
+            self._follow_component(spec, info, True, base)
+            if info.right_key:
+                self._follow_key(i, spec, info, False)
+            else:
+                self._follow_component(spec, info, False, base)
         else:
             self._follow_key(i, spec, info, True)
             self._follow_key(i, spec, info, False)

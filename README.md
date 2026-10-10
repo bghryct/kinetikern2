@@ -511,6 +511,23 @@ gave −6.00 (the limit) measured upright and −0.06 along the angle.
 * **Composites stay rigid:** when a base glyph's outline moves, the components
   that draw it move back by the same amount, so an accent never slides off its
   letter.
+  * **Which components Glyphs places itself.** Apply asks each component
+    (`isAligned()`), not its automatic-alignment flag. Glyphs 3 leaves that flag
+    on for components it cannot align, and those stay where they were put. A
+    mark without anchors, a part of a layer that also has paths, and the
+    second glyph of `;` are examples. Apply holds all of them in place.
+  * **Composites aligned in part.** Glyphs keeps the base at x 0 but places
+    nothing else; Aacute built without anchors is one. Such a composite
+    follows its base the way an aligned composite does: the accent, its own
+    paths and its advance move with the base.
+    * Its left side stays with the base, even under a left metrics key.
+      Glyphs cannot move that base, so meeting the key would slide the
+      accent off the letter.
+    * Its right side follows its right key (`syncRightMetrics`).
+  * **Scaled or turned components.** Glyphs keeps component positions on the
+    font's grid, so a scaled or rotated component can be held only to within
+    the grid: a rotated arrow may end up a fraction of a unit off. Revert puts
+    it back exactly.
 * **Sample-text scope:** Apply re-spaces the glyphs of the sample text, the
   glyphs the preview kerned, and the glyphs their metrics keys and aligned
   components follow. For example, Ñ in the sample also moves N, as the right
@@ -855,9 +872,14 @@ in Glyphs' import):
 3. Cancels a whole-font run at about 30 % and restarts it.
 4. Applies the whole-font result and reads every planned sidebearing and group
    back, plus 200 kerning entries. It also compares every spacing glyph's ink
-   sidebearings with the result.
+   sidebearings with the result. Every composite of the master must have
+   moved as one piece: all its points by the same amount, so no accent slid
+   off its letter. Composites with a scaled or rotated part may be up to one
+   grid unit further off in both checks, the precision Glyphs keeps their
+   positions to.
 5. Reverts, and compares the master's whole kerning table, groups and
-   sidebearings with the state before Apply.
+   sidebearings with the state before Apply. Every composite's outline must
+   be back exactly where it was.
 6. Tests the designer harness, when the engine build has it, the way a user
    works with it:
    - opens the Designer Harness window;
@@ -1051,6 +1073,7 @@ Result on the final build: **PASSED** in 33.2 s.
   says so, but cannot keep the other masters' old values.
 * **Long sample texts.** The panes' layout costs main-thread time: an
   all-glyph sample of 3,000 glyphs stalled for 156 ms once in the smoke test.
-* **Not yet tested in Glyphs:** auto-aligned composites. Arial's imported
-  composites never report `isAligned`, so this path is tested on mocks only.
-  Try it on a `.glyphs` source with aligned composites.
+* **Aligned composites, little tested in Glyphs.** Arial's imported composites
+  are never aligned. The composite paths are tested on one italic `.glyphs`
+  source with 324 composites: 14 aligned, about 160 aligned in part, the rest
+  not aligned. A whole-font Apply there re-aligned only two of the 14.
