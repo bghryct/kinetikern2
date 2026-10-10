@@ -446,8 +446,12 @@ whose glyphs touch by construction, of any glyph and an a–z letter).
 
 Select rows and **Open Proof** for an Edit tab of the pairs in context
 (n + pair + n). The joins are found on the main thread when the setting is
-turned on or the master is read (milliseconds: 59 ms for Great Vibes' 1,630
-letters); every glyph with an outline is measured for the checker in Phase 1.
+turned on or the master is read, a step per timer tick: the master's kerning
+is read in slices of 8 ms and each of the four tests runs on a tick of its
+own, so even a big font that does not join (Lato 2.015: 62,000 kerning
+pairs, every test run) never holds Glyphs for more than about 75 ms at once
+(it was 0.6 s in one go). Every glyph with an outline is measured for the
+checker in Phase 1.
 Spacing QA uses the same detector, checker and decoration test, with two
 differences. It sets every a–z pair inside a word (n + pair + n, the default
 features), so it also sees joins made by contextual alternates and connector

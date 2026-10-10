@@ -253,6 +253,7 @@ class KK2Window(object):
         self._generation = 0  # counts snapshots: results of an older one are never reused
         self._reader = None
         self._read_done = False  # the reader finished; its snapshot is taken on the next tick
+        self._join_finder = None  # finding a connected script's joins, a step per tick (_join_steps)
         self._job = None  # the one engine job: prepare | preview | whole
         self._job_kind = None
         self._job_key = None
@@ -741,6 +742,10 @@ class KK2Window(object):
                 what = "reading"
                 self._step_reader()
                 return
+            if self._join_finder is not None:
+                what = "finding joins"
+                self._step_join_finder()
+                return
             if self._stepper is not None:
                 what = "%s: %s" % (self._stepper_kind, self._stepper.phase)
                 self._step_stepper()
@@ -767,7 +772,8 @@ class KK2Window(object):
                 what = "start preview"
                 self._start_preview()
             if (self._reader is None and self._job is None and not self._preview_pending and
-                    self._stepper is None and not self._left_due and not self._right_due):
+                    self._join_finder is None and self._stepper is None and not self._left_due and
+                    not self._right_due):
                 self._stop_timer()
         except Exception:
             self._fail("Kinetikern2 stopped on an error — see the Macro panel.", traceback.format_exc())
@@ -787,6 +793,7 @@ class KK2Window(object):
         self._stale = set()
         self._font_metrics = {}
         self._kerning.reset()
+        self._join_finder = None
         self._reader = ks.SnapshotReader(self.font, master, along_slant=self._along_slant())
         self._read_done = False
         self._set_state("reading")
@@ -838,11 +845,43 @@ class KK2Window(object):
 
     def _start_prepare(self):
         """Phase 1 on the snapshot read: with a connected script's joins when
-        the setting is on (found first, in milliseconds)."""
-        snapshot = self.snapshot
-        joins = self._detect_joins(snapshot) if self._connected() else None
+        the setting is on, found first a step per tick (_join_steps: reading
+        a big master's kerning and the four tests took 0.6 s at once on
+        Lato)."""
+        self._join_finder = None  # a search for the setting before is dropped
         if not self._connected():
             self.joins, self.join_count, self.join_note = None, 0, ""
+            self._prepare(None)
+            return
+        self.join_ms = 0.0
+        self._join_finder = self._join_steps(self.snapshot)
+        self._set_state("preparing")
+        self._show_progress("Looking for joins…", 0.0)
+        self._set_status("Looking for a connected script's joins in %s…" % self.snapshot.master_name)
+        self._run_timer(READ_INTERVAL)
+
+    def _step_join_finder(self):
+        """One step of finding the joins; Phase 1 once they are found. The
+        time spent here is the join search's (join_ms: on the main thread)."""
+        t = time.perf_counter()
+        try:
+            next(self._join_finder)
+            return
+        except StopIteration as stop:
+            joins = stop.value
+        except Exception:
+            self._join_finder = None
+            self._fail("Could not look for joins — see the Macro panel.", traceback.format_exc())
+            return
+        finally:
+            self.join_ms += 1000.0 * (time.perf_counter() - t)
+        self._join_finder = None
+        self._run_timer(POLL_INTERVAL)
+        self._prepare(joins)
+
+    def _prepare(self, joins):
+        """Phase 1 with `joins` (None: no connected script)."""
+        snapshot = self.snapshot
         self.join_check = None
         self._update_join_label()
         try:
@@ -880,15 +919,25 @@ class KK2Window(object):
         return snap.x_height
 
     def _detect_joins(self, snap):
+        """_join_steps in one call."""
+        steps = self._join_steps(snap)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as stop:
+                return stop.value
+
+    def _join_steps(self, snap):
         """The join bands of a connected script, learned from the master's
         own spacing and kerning (Spacing QA's rule); None when its letters do
         not join. Sets the note the window shows, and the letters' kinds and
-        the master's kerning the join checker reads."""
+        the master's kerning the join checker reads. A generator: it yields
+        between the parts (the kerning read in slices, each test of the
+        engine in a step of its own) and returns the bands."""
         self.joins, self.join_count = None, 0
         self.join_kinds, self.join_current = None, ()
-        t = time.perf_counter()
         try:
-            from kk2_pairs_window import current_kerning
+            from kk2_pairs_window import current_kerning_steps
             # every letter is measured against the basic a–z (Spacing QA's
             # partners): milliseconds even for a font of a thousand letters
             kinds = bytearray(len(snap.names))
@@ -898,20 +947,20 @@ class KK2Window(object):
                     cp = getattr(snap.infos.get(snap.names[i]), "unicode", None)
                     kinds[i] = kb.JOINKIND_LOWER if cp is not None and 0x61 <= cp <= 0x7A else kb.JOINKIND_UPPER
                     letters += 1
-            current = current_kerning(snap, self._kerning.table(snap.master_id))
+            current = yield from current_kerning_steps(snap, self._kerning.table(snap.master_id), READ_SLICE)
+            yield
             bands = self.engine.detect_joins(snap.packer, snap.upm, self._x_height(snap), kinds, current,
                                              kb.JOINRULE_BOTH)
         except Exception as e:
             print(traceback.format_exc())
             self.join_note = "could not look for joins: %s" % e
             return None
-        finally:
-            self.join_ms = 1000.0 * (time.perf_counter() - t)
         n = sum(1 for left, right in bands if left or right)
         if not n:
             # nothing overlaps; a line or grid drawn exactly from edge to edge
             # still touches every neighbour, figures included: keep it whole
             decorated = False
+            yield
             try:
                 decorated = self.engine.detect_decorated(snap.packer, snap.upm, kinds, current)
             except Exception:
@@ -925,6 +974,7 @@ class KK2Window(object):
             # strokes that meet flush, without overlapping: Spacing QA's rule
             # (at least half the a–z touch at least half their partners as set)
             joining, measured = 0, 0
+            yield
             try:
                 joining, measured = self.engine.detect_contact(snap.packer, snap.upm, kinds, current)
             except Exception:
@@ -938,6 +988,7 @@ class KK2Window(object):
             # a hand that joins only in part: its exit strokes reach letters
             # print faces never join (n n, m i, u n): Spacing QA's rule
             partly, counts = False, None
+            yield
             try:
                 letters_az = bytearray(len(snap.names))
                 for i, kind in enumerate(kinds):
@@ -1327,6 +1378,9 @@ class KK2Window(object):
             self._reader.cancel()
             self._reader = None
             stopped = "reading"
+        if self._join_finder is not None:
+            self._join_finder = None
+            stopped = "finding joins"
         if self._job is not None:
             self._job.free()  # cancels; never blocks
             stopped = self._job_kind
@@ -1357,6 +1411,7 @@ class KK2Window(object):
         if self._reader is not None:
             self._reader.cancel()
             self._reader = None
+        self._join_finder = None
         if self._job is not None:
             self._job.free()
             self._job = None

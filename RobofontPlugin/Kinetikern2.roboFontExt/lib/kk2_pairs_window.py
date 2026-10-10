@@ -19,6 +19,7 @@ from __future__ import division, print_function, unicode_literals
 
 import math
 import threading
+import time
 import traceback
 
 import objc
@@ -65,12 +66,27 @@ def current_kerning(snapshot, table):
     glyph indices and the snapshot's group ids. `table`: the font's kerning
     ({(left, right): value}; a side is a glyph name or a public.kern1 /
     public.kern2 group)."""
+    steps = current_kerning_steps(snapshot, table, float("inf"))
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value
+
+
+def current_kerning_steps(snapshot, table, budget_s):
+    """current_kerning in slices: a generator that yields after about
+    `budget_s` seconds of work and returns the list."""
     if not table:
         return []
     index = snapshot.index
     right_ids, left_ids = snapshot.right_group_ids, snapshot.left_group_ids
     out = []
-    for (lk, rk), value in table.items():
+    deadline = time.perf_counter() + budget_s
+    for k, ((lk, rk), value) in enumerate(table.items()):
+        if not k & 255 and time.perf_counter() > deadline:
+            yield
+            deadline = time.perf_counter() + budget_s
         lks, rks = str(lk), str(rk)
         if lks.startswith(LEFT_PREFIX):
             left, lclass = right_ids.get(lks[len(LEFT_PREFIX):]), True

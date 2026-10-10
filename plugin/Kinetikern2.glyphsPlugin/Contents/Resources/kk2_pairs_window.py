@@ -17,7 +17,9 @@ off the main thread: about 20 s for Arial); the master's kerning is read once pe
 
 from __future__ import division, print_function, unicode_literals
 
+import json
 import threading
+import time
 import traceback
 
 import objc
@@ -58,11 +60,40 @@ def _make_preview_class():
 KK2PairPreview = _class("KK2PairPreview", _make_preview_class)
 
 
+def _plain_table(table):
+    """A master's kerning dictionary as plain Python dicts, in one native call
+    (NSJSONSerialization): walking the Objective-C dictionaries from Python
+    costs about 6 µs an entry (0.4 s for Lato's 62,000). None if it cannot."""
+    try:
+        from Foundation import NSJSONSerialization
+        if not NSJSONSerialization.isValidJSONObject_(table):
+            return None
+        data, _error = NSJSONSerialization.dataWithJSONObject_options_error_(table, 0, None)
+        return json.loads(bytes(data)) if data is not None else None
+    except Exception:
+        return None
+
+
 def current_kerning(snapshot, table):
     """The master's kerning as engine input: (kind, left, right, value) with
     glyph indices and the snapshot's group ids."""
+    steps = current_kerning_steps(snapshot, table, float("inf"))
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value
+
+
+def current_kerning_steps(snapshot, table, budget_s):
+    """current_kerning in slices: a generator that yields after about
+    `budget_s` seconds of work and returns the list."""
     if not table:
         return []
+    plain = _plain_table(table)
+    if plain is not None:
+        table = plain
+    deadline = time.perf_counter() + budget_s
     id_index = {}
     for i, name in enumerate(snapshot.names):
         info = snapshot.infos.get(name)
@@ -72,6 +103,9 @@ def current_kerning(snapshot, table):
     right_ids, left_ids = snapshot.right_group_ids, snapshot.left_group_ids
     out = []
     for lk in table.keys():
+        if time.perf_counter() > deadline:
+            yield
+            deadline = time.perf_counter() + budget_s
         lks = str(lk)
         if lks.startswith(LEFT_PREFIX):
             left, lclass = right_ids.get(lks[len(LEFT_PREFIX):]), True
