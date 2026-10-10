@@ -169,7 +169,7 @@ class HarnessWindow(object):
             self.w.status.set("The font is still being read.")
             return
         if not main.harness_available():
-            self.w.status.set("This build of the engine has no designer harness: rebuild the plugin (build.sh).")
+            self.w.status.set("This build of the engine has no designer harness: rebuild it with build.sh.")
             return
         plan = self.plan()
         if plan is None:

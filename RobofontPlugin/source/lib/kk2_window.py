@@ -63,6 +63,7 @@ import kk2_groups_window
 import kk2_harness as kh
 import kk2_harness_window
 import kk2_host as host
+import kk2_joins_window
 import kk2_pairs_window
 import kk2_proof as kp
 import kk2_snapshot as ks
@@ -84,6 +85,9 @@ LOOSENESS_RATIO = 3.86
 DEFAULT_THRESHOLD = 5.0  # units per 1000 em
 MAX_THRESHOLD = 20.0
 DEFAULT_MAX_PAIRS = 30000
+# the Connected script modes (the join mode popup)
+JOIN_MODES = ["Keep joins", "Space joined letters"]
+JOIN_KEEP, JOIN_SPACE = 0, 1
 LARGE_MAX_PAIRS = 100000  # above this the window warns about file size
 
 READ_SLICE = 0.008  # seconds of outline reading (and of planning, applying, reverting) per timer tick
@@ -287,6 +291,11 @@ class KK2Window(object):
         self.join_count = 0
         self.join_note = ""
         self.join_ms = 0.0
+        self.join_kinds = None  # JOINKIND_* per glyph, and the font's kerning, for the join checker
+        self.join_decorated = False  # the glyphs touch by construction (kk2_bridge.Engine.join_decorated)
+        self.join_current = ()
+        self.join_check = None  # (stats, sides) of the result shown (kk2_bridge.Engine.join_check)
+        self.joins_window = None
         self._timer = None
         self._timer_interval = None
         self._timer_target = None
@@ -318,8 +327,8 @@ class KK2Window(object):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        w = vanilla.FloatingWindow((1200, 860), "Kinetikern2 — %s" % host.font_title(self.font),
-                                   minSize=(1080, 600), autosaveName=None if self._unattended else PREFIX + "window")
+        w = vanilla.FloatingWindow((1240, 860), "Kinetikern2 — %s" % host.font_title(self.font),
+                                   minSize=(1200, 600), autosaveName=None if self._unattended else PREFIX + "window")
         self.w = w
 
         # row 1: physics and threshold
@@ -393,15 +402,23 @@ class KK2Window(object):
             "no limit.")
         w.maxPairsNote = vanilla.TextBox((732, 70, 112, 14), "", sizeStyle="mini")
         w.connected = vanilla.CheckBox((850, 67, 128, 18), "Connected script", sizeStyle="small",
-                                       value=self._setting("connected", False, bool), callback=self.connectedChanged)
+                                       value=self._setting("connected", True, bool), callback=self.connectedChanged)
         w.connected.getNSButton().setToolTip_(
             "For scripts whose letters join. The joins are learned from the font's own spacing and kerning: when "
-            "most lowercase letters overlap most of their partners, each letter side's join stroke is found, the "
-            "letter bodies are spaced without it, and two joining letters overlap as drawn, with no kerning between "
-            "them. Every other pair — punctuation, figures, a letter beside one that does not join — keeps the "
-            "usual rules: a period keeps its distance from an exit stroke. A font whose letters do not overlap "
-            "is spaced as usual.")
-        w.connectedValue = vanilla.TextBox((980, 70, -60, 14), "", sizeStyle="mini")
+            "most lowercase letters overlap most of their partners, the font is a connected script. A font whose "
+            "letters do not join is spaced as usual, so this can stay on.")
+        mode = int(self._setting("joinMode", JOIN_KEEP, int))
+        w.joinMode = vanilla.PopUpButton((980, 66, 150, 20), JOIN_MODES, callback=self.joinModeChanged,
+                                         sizeStyle="small")
+        w.joinMode.set(mode if mode in (JOIN_KEEP, JOIN_SPACE) else JOIN_KEEP)
+        w.joinMode.getNSPopUpButton().setToolTip_(
+            "Keep joins (the default): every letter side that joins keeps its sidebearing and every pair of two "
+            "joining sides the font's kerning, so every join stays as drawn; Kinetikern2 spaces and kerns the "
+            "rest (punctuation, figures, capitals that do not join, a letter next to a period) at the tightness "
+            "of the kept letters. What it would have done to the joining sides is shown as drawing advice "
+            "(Joins…).\n\nSpace joined letters: the letter bodies are spaced without their join strokes and two "
+            "joining letters overlap with no kerning; joins whose strokes stop meeting break (Joins… counts them).")
+        w.connectedValue = vanilla.TextBox((0, 0, 0, 0), "", sizeStyle="mini")  # the note lives in Joins…
         w.reload = vanilla.Button((-50, 64, 36, 22), "↻", callback=self.reloadOutlines, sizeStyle="small")
         w.reload.getNSButton().setToolTip_("Read the outlines of the font again")
 
@@ -421,6 +438,11 @@ class KK2Window(object):
         w.pairsButton = vanilla.Button((636, 94, 90, 22), "Pairs…", callback=self.openPairs)
         w.pairsButton.getNSButton().setToolTip_(
             "The font's pairs from loosest to tightest, measured against Kinetikern2.")
+        w.joinsButton = vanilla.Button((732, 94, 136, 22), "Joins…", callback=self.openJoins)
+        w.joinsButton.getNSButton().setToolTip_(
+            "A connected script's joins: where the strokes meet as drawn (broken, nearly touching, partly connected, "
+            "fragile and crossing joins), "
+            "what the preview does to them, and drawing advice for the kept sides, with proofs.")
         w.revert = vanilla.Button((-318, 94, 160, 22), "Revert Last Apply", callback=self.revertLastApply)
         w.revert.getNSButton().setToolTip_(
             "Put the kerning, groups and sidebearings back as they were before the last Apply "
@@ -533,10 +555,34 @@ class KK2Window(object):
             return None
         return self.groups.opts_for(self.snapshot.names)
 
+    def _kept_sides(self):
+        """(left sides, right sides) Keep joins keeps as drawn, glyph
+        indices; None when the context keeps none."""
+        if not self._keeps_joins() or self.context is None:
+            return None
+        try:
+            bits = self.engine.join_sides(self.context)
+        except Exception:
+            print(traceback.format_exc())
+            return None
+        left = [i for i, b in enumerate(bits) if b & kb.JOINSIDE_LEFT_KEPT]
+        right = [i for i, b in enumerate(bits) if b & kb.JOINSIDE_RIGHT_KEPT]
+        return (left, right) if left or right else None
+
+    def _keeps_joins(self):
+        """The context keeps a connected script's joins (Keep joins)."""
+        return self.joins is not None and self.join_kinds is not None and self._join_mode() == JOIN_KEEP
+
+    def _join_mode(self):
+        if self.w is None or getattr(self.w, "joinMode", None) is None:
+            return int(self._setting("joinMode", JOIN_KEEP, int))
+        return int(self.w.joinMode.get())
+
     def _params(self, budget):
         spring, repulsion, coupling = self._physics()
         opts = self._glyph_opts()
-        fit = bool(opts) and self.groups.match_frozen and any(o[0] for o in opts)
+        # frozen glyphs (Match the frozen spacing) and kept joins set the tightness
+        fit = (bool(opts) and self.groups.match_frozen and any(o[0] for o in opts)) or self._keeps_joins()
         return kb.make_params(spring=spring, repulsion=repulsion, coupling=coupling, classes=True, window=True,
                               scope_scripts=True, threshold=self._threshold() * self._upm() / 1000.0,
                               budget=budget, threads=self._threads(), fit_frozen=fit)
@@ -547,7 +593,7 @@ class KK2Window(object):
         spring, repulsion, coupling = self._physics()
         return (self._generation, round(spring, 9), round(repulsion, 9), round(coupling, 9),
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
-                self.join_count, self.harness_style, round(self._harness_strength(), 4))
+                self.join_count, self._join_mode(), self.harness_style, round(self._harness_strength(), 4))
 
     def _update_labels(self):
         if self.w is None:
@@ -561,7 +607,8 @@ class KK2Window(object):
             gap = " · rest gap " + ", ".join(parts) if parts else ""
         fitted = ""
         if self._fitted is not None:
-            fitted = " · matched to the frozen glyphs: %+.2f" % self._fitted
+            fitted = " · matched to the %s: %+.2f" % (
+                "kept joins" if self._keeps_joins() else "frozen glyphs", self._fitted)
         self.w.tightValue.set("spring %.2f · repulsion %.2f%s%s" % (spring, repulsion, gap, fitted))
         self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
         t = self._threshold()
@@ -613,8 +660,9 @@ class KK2Window(object):
                         w.scope, w.replace, w.reload):
             control.enable(not busy)
         w.connected.enable(not busy and bool(self.engine.features & kb.FEATURE_JOINS))
+        w.joinMode.enable(not busy and bool(w.connected.get()) and bool(self.engine.features & kb.FEATURE_JOIN_CHECK))
         snap = self.snapshot
-        w.alongSlant.enable(not busy and snap is not None and abs(snap.slant_degrees) >= ks.SLANT_MIN_DEGREES)
+        w.alongSlant.enable(not busy and snap is not None and ks.slant_measurable(snap.slant_degrees))
         w.apply.enable(not busy and self.context is not None)
         w.revert.enable(not busy and self._reader is None and self.revert_point is not None)
         # a plan can be dropped; writes, once started, run to the end
@@ -756,6 +804,15 @@ class KK2Window(object):
         if self.groups_window is not None:
             self.groups_window.groups_replaced()
         self.w.setTitle("Kinetikern2 — %s" % host.font_title(font))
+        # the windows that name the font follow it (the Joins window's proofs
+        # open on the font the window works on: kk2_joins_window.RoboFontHost)
+        for sub, prefix in ((self.pairs_window, "Pairs, Loosest to Tightest"), (self.harness_window, "Designer Harness"),
+                            (self.groups_window, "Spacing Groups")):
+            if sub is not None:
+                try:
+                    sub.w.setTitle("%s — %s" % (prefix, host.font_title(font)))
+                except Exception:
+                    print(traceback.format_exc())
         self._fill_fonts()
         self._update_controls()
 
@@ -811,9 +868,16 @@ class KK2Window(object):
         joins = self._detect_joins(snapshot) if self._connected() else None
         if not self._connected():
             self.joins, self.join_count, self.join_note = None, 0, ""
+        self.join_check = None
         self._update_join_label()
         try:
-            self._job = self.engine.prepare(snapshot.packer, snapshot.upm, self._threads(), joins=joins)
+            if joins is not None and self.join_kinds is not None and self.engine.features & kb.FEATURE_JOIN_CHECK:
+                # the join checker, and Keep joins or Space joined letters
+                self._job = self.engine.prepare(snapshot.packer, snapshot.upm, self._threads(), joins=joins,
+                                                join_kinds=self.join_kinds, current=self.join_current,
+                                                keep_joins=self._join_mode() == JOIN_KEEP)
+            else:
+                self._job = self.engine.prepare(snapshot.packer, snapshot.upm, self._threads(), joins=joins)
         except Exception as e:
             self._fail("The engine could not start: %s" % e, traceback.format_exc())
             return
@@ -843,8 +907,10 @@ class KK2Window(object):
     def _detect_joins(self, snap):
         """The join bands of a connected script, learned from the font's
         own spacing and kerning (Spacing QA's rule); None when its letters do
-        not join. Sets the note the window shows."""
+        not join. Sets the note the window shows, and the letters' kinds and
+        the font's kerning the join checker reads."""
         self.joins, self.join_count = None, 0
+        self.join_kinds, self.join_current = None, ()
         t = time.perf_counter()
         try:
             from kk2_pairs_window import current_kerning
@@ -868,9 +934,36 @@ class KK2Window(object):
             self.join_ms = 1000.0 * (time.perf_counter() - t)
         n = sum(1 for left, right in bands if left or right)
         if not n:
-            self.join_note = "no joins: the letters do not overlap"
+            # nothing overlaps; a line or grid drawn exactly from edge to edge
+            # still touches every neighbour, figures included: keep it whole
+            decorated = False
+            try:
+                decorated = self.engine.detect_decorated(snap.packer, snap.upm, kinds, current)
+            except Exception:
+                print(traceback.format_exc())
+            if decorated:
+                self.joins, self.join_count = bands, 0
+                self.join_kinds, self.join_current = kinds, current
+                self.join_note = ("its glyphs touch by construction (a line, a grid or an effect through every "
+                                  "glyph): every side that touches is kept")
+                return bands
+            # strokes that meet flush, without overlapping: Spacing QA's rule
+            # (at least half the a–z touch at least half their partners as set)
+            joining, measured = 0, 0
+            try:
+                joining, measured = self.engine.detect_contact(snap.packer, snap.upm, kinds, current)
+            except Exception:
+                print(traceback.format_exc())
+            if measured and joining >= 0.5 * measured:
+                self.joins, self.join_count = bands, 0
+                self.join_kinds, self.join_current = kinds, current
+                self.join_note = "%s of %s lowercase letters join, touching without overlapping" % (
+                    _count(joining), _count(measured))
+                return bands
+            self.join_note = "no joins: the letters neither overlap nor touch"
             return None
         self.joins, self.join_count = bands, n
+        self.join_kinds, self.join_current = kinds, current
         self.join_note = "%s of %s letters join" % (_count(n), _count(letters))
         return bands
 
@@ -886,6 +979,23 @@ class KK2Window(object):
         else:
             text = self.join_note
         self.w.connectedValue.set(text)
+        # the checker's count on the Joins… button
+        button = getattr(self.w, "joinsButton", None)
+        if button is not None:
+            title = "Joins…"
+            if self.join_check is not None and self.join_check[0]["joins"]:
+                js = self.join_check[0]
+                # the basic a–z when the font has them (the count the eye knows)
+                joins, broken = (js["az_joins"], js["az_broken"]) if js["az_joins"] else (js["joins"], js["broken"])
+                title = ("%s joins break…" % _count(broken) if broken else "%s joins kept…" % _count(joins))
+            elif self.joins is None and self.w.connected.get() and self.snapshot is not None:
+                title = "No joins"
+            button.setTitle(title)
+            button.getNSButton().setToolTip_(
+                (text + "\n\n" if text else "") +
+                "A connected script's joins: where the strokes meet as drawn (broken, nearly touching, partly connected, "
+            "fragile and crossing joins), "
+                "what the preview does to them, and drawing advice for the kept sides, with proofs.")
 
     # ------------------------------------------------------ italic angle
     def _along_slant(self):
@@ -895,13 +1005,14 @@ class KK2Window(object):
         return bool(self.w.alongSlant.get())
 
     def _update_slant_label(self):
-        """The checkbox names the font's angle, and is off for an upright font."""
+        """The checkbox names the font's angle; it is disabled for an upright
+        font (and for an angle of 60° or more, which is an error in the font)."""
         box = getattr(self.w, "alongSlant", None) if self.w is not None else None
         if box is None:
             return
         snap = self.snapshot
         degrees = snap.slant_degrees if snap is not None else 0.0
-        if snap is not None and abs(degrees) >= ks.SLANT_MIN_DEGREES:
+        if snap is not None and ks.slant_measurable(degrees):
             box.setTitle("Along the %s° italic angle" % ("%g" % round(abs(degrees), 1)))
             box.enable(self.state not in ("applying",) and self._stepper is None)
         else:
@@ -916,8 +1027,13 @@ class KK2Window(object):
             return
         self._load_master(self.font)  # the engine's frame changes: read again
 
+    def joinModeChanged(self, sender):
+        self._save("joinMode", int(self.w.joinMode.get()))
+        self.connectedChanged(None)
+
     def connectedChanged(self, sender):
         self._save("connected", bool(self.w.connected.get()))
+        self._update_controls()
         self._update_join_label()
         if self.snapshot is None or self._reader is not None:
             return  # the end of reading prepares with the setting
@@ -980,6 +1096,18 @@ class KK2Window(object):
 
     def _context_ready(self, context):
         self.context = context
+        # a design whose glyphs touch by construction (underline, charted,
+        # guide lines): every touching side is kept, not only the letters'
+        self.join_decorated = False
+        if self.joins is not None:
+            try:
+                self.join_decorated = self.engine.join_decorated(context)
+            except Exception:
+                print(traceback.format_exc())
+            if self.join_decorated:
+                self.join_note = ("its glyphs touch by construction (a line, a grid or an effect through every "
+                                  "glyph): every side that touches is kept")
+                self._update_join_label()
         self._idle_progress()
         self._preview_pending = True
         self._start_preview()
@@ -1103,11 +1231,27 @@ class KK2Window(object):
         self._result_harness = self._job_harness if result is not None else None
         if old is not None and old is not result:
             self._retire(old)
+        self._check_joins()
         self._panes_due(right=True)
         self._update_labels()
         self._set_status(self._result_status())
         if self.harness_window is not None:
             self.harness_window.result_ready()
+        if self.joins_window is not None:
+            self.joins_window.result_ready()
+
+    def _check_joins(self):
+        """The join checker on the result shown: what it does to the
+        connected script's joins (milliseconds: the engine works in parallel)."""
+        self.join_check = None
+        if (self.result is None or self.context is None or self.joins is None
+                or not self.engine.features & kb.FEATURE_JOIN_CHECK):
+            return
+        try:
+            self.join_check = self.engine.join_check(self.context, self.result)
+        except Exception:
+            print(traceback.format_exc())
+            self.join_check = None
 
     def _result_status(self):
         res, snap = self.result, self.snapshot
@@ -1116,18 +1260,26 @@ class KK2Window(object):
         budget = self._result_key[KEY_BUDGET] if self._result_key else 0
         if st["dropped_by_budget"] and budget:
             dropped = " · %s dropped by the %s-pair budget" % (_count(st["dropped_by_budget"]), _count(budget))
+        # kept joins and the designer harness add entries after the budget
+        extra = res.entry_count - st["class_entries"] - st["exception_entries"]
+        more = ", %s for kept joins and the harness" % _count(extra) if extra > 0 else ""
         if self._result_kind == "whole":
             return ("Whole font (%s): %s glyphs kerned · %s pairs in scope · %s class pairs solved · %s entries "
-                    "(%s class pairs, %s exceptions)%s · %.1f s on %d threads"
+                    "(%s class pairs, %s exceptions%s)%s · %.1f s on %d threads"
                     % (snap.master_name, _count(st["kern_glyphs"]), _count(st["pairs_in_scope"]),
                        _count(st["class_pairs"]), _count(res.entry_count), _count(st["class_entries"]),
-                       _count(st["exception_entries"]), dropped, self._job_elapsed, st["threads"]))
+                       _count(st["exception_entries"]), more, dropped, self._job_elapsed, st["threads"]))
         prep = self.context.prep_ms if self.context is not None else 0.0
-        joined = " · connected script: %s" % self.join_note if self.joins is not None else ""
-        return ("%s · %s glyphs spaced, %s of the sample kerned · %s entries (%s class pairs, %s exceptions) · "
+        joined = ""
+        if self.joins is not None:
+            joined = " · connected script (%s): %s" % (JOIN_MODES[self._join_mode()].lower(), self.join_note)
+            if self.join_check is not None and self.join_check[0]["joins"]:
+                js = self.join_check[0]
+                joined += ", %s of %s joins kept" % (_count(js["kept"]), _count(js["joins"]))
+        return ("%s · %s glyphs spaced, %s of the sample kerned · %s entries (%s class pairs, %s exceptions%s) · "
                 "pass 1 %.0f ms · pass 2 %.0f ms · %d threads · Phase 1 took %.1f s%s"
                 % (snap.master_name, _count(len(snap.names)), _count(st["kern_glyphs"]), _count(res.entry_count),
-                   _count(st["class_entries"]), _count(st["exception_entries"]), st["pass1_ms"], st["pass2_ms"],
+                   _count(st["class_entries"]), _count(st["exception_entries"]), more, st["pass1_ms"], st["pass2_ms"],
                    st["threads"], prep / 1000.0, joined))
 
     def start_whole_font(self, apply_when_done=False):
@@ -1527,11 +1679,13 @@ class KK2Window(object):
         looseness = float(self.w.tightness.get()) + (self._fitted or 0.0)
         opts = self._glyph_opts()
         frozen = frozenset(i for i, o in enumerate(opts or ()) if o[0])
-        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key(), self.harness_style)
+        kept = self._kept_sides()
+        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key(), self.harness_style,
+               id(self.context) if kept else None)
         if self._harness_cache is not None and self._harness_cache[0] == key:
             return self._harness_cache[1]
         try:
-            plan = kh.Plan(snap, looseness, s, frozen=frozen, style=self.harness_style)
+            plan = kh.Plan(snap, looseness, s, frozen=frozen, style=self.harness_style, kept=kept)
         except Exception:
             print(traceback.format_exc())
             plan = None
@@ -1724,6 +1878,17 @@ class KK2Window(object):
         self.groups_window = kk2_groups_window.GroupsWindow(self)
         return self.groups_window
 
+    def openJoins(self, sender=None):
+        kj = kk2_joins_window
+        if self.joins_window is not None:
+            self.joins_window.front()
+            return self.joins_window
+        self.joins_window = kj.JoinsWindow(self, host=kj.RoboFontHost(lambda: self.font))
+        return self.joins_window
+
+    def joins_window_closed(self):
+        self.joins_window = None
+
     def openPairs(self, sender=None):
         if self.pairs_window is not None:
             self.pairs_window.w.getNSWindow().makeKeyAndOrderFront_(None)
@@ -1756,15 +1921,19 @@ class KK2Window(object):
     def groups_note(self):
         """A line for the groups window: the fitted Looseness, when there is one."""
         if self._fitted is not None:
-            return ("\nThe frozen glyphs are spaced at Looseness %+.2f of Kinetikern2's: new glyphs follow them "
-                    "(plus the main slider)." % self._fitted)
+            frozen = bool(self.groups is not None and self.groups.frozen_names())
+            what = ("the frozen glyphs and the kept joins" if frozen and self._keeps_joins() else
+                    "the kept joins" if self._keeps_joins() else "the frozen glyphs")
+            return ("\n%s %s spaced at Looseness %+.2f of Kinetikern2's: new glyphs follow them "
+                    "(plus the main slider)." % (what[0].upper() + what[1:], "is" if what == "the kept joins" else "are",
+                                                 self._fitted))
         return ""
 
     def windowClosed(self, sender):
-        for sub in (self.groups_window, self.pairs_window, self.harness_window):
+        for sub in (self.groups_window, self.pairs_window, self.harness_window, self.joins_window):
             if sub is not None:
                 sub.close()
-        self.groups_window = self.pairs_window = self.harness_window = None
+        self.groups_window = self.pairs_window = self.harness_window = self.joins_window = None
         self._stop_timer()
         if self._timer_target is not None:
             self._timer_target.kk2_callback = None

@@ -55,6 +55,14 @@ TABULAR_SUFFIXES = (".tf", ".tosf", ".tnum")
 # A master that leans this much or more (its italic angle) is measured along
 # its slant: below it, as upright (Spacing QA's rule for a measured slant).
 SLANT_MIN_DEGREES = 3.0
+# ...and less than this: a larger italic angle is an error in the font, not a
+# slant to measure along (Spacing QA's rule too)
+SLANT_MAX_DEGREES = 60.0
+
+
+def slant_measurable(degrees):
+    """An italic angle the glyphs are measured along: 3° to under 60°."""
+    return SLANT_MIN_DEGREES <= abs(degrees) < SLANT_MAX_DEGREES
 DEFAULT_FIGURES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
 
 # Unicode blocks of symbols that are spaced but never kerned (as tools/kk2_fonts.py)
@@ -69,7 +77,9 @@ TECHNICAL_BLOCKS = (
 # sidebearings (both sides ruled fixed): the letters of right-to-left and of
 # joining scripts (Arabic and Syriac letters connect, the headline of
 # Devanagari, Bengali and Gurmukhi runs through) and the box-drawing and
-# block-element characters. The optical model spaces separate shapes.
+# block-element characters. The optical model spaces separate shapes. Joining
+# scripts' glyphs are not kerned either (right-to-left glyphs never are in
+# left-to-right order; box drawing is a technical block).
 JOINING_SCRIPTS = frozenset(("Mong", "Phag", "Deva", "Beng", "Guru", "Sylo", "Tirh"))
 EDGE_TO_EDGE_BLOCKS = ((0x2500, 0x257F), (0x2580, 0x259F))
 
@@ -416,7 +426,11 @@ def read_glyph_info(glyph, layer, name=None, category=None, unicode=None, flags_
         code = kb.script_code(unicode_script(flags_codepoint))
     info.script = code
     info.rtl = script_iso(code) in kb.RTL_SCRIPTS or getattr(glyph, "direction", None) == GSRTL
-    info.kern = bool(spacing) and category not in UNKERNED_CATEGORIES and not technical(flags_codepoint)
+    # a joining script's glyphs (their headline or strokes run through the
+    # advance edges by design) keep their sidebearings and are not kerned:
+    # the model's clearance would push them apart
+    info.kern = (bool(spacing) and category not in UNKERNED_CATEGORIES and not technical(flags_codepoint)
+                 and script_iso(code) not in JOINING_SCRIPTS)
 
     info.left_group = _string(getattr(glyph, "leftKerningGroup", None))
     info.right_group = _string(getattr(glyph, "rightKerningGroup", None))
@@ -521,7 +535,7 @@ class Snapshot(object):
 
     def set_slant(self, on):
         """Measure along the italic angle (`on`) when the master leans by
-        SLANT_MIN_DEGREES or more. Kinetikern2's model is built on upright
+        SLANT_MIN_DEGREES or more (less than SLANT_MAX_DEGREES). Kinetikern2's model is built on upright
         letters: measured upright, an italic comes out too loose and uneven
         (on 171 Google Fonts italics, gaps 29.8 units per 1000 em from the
         designers' against 21.3 measured along the angle). Sidebearings and
@@ -529,7 +543,7 @@ class Snapshot(object):
         x-height, the sides are where the eye (and Glyphs' italic
         sidebearings) judge them. Set before the glyphs are read."""
         self.slant = self.slant_pivot = 0.0
-        if on and abs(self.italic_angle) >= SLANT_MIN_DEGREES:
+        if on and slant_measurable(self.italic_angle):
             self.slant = math.tan(math.radians(self.slant_degrees))
             self.slant_pivot = 0.5 * self.x_height
 
@@ -739,6 +753,8 @@ class SnapshotReader(object):
             flags |= kb.GLYPH_RIGHT_KEY
         if zone_reference(name, cp, snap.flags_codepoint(name), category):
             flags |= kb.GLYPH_ZONE
+        if cp is not None and 0x30 <= cp <= 0x39:
+            flags |= kb.GLYPH_FIGURE  # the decoration test reads the default figures
         path, sl, sr = info.path, 0.0, 0.0
         if snap.slant and not info.empty and path is not None:
             # the engine measures along the slant: what that adds to each side

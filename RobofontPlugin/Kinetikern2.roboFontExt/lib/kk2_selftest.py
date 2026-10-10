@@ -26,15 +26,28 @@ not a second one).
                      and check that the master's kerning and the spacing
                      glyphs' groups and sidebearings are exactly as before
     selfTestMaxStall longest tolerated main-thread stall in ms (default 500)
-    selfTestGroups   after the Revert: spacing groups — freeze the capitals, space
-                     the figures looser with half the kerning force, open the
+    selfTestConnected the connected-script stage (the font must be a connected
+                     script): Keep joins keeps every join (the join checker),
+                     kept sides and the font's kerning between two kept sides,
+                     a period's distance, Apply and then the font read back
+                     with every join between the sample's letters still
+                     touching (ink contact), Revert exact, Space joined letters
+                     counted, off again
+    selfTestGroups   spacing groups — freeze the capitals, space the figures
+                     looser with half the kerning force, By Category, open the
                      Spacing Groups and Pairs windows, run the whole font,
                      apply, check that the frozen glyphs, their groups and the
                      kerning between them did not change, measure the pairs,
                      revert and check that the font is as before
+    selfTestProfile  profile the main thread from Apply to the end of Revert
+                     (profile.txt next to the report)
 
-Then it saves window.png and selftest.json into selfTestOut, closes the window
-and the font without saving and, with selfTestQuit, quits the test instance.
+After the Revert the designer-harness stage runs whenever the engine has the
+harness (its window, the conventions, Apply and Revert); the connected-script
+and groups stages follow when asked for, in that order. Then it saves
+window.png (and the images of the stages that ran) and selftest.json into
+selfTestOut, closes the window and the font without saving and, with
+selfTestQuit, quits the test instance.
 
 All waiting is done by polling from timers; nothing blocks the main thread. A
 60 Hz heartbeat timer in the common run-loop modes measures the gaps between
@@ -204,8 +217,9 @@ def _labels(nswindow):
 
 def find_menu_item(title):
     """(menu, index, top-level menu title) of the item called title anywhere
-    in the main menu (RoboFont puts an extension's items under Extensions,
-    in a submenu of the extension's name)."""
+    in the main menu (RoboFont 4.4 puts this extension's item directly in
+    the Extensions menu; other versions may use a submenu, so submenus are
+    searched too)."""
     main = NSApp().mainMenu()
     for t in range(main.numberOfItems()):
         top = main.itemAtIndex_(t)
@@ -1226,13 +1240,16 @@ class SelfTest(object):
                   self.connected_on_ready, 180.0, "the preview with the joins")
 
     def connected_on_ready(self):
+        """Keep joins (the default): the preview keeps every join, the kept
+        sides keep the font's sidebearings and join pairs its kerning; a
+        period after a joining letter keeps its distance."""
         win = self.win
         snap = win.snapshot
         res = win.result
         per = 1000.0 / snap.upm
         n, joins = win.join_count, win.joins
         self.log("connected script on", joins=n, note=win.join_note, detect_ms=round(win.join_ms, 1),
-                 label=win.w.connectedValue.get())
+                 mode=win._join_mode(), button=win.w.joinsButton.getTitle())
         if not n or joins is None:
             self.error("connected script: no joins found (%s): a connected script is needed for this stage" % win.join_note)
             self.connected_off()
@@ -1243,27 +1260,61 @@ class SelfTest(object):
                   % (win.join_note, win.join_ms, len(joining_lower), len(lower)))
         sample = sorted(win._sample_indices())
         m = res.metrics
+        em = res.engine_metrics
 
         def kern(a, b):
             v = res.value(a, b)
             return 0.0 if v != v else float(v)
 
-        def gap(a, b):
-            return m[a].rsb + m[b].lsb + kern(a, b)
-        pairs = [(a, b) for a in sample for b in sample if joins[a][1] and joins[b][0] and m[a].valid and m[b].valid]
-        kerned = [(snap.names[a], snap.names[b], round(kern(a, b), 1)) for a, b in pairs if abs(kern(a, b)) >= 0.5]
-        overlap = [p for p in pairs if gap(*p) < 0]
-        self.log("join pairs", pairs=len(pairs), kerned=kerned[:10], overlapping=len(overlap),
-                 examples=[(snap.names[a], snap.names[b], round(gap(a, b) * per, 1)) for a, b in pairs[:12]])
-        if not pairs:
-            self.error("connected script: the sample text has no pair of joining letters")
+        if not win.engine.features & kb.FEATURE_JOIN_CHECK:
+            self.error("connected script: this engine build has no join checker (kk2_join_check)")
+        elif not win._keeps_joins():
+            self.error("connected script: Keep joins is not the mode in use (mode %r)" % win._join_mode())
         else:
-            self.note("connected script: %d join pairs in the sample, %d kerned (should be 0), %d overlapping as drawn"
-                      % (len(pairs), len(kerned), len(overlap)))
-            if kerned:
-                self.error("connected script: %d join pairs are kerned, e.g. %s" % (len(kerned), kerned[:5]))
-            if len(overlap) < 0.5 * len(pairs):
-                self.error("connected script: only %d of %d join pairs overlap" % (len(overlap), len(pairs)))
+            # 1. the checker on the preview: every join between letters holds
+            st, sides = win.join_check if win.join_check is not None else (None, [])
+            if st is None:
+                self.error("connected script: the preview has no join check")
+            else:
+                self.log("join check (Keep joins)", stats=st, sides=[(snap.names[g], side, k, round(d * per, 1)) for g, side, k, d in sides[:8]])
+                self.note("connected script (Keep joins): %d of %d joins between letters kept, %d broken, %d kept sides; the Looseness matched to them (%+.2f)"
+                          % (st["kept"], st["joins"], st["broken"], st["kept_sides"], win._fitted or 0.0))
+                if not st["joins"]:
+                    self.error("connected script: the checker found no joins between letters")
+                if st["broken"]:
+                    self.error("connected script: Keep joins breaks %d joins, e.g. %s"
+                               % (st["broken"], [(snap.names[g], side) for g, side, _k, _d in sides[:5]]))
+            # 2. kept sides keep the font's sidebearings (the engine's frame)
+            bits = win.engine.join_sides(win.context)
+            moved = []
+            for i in sample:
+                b = bits[i] if i < len(bits) else 0
+                spec = snap.specs[i]
+                if not em[i].valid:
+                    continue
+                if b & kb.JOINSIDE_LEFT_KEPT and abs(em[i].lsb - spec.cur_lsb) > 0.01:
+                    moved.append((snap.names[i], "left", round(em[i].lsb - spec.cur_lsb, 2)))
+                if b & kb.JOINSIDE_RIGHT_KEPT and abs(em[i].rsb - spec.cur_rsb) > 0.01:
+                    moved.append((snap.names[i], "right", round(em[i].rsb - spec.cur_rsb, 2)))
+            kept_sample = [i for i in sample if i < len(bits) and bits[i] & (kb.JOINSIDE_LEFT_KEPT | kb.JOINSIDE_RIGHT_KEPT)]
+            self.log("kept sides in the sample", glyphs=len(kept_sample), moved=moved[:10])
+            if moved:
+                self.error("connected script: %d kept sides moved, e.g. %s" % (len(moved), moved[:5]))
+            # 3. a pair of two kept sides keeps the font's kerning
+            table = win._kerning.table(snap.master_id)
+            pairs = [(a, b) for a in sample for b in sample
+                     if bits[a] & kb.JOINSIDE_RIGHT_KEPT and bits[b] & kb.JOINSIDE_LEFT_KEPT and m[a].valid and m[b].valid]
+            changed = []
+            for a, b in pairs:
+                want = win._kerning.value(table, snap.names[a], snap.names[b])
+                if abs(kern(a, b) - want) > 0.5:
+                    changed.append((snap.names[a], snap.names[b], round(kern(a, b), 1), round(want, 1)))
+            self.note("connected script: %d sample pairs of two kept sides, %d with other kerning than the font's (should be 0)"
+                      % (len(pairs), len(changed)))
+            if changed:
+                self.error("connected script: %d kept join pairs lost the font's kerning, e.g. %s" % (len(changed), changed[:5]))
+            if not pairs:
+                self.error("connected script: the sample text has no pair of kept joining sides")
         # a period after a joining letter keeps its distance from the exit
         # stroke: the white between the two inks at every height they share
         # (the engine's own ink profiles: a letter's bounding box can reach
@@ -1285,6 +1336,14 @@ class SelfTest(object):
                 if worst[1] < -1:
                     self.error("connected script: %s and a period overlap by %.0f units per 1000 em" % (worst[0], -worst[1]))
         self.capture_png("connected.png")
+        # the sample's letter pairs that join as drawn (ink contact), to check
+        # again on the font after Apply
+        kinds = win.join_kinds or ()
+        letters = [i for i in sample if i < len(kinds) and kinds[i] != kb.JOINKIND_OTHER]
+        self.joined_before = set()
+        if win.engine.features & kb.FEATURE_JOIN_CHECK and letters:
+            drawn = win.engine.join_pairs(win.context, [(a, b) for a in letters for b in letters])
+            self.joined_before = set((snap.names[d["left"]], snap.names[d["right"]]) for d in drawn if d["joins"])
         # Apply the preview with the joins, then Revert
         self.before = self.font_state(snap.names, snap.master_id)
         self.connected_written = []
@@ -1313,8 +1372,38 @@ class SelfTest(object):
             self.error("after the connected-script Apply %d glyphs differ from the preview, e.g. %s" % (len(bad), bad[:5]))
         else:
             self.note("connected script Apply: %d glyphs written as the preview showed them" % len(self.connected_written))
-        self.wait(lambda: self.window_state("after the connected Apply") == "ready", self.connected_revert, 120.0,
+        self.wait(lambda: self.window_state("after the connected Apply") == "ready", self.connected_reread, 120.0,
                   "the window after the connected-script Apply")
+
+    def connected_reread(self):
+        """Read the applied master again: its joins, by ink contact."""
+        win = self.win
+        old = win.result
+        self.call_window(CONNECTED, win.reloadOutlines, None)
+        self.wait(lambda: self._new_preview(old, "waiting for the preview of the applied font") and win.joins is not None,
+                  self.connected_reread_ready, 300.0, "the applied font read again")
+
+    def connected_reread_ready(self):
+        win = self.win
+        snap = win.snapshot
+        idx = snap.index
+        pairs = [(idx[a], idx[b]) for a, b in sorted(self.joined_before) if a in idx and b in idx]
+        if not win.engine.features & kb.FEATURE_JOIN_CHECK or not pairs:
+            self.note("connected script: no joins to check again after Apply")
+        else:
+            after = win.engine.join_pairs(win.context, pairs)
+            lost = [(snap.names[d["left"]], snap.names[d["right"]], round(d["gap"] * 1000.0 / snap.upm, 1))
+                    for d in after if not d["joins"]]
+            self.log("joins after Apply", checked=len(pairs), lost=lost[:10])
+            if lost:
+                self.error("connected script: after Apply %d of %d joins in the sample no longer touch, e.g. %s"
+                           % (len(lost), len(pairs), lost[:5]))
+            else:
+                self.note("connected script: after Apply all %d joins between the sample's letters still touch (ink contact, read back from the font)"
+                          % len(pairs))
+        self.wait(lambda: self.window_state("after reading the applied font") == "ready", self.connected_revert, 120.0,
+                  "the window after reading the applied font")
+
 
     def connected_revert(self):
         if not self.call_window(CONNECTED, self.win.revert_last_apply):
@@ -1337,7 +1426,35 @@ class SelfTest(object):
         else:
             self.note("connected script Revert: the font is as before")
         self.before = None
-        self.connected_off()
+        self.connected_space()
+
+    def connected_space(self):
+        """Space joined letters: the checker counts the joins it breaks."""
+        win = self.win
+        if not win.engine.features & kb.FEATURE_JOIN_CHECK:
+            self.connected_off()
+            return
+        old = win.result
+        win.w.joinMode.set(1)
+        self.call_window(CONNECTED, win.joinModeChanged, None)
+        self.wait(lambda: self._new_preview(old, "waiting for the Space joined letters preview"),
+                  self.connected_space_ready, 180.0, "the preview spacing the joined letters")
+
+    def connected_space_ready(self):
+        win = self.win
+        st = win.join_check[0] if win.join_check is not None else None
+        if st is None:
+            self.error("connected script: no join check for Space joined letters")
+        else:
+            self.log("join check (Space joined letters)", stats=st, button=win.w.joinsButton.getTitle())
+            self.note("connected script (Space joined letters): %d of %d joins kept, %d broken (reported, not an error)"
+                      % (st["kept"], st["joins"], st["broken"]))
+        old = win.result
+        win.w.joinMode.set(0)
+        self.call_window(CONNECTED, win.joinModeChanged, None)
+        self.wait(lambda: self._new_preview(old, "waiting for the Keep joins preview again"), self.connected_off,
+                  180.0, "the preview keeping joins again")
+
 
     def connected_off(self):
         win = self.win

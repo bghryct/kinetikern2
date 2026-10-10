@@ -2,8 +2,9 @@
 # Builds the Kinetikern2 extension for RoboFont: Kinetikern2.roboFontExt.
 #
 #   ./build.sh                  build the engine (universal: arm64 + x86_64) and the extension
-#   ./build.sh --native         the engine for this Mac's architecture only (quicker; RoboFont
-#                               4.4 is an Intel app and needs x86_64, newer ones run either)
+#   ./build.sh --native         the engine for this Mac's architecture only (quicker; on Apple
+#                               silicon arm64 only, which RoboFont 4.4, an Intel app under
+#                               Rosetta, cannot load: use the universal build for it)
 #   ./build.sh --no-engine      keep the engine library already in the extension
 #   ./build.sh --engine DIR     the engine's source (default: ../engine)
 #   ./build.sh --test           the headless tests first (python3 with fontParts, defcon, fontTools)
@@ -63,7 +64,7 @@ while [ $# -gt 0 ]; do
       VERIFY=1
       # an optional font path follows (anything not starting with "-")
       if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then FONT="$2"; shift; fi ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -166,7 +167,7 @@ fi
 if [ "$INSTALL" = 1 ]; then
   if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
     echo "$LINK exists and is not a link (an installed copy?); leaving it alone." >&2
-    echo "Remove it in RoboFont (Extensions ▸ Extension Manager) or move it to the Trash, then run --install again." >&2
+    echo "Remove it in RoboFont (RoboFont ▸ Preferences ▸ Extensions) or move it to the Trash, then run --install again." >&2
     exit 1
   fi
   mkdir -p "$PLUGINS"

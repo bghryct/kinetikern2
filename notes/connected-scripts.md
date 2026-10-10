@@ -1,5 +1,10 @@
 # Connected scripts: design notes
 
+**Superseded by `join-checker.md` (9 October 2026): Keep joins is the
+default of Connected script.** The join mode these notes describe (the
+bodies spaced, two joining sides not kerned) is now the *Space joined
+letters* option. They record the state of 8 October.
+
 Status (8 October 2026): the join mode is built in the engine, on by default
 in Spacing QA, and in the plugin as the **Connected script** setting (see
 "The rule, final" below). Measuring along the slant is built in Spacing QA

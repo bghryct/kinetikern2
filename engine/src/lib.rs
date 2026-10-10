@@ -43,6 +43,8 @@ mod engine;
 mod geometry;
 mod job;
 mod joins;
+mod checker;
+mod contact;
 mod measure;
 mod pass2;
 mod physics;
@@ -89,7 +91,9 @@ pub const RULE_FOLLOW_OPPOSITE: u32 = 3;
 
 /// One glyph. Flags: 1 fixed advance (tabular), 2 kern (takes part in
 /// kerning), 4 right-to-left, 8 key glyph of its left group, 16 key glyph of
-/// its right group. `script`: ISO 15924 as four ASCII bytes (0 = Common).
+/// its right group, 32 a base letter (its extents set its group's spacing
+/// zone), 64 one of the default figures 0–9 (the decoration test reads
+/// these). `script`: ISO 15924 as four ASCII bytes (0 = Common).
 /// Groups are caller ids (NONE = 0xFFFFFFFF); `base` is the glyph index of a
 /// composite's first component.
 #[repr(C)]
@@ -196,8 +200,10 @@ pub struct KK2Joins {
     pub right_y1: f64,
 }
 
-/// `kk2_detect_joins` kinds, one byte per glyph: only letters join, and the
-/// lowercase letters are the partners whose overlaps are counted.
+/// `kk2_detect_joins` kinds, one byte per glyph: for the detector only
+/// letters join, and the lowercase letters are the partners whose overlaps
+/// are counted (the join checker reads the same kinds; in a design whose
+/// glyphs touch by construction, any glyph joins).
 pub const JOINKIND_OTHER: u8 = 0;
 pub const JOINKIND_UPPER: u8 = 1;
 pub const JOINKIND_LOWER: u8 = 2;
@@ -209,6 +215,80 @@ pub const JOINRULE_BOTH: u32 = 0;
 pub const JOINRULE_OVERHANG: u32 = 1;
 /// … overlaps only.
 pub const JOINRULE_OVERLAPS: u32 = 2;
+
+/// `kk2_prepare_start3` flags: keep joins (else space joined letters).
+pub const PREPARE_KEEP_JOINS: u32 = 1;
+
+/// What a spacing does to a connected script's joins (`kk2_join_check`). Set
+/// `struct_size = sizeof(KK2JoinStats)`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2JoinStats {
+    pub struct_size: u32,
+    /// 1 when the context keeps joins.
+    pub keep: u32,
+    /// Glyphs measured (every glyph with an outline), and sides kept (Keep
+    /// joins).
+    pub letters: u32,
+    pub kept_sides: u32,
+    /// Pairs that join in the font (a letter, or in a decorated design any
+    /// glyph, and an a–z letter); of them, still joined, no longer touching,
+    /// and set at another offset.
+    pub joins: u64,
+    pub kept: u64,
+    pub broken: u64,
+    pub moved: u64,
+    /// The basic a–z: joins, joins broken, crossings in the font, crossings made.
+    pub az_joins: u32,
+    pub az_broken: u32,
+    pub az_crossings_drawn: u32,
+    pub az_crossings_made: u32,
+}
+
+/// A side whose joins a spacing breaks (`kk2_join_check`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2JoinSide {
+    pub glyph: u32,
+    /// 0 left side, 1 right side.
+    pub side: u32,
+    pub breaks: u32,
+    pub reserved: u32,
+    /// How far the spacing moved the side (font units, + away from the neighbour).
+    pub delta: f64,
+}
+
+/// `KK2JoinPair.flags`.
+pub const JOINPAIR_JOINS: u32 = 1;
+pub const JOINPAIR_JOINS_AFTER: u32 = 2;
+pub const JOINPAIR_CROSSING: u32 = 4;
+pub const JOINPAIR_CROSSING_AFTER: u32 = 8;
+pub const JOINPAIR_FRAGILE: u32 = 16;
+/// Not joined, and the kerning that would join it makes the strokes cross.
+pub const JOINPAIR_FIX_CROSSES: u32 = 32;
+
+/// One pair in detail (`kk2_join_pairs`), font units.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KK2JoinPair {
+    pub left: u32,
+    pub right: u32,
+    pub flags: u32,
+    pub reserved: u32,
+    /// Joined in the font: room to close and to open (else NaN).
+    pub close: f64,
+    pub open: f64,
+    /// Not joined in the font: how far apart, and the kerning change that
+    /// would join it (NaN if none does; `JOINPAIR_FIX_CROSSES` when the
+    /// kerning that joins it makes the strokes cross: a longer stroke or an
+    /// alternate is needed).
+    pub gap: f64,
+    pub fix: f64,
+    /// Mean height of the contact (NaN if none).
+    pub height: f64,
+    /// The spacing's change of the pair's offset.
+    pub delta: f64,
+}
 
 /// One measured pair (`kk2_measure`): the visible gap now and the model's,
 /// and their difference after removing the font's overall offset.
@@ -411,6 +491,9 @@ const _: () = {
     assert!(size_of::<KK2Joins>() == 32);
     assert!(size_of::<KK2PairOut>() == 24);
     assert!(size_of::<KK2MeasureStats>() == 40);
+    assert!(size_of::<KK2JoinStats>() == 64);
+    assert!(size_of::<KK2JoinSide>() == 24);
+    assert!(size_of::<KK2JoinPair>() == 64);
 };
 
 /// Owns a result's arrays; `c` points into them. `c` is the first field so
@@ -429,6 +512,8 @@ struct ResultBox {
     kern: Vec<u8>,
     lookup: Lookup,
     fitted: f64,
+    /// Pass 1's wanted (lsb, rsb) per glyph.
+    wanted: Vec<f64>,
 }
 
 // The raw pointers in `c` point into the box's own vectors, whose heap
@@ -715,6 +800,7 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         kern: out.kern.iter().map(|&k| k as u8).collect(),
         lookup,
         fitted: out.fitted,
+        wanted: p1.wanted_lsb.iter().zip(&p1.wanted_rsb).flat_map(|(&l, &r)| [l, r]).collect(),
     });
     let ptr = |v: &[u32]| if v.is_empty() { std::ptr::null() } else { v.as_ptr() };
     b.c.metrics = if b.metrics.is_empty() { std::ptr::null() } else { b.metrics.as_ptr() };
@@ -804,12 +890,51 @@ pub unsafe extern "C" fn kk2_prepare_start(
 }
 
 fn spawn_prepare(inputs: Vec<GlyphInput>, units_per_em: f64, threads: u32) -> *mut KK2Job {
+    spawn_prepare_with(inputs, units_per_em, threads, None)
+}
+
+fn spawn_prepare_with(
+    inputs: Vec<GlyphInput>,
+    units_per_em: f64,
+    threads: u32,
+    setup: Option<checker::JoinSetup>,
+) -> *mut KK2Job {
     let job = Job::spawn("kinetikern2-prepare", move |progress| {
-        Context::prepare(inputs, units_per_em, threads as usize, progress)
+        Context::prepare_with_joins(inputs, units_per_em, threads as usize, progress, setup.as_ref())
             .map(Arc::new)
             .map_err(JobError::from)
     });
     Box::into_raw(Box::new(KK2Job { kind: JobKind::Prepare(job), error: Mutex::new(CString::default()) }))
+}
+
+unsafe fn read_joins(inputs: &mut [GlyphInput], joins: *const KK2Joins, joins_size: u32) -> Result<(), String> {
+    if joins.is_null() {
+        return Ok(());
+    }
+    if (joins_size as usize) < size_of::<KK2Joins>() {
+        return Err(format!("joins_size {joins_size} < {}", size_of::<KK2Joins>()));
+    }
+    for (k, inp) in inputs.iter_mut().enumerate() {
+        let j = std::ptr::read_unaligned((joins as *const u8).add(k * joins_size as usize) as *const KK2Joins);
+        inp.join_left = join_band(j.left_y0, j.left_y1);
+        inp.join_right = join_band(j.right_y0, j.right_y1);
+    }
+    Ok(())
+}
+
+fn join_kind(k: u8) -> joins::JoinKind {
+    match k {
+        JOINKIND_UPPER => joins::JoinKind::Upper,
+        JOINKIND_LOWER => joins::JoinKind::Lower,
+        _ => joins::JoinKind::Other,
+    }
+}
+
+unsafe fn read_kerning(kerning: *const KK2KernIn, count: u32) -> Vec<measure::KernIn> {
+    slice(kerning, count)
+        .iter()
+        .map(|k| measure::KernIn { kind: k.kind as u8, left: k.left, right: k.right, value: k.value as f64 })
+        .collect()
 }
 
 fn join_band(y0: f64, y1: f64) -> Option<(f64, f64)> {
@@ -834,17 +959,44 @@ pub unsafe extern "C" fn kk2_prepare_start2(
 ) -> *mut KK2Job {
     guard(null_mut(), || {
         let mut inputs = read_inputs(glyphs, glyph_count)?;
-        if !joins.is_null() {
-            if (joins_size as usize) < size_of::<KK2Joins>() {
-                return Err(format!("joins_size {joins_size} < {}", size_of::<KK2Joins>()));
-            }
-            for (k, inp) in inputs.iter_mut().enumerate() {
-                let j = std::ptr::read_unaligned((joins as *const u8).add(k * joins_size as usize) as *const KK2Joins);
-                inp.join_left = join_band(j.left_y0, j.left_y1);
-                inp.join_right = join_band(j.right_y0, j.right_y1);
-            }
-        }
+        read_joins(&mut inputs, joins, joins_size)?;
         Ok(spawn_prepare(inputs, units_per_em, threads))
+    })
+}
+
+/// `kk2_prepare_start2` with the join checker: `kinds` (one `JOINKIND_*`
+/// byte per glyph) names the letters, `kerning` is the font's kerning now
+/// (as `kk2_measure` takes it). Every glyph with an outline is measured for
+/// `kk2_join_check` / `kk2_join_pairs`. With `PREPARE_KEEP_JOINS` in `flags`
+/// (Keep joins) every side with a join band or a join in the font keeps its
+/// sidebearing, and every pair of two such sides the font's kerning: the
+/// joins stay as drawn and the model spaces the rest. Without it the joined
+/// letters' bodies are spaced as `kk2_prepare_start2` does.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_prepare_start3(
+    glyphs: *const KK2Glyph,
+    glyph_count: u32,
+    units_per_em: f64,
+    threads: u32,
+    joins: *const KK2Joins,
+    joins_size: u32,
+    kinds: *const u8,
+    kerning: *const KK2KernIn,
+    kerning_count: u32,
+    flags: u32,
+) -> *mut KK2Job {
+    guard(null_mut(), || {
+        if glyph_count > 0 && kinds.is_null() {
+            return Err("kinds is NULL".into());
+        }
+        let mut inputs = read_inputs(glyphs, glyph_count)?;
+        read_joins(&mut inputs, joins, joins_size)?;
+        let setup = checker::JoinSetup {
+            kinds: slice(kinds, glyph_count).iter().map(|&k| join_kind(k)).collect(),
+            kerning: read_kerning(kerning, kerning_count),
+            keep: flags & PREPARE_KEEP_JOINS != 0,
+        };
+        Ok(spawn_prepare_with(inputs, units_per_em, threads, Some(setup)))
     })
 }
 
@@ -877,20 +1029,9 @@ pub unsafe extern "C" fn kk2_detect_joins(
         let jg: Vec<joins::JoinGlyph> = inputs
             .iter()
             .zip(kinds)
-            .map(|(g, &k)| joins::JoinGlyph {
-                contours: &g.contours,
-                advance: g.advance,
-                kind: match k {
-                    JOINKIND_UPPER => joins::JoinKind::Upper,
-                    JOINKIND_LOWER => joins::JoinKind::Lower,
-                    _ => joins::JoinKind::Other,
-                },
-            })
+            .map(|(g, &k)| joins::JoinGlyph { contours: &g.contours, advance: g.advance, kind: join_kind(k) })
             .collect();
-        let entries: Vec<measure::KernIn> = slice(kerning, kerning_count)
-            .iter()
-            .map(|k| measure::KernIn { kind: k.kind as u8, left: k.left, right: k.right, value: k.value as f64 })
-            .collect();
+        let entries = read_kerning(kerning, kerning_count);
         let cur = measure::CurrentKerning::new(&entries);
         let kern = |a: usize, b: usize| {
             let v = cur.value_in(a as u32, b as u32, inputs[a].right_group, inputs[b].left_group);
@@ -914,6 +1055,65 @@ pub unsafe extern "C" fn kk2_detect_joins(
             joined += (l.is_some() || r.is_some()) as u32;
         }
         Ok(joined)
+    })
+}
+
+/// The decoration test on the glyphs alone (`checker::decorated_design`):
+/// 1 when the glyphs touch by construction — a line, a grid, a background or
+/// an effect runs through every glyph, figures included — else 0; -1 on
+/// failure. For a font whose letters `kk2_detect_joins` finds unjoined
+/// because nothing overlaps (an underline drawn exactly from edge to edge):
+/// prepared with the join checker and Keep joins, it keeps every side that
+/// touches. `kinds`, `kerning`: as for `kk2_detect_joins`.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_detect_decorated(
+    glyphs: *const KK2Glyph,
+    glyph_count: u32,
+    units_per_em: f64,
+    kinds: *const u8,
+    kerning: *const KK2KernIn,
+    kerning_count: u32,
+) -> i32 {
+    guard(-1, || {
+        if glyph_count > 0 && kinds.is_null() {
+            return Err("kinds is NULL".into());
+        }
+        let inputs = read_inputs(glyphs, glyph_count)?;
+        let kinds: Vec<joins::JoinKind> = slice(kinds, glyph_count).iter().map(|&k| join_kind(k)).collect();
+        let entries = read_kerning(kerning, kerning_count);
+        Ok(checker::decorated_design(&inputs, units_per_em, &kinds, &entries) as i32)
+    })
+}
+
+/// Letters that join by touching, on the glyphs alone
+/// (`checker::letters_touching`): returns how many of the basic a–z have a
+/// right side that touches at least half the a–z as the font sets them, and
+/// writes how many were measured to `measured` (may be NULL); -1 on
+/// failure. When at least half do, the font is connected even where nothing
+/// overlaps (strokes that meet flush), which `kk2_detect_joins` does not
+/// find. `kinds`, `kerning`: as for `kk2_detect_joins`.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_detect_contact(
+    glyphs: *const KK2Glyph,
+    glyph_count: u32,
+    units_per_em: f64,
+    kinds: *const u8,
+    kerning: *const KK2KernIn,
+    kerning_count: u32,
+    measured: *mut u32,
+) -> i32 {
+    guard(-1, || {
+        if glyph_count > 0 && kinds.is_null() {
+            return Err("kinds is NULL".into());
+        }
+        let inputs = read_inputs(glyphs, glyph_count)?;
+        let kinds: Vec<joins::JoinKind> = slice(kinds, glyph_count).iter().map(|&k| join_kind(k)).collect();
+        let entries = read_kerning(kerning, kerning_count);
+        let (joining, of) = checker::letters_touching(&inputs, units_per_em, &kinds, &entries);
+        if !measured.is_null() {
+            *measured = of as u32;
+        }
+        Ok(joining as i32)
     })
 }
 
@@ -1156,10 +1356,251 @@ pub unsafe extern "C" fn kk2_measure(
 /// Looseness fit (`kk2_solve_start2`, `kk2_fit_looseness`), 2 `kk2_measure`,
 /// 4 the designer harness (`kk2_solve_start3`), 8 connected scripts
 /// (`kk2_prepare_start2`, `kk2_detect_joins`), 16 spacing zones from the base
-/// letters (`GLYPH_ZONE`).
+/// letters (`GLYPH_ZONE`), 32 the join checker and Keep joins
+/// (`kk2_prepare_start3`, `kk2_join_check`, `kk2_join_pairs`,
+/// `kk2_join_sides`, `kk2_result_wanted`), 64 the decoration test
+/// (`kk2_join_decorated`, `kk2_detect_decorated`; the join checker measures
+/// every glyph, and in a design whose glyphs touch by construction keeps
+/// every touching side; glyph flag 64 marks the default figures), 128 letters
+/// that join by touching (`kk2_detect_contact`).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    31
+    255
+}
+
+/// The scope a check of `res` uses: `scope` (NULL = the glyphs the solve kerned).
+unsafe fn check_scope(res: Option<&ResultBox>, scope: *const u8, scope_len: u32, n: usize) -> Option<Vec<bool>> {
+    if !scope.is_null() {
+        let m = slice(scope, scope_len);
+        return Some((0..n).map(|i| m.get(i).copied().unwrap_or(0) != 0).collect());
+    }
+    res.map(|r| r.kern.iter().map(|&k| k != 0).collect())
+}
+
+/// A result's sidebearings and kerning for the checker (kerning NaN outside
+/// the solve: the font's stays there).
+fn result_spacing(r: &ResultBox) -> (Vec<f64>, Vec<f64>) {
+    (r.metrics.iter().map(|m| m.lsb).collect(), r.metrics.iter().map(|m| m.rsb).collect())
+}
+
+/// What a solve does to a connected script's joins (`res`; NULL: the font as
+/// it is). `scope` (`scope_len` bytes, NULL = the glyphs the solve kerned):
+/// the glyphs that take the solve, the rest keeping their sides and kerning.
+/// Fills `stats` and up to `side_cap` sides with breaks (most first) and
+/// returns how many it wrote; 0xFFFFFFFF on failure. A context prepared
+/// without `kk2_prepare_start3` has no joins (stats.joins = 0).
+#[no_mangle]
+pub unsafe extern "C" fn kk2_join_check(
+    ctx: *const KK2Context,
+    res: *const KK2Result,
+    scope: *const u8,
+    scope_len: u32,
+    stats: *mut KK2JoinStats,
+    sides: *mut KK2JoinSide,
+    side_cap: u32,
+) -> u32 {
+    guard(u32::MAX, || {
+        if ctx.is_null() || stats.is_null() {
+            return Err("context or stats is NULL".into());
+        }
+        if ((*stats).struct_size as usize) < size_of::<KK2JoinStats>() {
+            return Err(format!("KK2JoinStats.struct_size {} < {}", (*stats).struct_size, size_of::<KK2JoinStats>()));
+        }
+        let c = &(*ctx).0;
+        let mut st = KK2JoinStats { struct_size: size_of::<KK2JoinStats>() as u32, ..KK2JoinStats::default() };
+        let Some(fj) = c.joins.as_ref() else {
+            *stats = st;
+            return Ok(0);
+        };
+        let n = c.glyphs.len();
+        let r = if res.is_null() { None } else { Some(&*(res as *const ResultBox)) };
+        let check = match r {
+            Some(r) => {
+                let (lsb, rsb) = result_spacing(r);
+                let sc = check_scope(Some(r), scope, scope_len, n);
+                let (look, km, rcs, lcs) = (&r.lookup, &r.kern[..], &r.glyph_right_class[..], &r.glyph_left_class[..]);
+                let kern = move |a: usize, b: usize| {
+                    let v = lookup_value(look, km, rcs, lcs, a as u32, b as u32);
+                    if v.is_finite() {
+                        v as f64
+                    } else {
+                        fj.font_kern(a, b)
+                    }
+                };
+                fj.check(&lsb, &rsb, &kern, sc.as_deref())
+            }
+            None => {
+                let kern = |a: usize, b: usize| fj.font_kern(a, b);
+                fj.check(&fj.cur_lsb, &fj.cur_rsb, &kern, None)
+            }
+        };
+        st.keep = fj.keep as u32;
+        st.letters = fj.ink.iter().filter(|i| i.is_some()).count() as u32;
+        st.kept_sides = c.glyphs.iter().map(|g| g.kept_left as u32 + g.kept_right as u32).sum();
+        st.joins = check.joins as u64;
+        st.kept = check.kept as u64;
+        st.broken = check.broken as u64;
+        st.moved = check.moved as u64;
+        st.az_joins = check.az_joins as u32;
+        st.az_broken = check.az_broken as u32;
+        st.az_crossings_drawn = check.az_crossings_drawn as u32;
+        st.az_crossings_made = check.az_crossings_made as u32;
+        *stats = st;
+        let mut written = 0u32;
+        if !sides.is_null() {
+            for (k, s) in check.sides.iter().take(side_cap as usize).enumerate() {
+                *sides.add(k) =
+                    KK2JoinSide { glyph: s.glyph, side: s.right as u32, breaks: s.breaks, reserved: 0, delta: s.delta };
+                written += 1;
+            }
+        }
+        Ok(written)
+    })
+}
+
+/// Pairs in detail (`pairs`: `count` (left, right) glyph index pairs): as
+/// the font sets them, and under `res` (NULL: as drawn; `scope` as in
+/// `kk2_join_check`). Fills `out` (`count` records) and returns `count`;
+/// 0xFFFFFFFF on failure, 0 without a join checker.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_join_pairs(
+    ctx: *const KK2Context,
+    res: *const KK2Result,
+    pairs: *const u32,
+    count: u32,
+    scope: *const u8,
+    scope_len: u32,
+    out: *mut KK2JoinPair,
+) -> u32 {
+    guard(u32::MAX, || {
+        if ctx.is_null() || (count > 0 && (pairs.is_null() || out.is_null())) {
+            return Err("context, pairs or out is NULL".into());
+        }
+        let c = &(*ctx).0;
+        let Some(fj) = c.joins.as_ref() else {
+            return Ok(0);
+        };
+        let n = c.glyphs.len();
+        let flat = slice(pairs, count * 2);
+        let list: Vec<(u32, u32)> = flat.chunks(2).map(|p| (p[0], p[1])).collect();
+        let r = if res.is_null() { None } else { Some(&*(res as *const ResultBox)) };
+        let detail = match r {
+            Some(r) => {
+                let (lsb, rsb) = result_spacing(r);
+                let sc = check_scope(Some(r), scope, scope_len, n);
+                let (look, km, rcs, lcs) = (&r.lookup, &r.kern[..], &r.glyph_right_class[..], &r.glyph_left_class[..]);
+                let kern = move |a: usize, b: usize| {
+                    let v = lookup_value(look, km, rcs, lcs, a as u32, b as u32);
+                    if v.is_finite() {
+                        v as f64
+                    } else {
+                        fj.font_kern(a, b)
+                    }
+                };
+                fj.pairs_in_detail(&list, &lsb, &rsb, &kern, sc.as_deref())
+            }
+            None => fj.pairs_in_detail(&list, &[], &[], &|_, _| 0.0, None),
+        };
+        for (k, d) in detail.iter().enumerate() {
+            let mut flags = 0;
+            if d.drawn.joins {
+                flags |= JOINPAIR_JOINS;
+                if d.drawn.open < fj.fragile {
+                    flags |= JOINPAIR_FRAGILE;
+                }
+            }
+            if d.joins_after {
+                flags |= JOINPAIR_JOINS_AFTER;
+            }
+            if d.crossing_drawn {
+                flags |= JOINPAIR_CROSSING;
+            }
+            if d.crossing_after {
+                flags |= JOINPAIR_CROSSING_AFTER;
+            }
+            if d.fix_crosses {
+                flags |= JOINPAIR_FIX_CROSSES;
+            }
+            *out.add(k) = KK2JoinPair {
+                left: d.left,
+                right: d.right,
+                flags,
+                reserved: 0,
+                close: d.drawn.close,
+                open: d.drawn.open,
+                gap: d.drawn.gap,
+                fix: d.drawn.fix,
+                height: d.height,
+                delta: d.delta,
+            };
+        }
+        Ok(detail.len() as u32)
+    })
+}
+
+/// `kk2_join_sides` bits per glyph.
+pub const JOINSIDE_LEFT_JOINS: u8 = 1;
+pub const JOINSIDE_RIGHT_JOINS: u8 = 2;
+pub const JOINSIDE_LEFT_KEPT: u8 = 4;
+pub const JOINSIDE_RIGHT_KEPT: u8 = 8;
+pub const JOINSIDE_LEFT_BAND: u8 = 16;
+pub const JOINSIDE_RIGHT_BAND: u8 = 32;
+
+/// Each glyph's sides for the joins (`out`: one byte per glyph of
+/// `JOINSIDE_*` bits): joins in the font, kept (Keep joins), with a join
+/// band. Returns the number of glyphs with any bit; 0xFFFFFFFF on failure.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_join_sides(ctx: *const KK2Context, out: *mut u8) -> u32 {
+    guard(u32::MAX, || {
+        if ctx.is_null() || out.is_null() {
+            return Err("context or out is NULL".into());
+        }
+        let c = &(*ctx).0;
+        let mut any = 0;
+        for (i, g) in c.glyphs.iter().enumerate() {
+            let (jl, jr) = c.joins.as_ref().map_or((false, false), |j| j.joined[i]);
+            let mut b = 0u8;
+            b |= if jl { JOINSIDE_LEFT_JOINS } else { 0 };
+            b |= if jr { JOINSIDE_RIGHT_JOINS } else { 0 };
+            b |= if g.kept_left { JOINSIDE_LEFT_KEPT } else { 0 };
+            b |= if g.kept_right { JOINSIDE_RIGHT_KEPT } else { 0 };
+            b |= if g.join_left.is_some() { JOINSIDE_LEFT_BAND } else { 0 };
+            b |= if g.join_right.is_some() { JOINSIDE_RIGHT_BAND } else { 0 };
+            *out.add(i) = b;
+            any += (b != 0) as u32;
+        }
+        Ok(any)
+    })
+}
+
+/// The glyphs touch by construction (`checker::DECORATED`: a line, a grid or
+/// a background runs through every glyph, figures included), so Keep joins
+/// keeps every side that touches the a–z, letter or not: 1, else 0 (also
+/// without the join checker); -1 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_join_decorated(ctx: *const KK2Context) -> i32 {
+    guard(-1, || {
+        if ctx.is_null() {
+            return Err("context is NULL".into());
+        }
+        let c = &(*ctx).0;
+        Ok(c.joins.as_ref().is_some_and(|j| j.decorated) as i32)
+    })
+}
+
+/// The sidebearings Pass 1 wanted before rules, frozen glyphs and kept joins
+/// (for a kept join: what the model would give the side; the drawing advice
+/// is this minus the side now). Writes (lsb, rsb) for up to `count` glyphs
+/// to `out` (2·count doubles) and returns how many glyphs it wrote.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_result_wanted(res: *const KK2Result, out: *mut f64, count: u32) -> u32 {
+    if res.is_null() || out.is_null() {
+        return 0;
+    }
+    let r = &*(res as *const ResultBox);
+    let k = (count as usize).min(r.wanted.len() / 2);
+    std::ptr::copy_nonoverlapping(r.wanted.as_ptr(), out, 2 * k);
+    k as u32
 }
 
 fn progress_of(job: &KK2Job) -> &job::Progress {

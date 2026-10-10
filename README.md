@@ -21,8 +21,7 @@ What is new is everything around the model:
   **Revert Last Apply**.
 * **Live preview:** the sample text stays live while all of this happens.
 
-[AUDIT.md](AUDIT.md) explains why: it measures where v1 spent its time and
-what each change bought.
+*Verification* below measures it against v1: output, speed and memory.
 
 **RoboFont:** [RobofontPlugin](RobofontPlugin/README.md) is a port to
 RoboFont 4 with the same engine, window and tools.
@@ -37,11 +36,17 @@ Kinetikern2/
 ├── engine/                           Rust crate (cdylib) → libkinetikern2.dylib
 │   └── src/
 │       ├── lib.rs                    C ABI: #[repr(C)] structs, kk2_* functions
+│       ├── api.rs                    Rust API for tools (Spacing QA, tests)
 │       ├── job.rs                    asynchronous jobs, progress atomics, cancel
 │       ├── engine.rs                 Phase 1: profiles, DMAT, per-side rules; Pass 1
 │       ├── run.rs                    a solve: pair scope, glyph pairs or classes, budget
 │       ├── classes.rs                side classes, member differences
 │       ├── pass2.rs                  the pair kernel and the window solver
+│       ├── measure.rs                the font's pairs against a solve (Pairs window)
+│       ├── joins.rs                  connected scripts: the detector, join bands
+│       ├── contact.rs                ink contact: touch sets, windows, crossings
+│       ├── checker.rs                the join checker, Keep joins, the decoration test
+│       ├── clock.rs                  timings (a stand-in on WebAssembly)
 │       └── geometry.rs, profile.rs,  v1's model (adaptive SDF profiles, DMAT,
 │           dmat.rs, physics.rs       Pass 1 / Pass 2 physics)
 ├── plugin/Kinetikern2.glyphsPlugin/Contents/Resources/
@@ -51,10 +56,19 @@ Kinetikern2/
 │   ├── kk2_proof.py                  the two TextKit proofing panes
 │   ├── kk2_apply.py                  plan, apply and revert, in slices
 │   ├── kk2_bridge.py                 ctypes mirror of the C ABI (no Glyphs imports)
+│   ├── kk2_groups.py,                spacing groups and their window
+│   │   kk2_groups_window.py
+│   ├── kk2_pairs_window.py           the Pairs window
+│   ├── kk2_harness.py,               the designer harness, its learned table
+│   │   kk2_harness.json,             and its window
+│   │   kk2_harness_window.py
+│   ├── kk2_joins_window.py           the Joins window (shared with RoboFont)
 │   ├── kk2_args.py                   launch arguments of unattended test runs
 │   ├── kk2_selftest.py               the in-Glyphs self-test (build.sh --verify)
 │   └── libkinetikern2.dylib          built by build.sh
-├── tools/                            equivalence gates, benchmark, timings, UI test
+├── notes/                            design notes and verification reports
+├── tools/                            equivalence gates, benchmark, timings, UI test,
+│                                     the harness's data and learner
 └── results/benchmark.json            the 73-font benchmark
 ```
 
@@ -123,7 +137,7 @@ other two.
 | **Master** | The master that is read, solved and written. |
 | **Size** | Point size of the proofs. |
 | **Threads** | *Auto* uses all cores but one (7 of 8 on an M1), or pick 1 to all. Takes effect from the next job. |
-| **Max pairs** | The budget of a whole-font run: at most this many kerning entries, and the least important are left out (see *Budget* below). Default 30,000; empty or 0 means no limit. The note beside it warns above 100,000 (large source files, slow exports). The sample-text preview has no budget. |
+| **Max pairs** | The budget of a whole-font run: at most this many kerning entries, plus the kept joins' and the designer harness's entries, which come on top of it; the least important are left out (see *Budget* below). Default 30,000; empty or 0 means no limit. The note beside it warns when there is no limit and above 100,000 (large source files, slow exports). The sample-text preview has no budget. |
 | **↻** | Reads the master again, after you edit outlines in Glyphs. |
 | **Apply to** | *Glyphs in sample text* applies the preview. *Whole font* runs every glyph with progress and Cancel, then applies. |
 | **Replace existing kerning** | On by default. Removes the master's existing entries between the glyphs and groups that get new kerning. Existing pairs across scripts, which the engine never evaluates, are kept. Off: existing glyph pairs stay and keep overriding new class pairs (the dialog counts them). |
@@ -131,15 +145,17 @@ other two.
 | **Revert Last Apply** | Puts the kerning, groups and sidebearings back as they were before the last Apply. |
 | **Spacing Groups…** | Opens the group picker (see *Spacing groups* below): freeze parts of the font, or space them with their own Looseness and kerning force. |
 | **Pairs…** | Opens the Pairs window (see *Pairs, loosest to tightest* below). |
+| **Joins…** | Opens the Joins window of a connected script (see *Connected scripts* below): joins broken, nearly touching, fragile or crossing as drawn, what the preview does to the joins, drawing advice for the kept sides, proofs in an Edit tab. Its title gives the checker's count: *650 joins kept…*, or *121 joins break…*. |
 | **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
 | **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
-| **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning, spaces the letter bodies without them and lets two joining letters overlap as drawn. The note beside it says how many letters join, or that none do. Off by default. |
-| **Along the italic angle** | On an italic master (italic angle 3° or more), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is off for an upright master. |
+| **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning. A font whose letters do not join is spaced as usual, so it is on by default. The menu beside it: **Keep joins** (default) keeps every joining side's sidebearing and the master's kerning between two joining sides, so every join stays as drawn and the rest of the font is spaced around the letters; **Space joined letters** spaces the letter bodies without their join strokes and lets two joining letters overlap with no kerning (joins can break; Joins… counts them). A design whose glyphs touch by construction (a line or a grid through every glyph) keeps every side that touches. |
+| **Along the italic angle** | On an italic master (italic angle 3° or more, under 60°), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is disabled for an upright master (and for an angle of 60° or more, an error in the font). |
 | **Progress bar, Cancel** | Shows the current step: *Reading outlines*, *Phase 1/3: Analyzing SDFs*, *Phase 2/3: Evaluating pairs* (with seconds elapsed in a whole-font run), *Phase 3/3: Grouping & pruning*, *Planning*, *Applying*, *Reverting*. Cancel stops reading, Phase 1, a preview, a whole-font run or the planning of an Apply. Once Apply or Revert has started writing, it runs to the end. |
 
 The status line under the panes reports the last result. For example:
 - glyphs spaced and kerned;
-- entries, split into class pairs and exceptions;
+- entries, split into class pairs and exceptions, and those that kept joins
+  and the designer harness add after the budget;
 - how many entries the budget dropped;
 - timings and the number of threads.
 
@@ -218,8 +234,9 @@ out first, so the list shows what departs from the font's *own* rhythm:
 - A preview draws the selected pair as it is and as Kinetikern2 would set it.
   Double-click a pair, or use **Open in Edit Tab**, to look at it in Glyphs.
 
-The engine measures all pairs of a whole font in a fraction of a second; a
-whole-font scope runs the whole-font job first if it has no result yet.
+The engine measures all pairs of a whole font in seconds, off the main
+thread (Arial's 2.3 million: about 20 s); a whole-font scope runs the
+whole-font job first if it has no result yet.
 
 ### Designer harness
 
@@ -270,8 +287,10 @@ How it is applied (`kk2_harness.py`):
   fitted them before the sides with 70 % agreement. A pair the sides move a
   lot then kept no correction when designers disagree on kerning it: a period
   before v or w, which the sides tighten, came out 20–27 units tight.)
-- Frozen glyphs keep their sidebearings, and two frozen glyphs their kerning.
-  Other scripts, figures and symbols are left as the model spaces them.
+- Frozen glyphs keep their sidebearings, and two frozen glyphs their kerning;
+  so do the sides and pairs that Keep joins keeps (*Connected scripts*).
+  Other scripts, figures and the symbols outside the GF Latin Kernel's 88
+  scored glyphs are left as the model spaces them.
 - The engine applies all of it after the budget (`run::Harness`,
   `kk2_solve_start3`), so the preview, the whole-font run, Apply and the
   Pairs window see the same thing.
@@ -281,13 +300,17 @@ openly than text faces. The Harness window's **Conventions** menu picks whose
 punctuation to follow: **Text faces** (the default), **Display** or
 **Handwriting**. The last two add, on top of the text faces' corrections, what
 the designers of that category do with punctuation alone: learned from the
-display and handwriting families rated 70 or more (220 and 133). Their
+display and handwriting families rated 70 or more (232 and 156). Their
 letters keep the text faces' corrections. After a period, for example,
 handwriting designers leave about 37 units more than text-face designers.
 
 Does it help? Each table was learned on half of the families and checked on
 the other half: the mean distance between Kinetikern2 and the designers, and
-the punctuation pairs whose median is still 10 units or more off.
+the punctuation pairs whose median is still 10 units or more off. The
+shipped table's figures are the ones above (24.9 → 20.3; 3,010 → 57). The
+table below is the second table's (`2026-10-08-2eccd0db`), learned and
+checked on Spacing QA's earlier 76-glyph core set, before the GF Latin
+Kernel; its Display and Handwriting rows are on 220 and 133 families:
 
 | Pairs | Without → with the harness | Closer |
 |---|---|---|
@@ -327,42 +350,114 @@ script.
 ### Connected scripts
 
 Kinetikern2 never lets two glyphs' ink overlap. Connected scripts are drawn
-to overlap where the letters join. **Connected script** spaces them as joined:
+to overlap where the letters join, and a join fixes where the next letter
+sits: the exit stroke of one letter has to meet the entry stroke of the
+next, within a window of a median 22 units per 1000 em on Google Fonts'
+scripts. A sidebearing serves every partner of its side, so a change to a
+joining side moves all its joins, and two moved sides add up on their pair:
+spacing the letters by their bodies broke a median 11 % of a script's joins,
+in whole rows and columns of the pair table (`notes/connected-scripts-deep-dive.md`).
+**Connected script** therefore keeps the joins by default.
 
 - **Is the font connected?** When at least half its lowercase a–z overlap at
   least half of their a–z partners at some height, as the master is spaced
-  and kerned. Text faces never are, nor are scripts and casual hands whose
-  strokes reach past the advance but stop short of the next letter (spacing
-  them as joined made them less even).
-- **Where are the joins?** For each letter side, the band of heights where it
-  overlaps most of its partners, or where its ink reaches past its advance
-  (before its origin on the left). Every letter is measured against the basic
-  a–z, so accented and alternate letters get their bands like their bases.
-- **What changes.** Each joining side's body — the side without its join
-  band — is spaced in Pass 1, so the join stroke overhangs like the hook of a
-  j. A pair whose facing sides both join gets no kerning and overlaps as
-  drawn. Every other pair keeps every rule: punctuation, figures, and a
-  letter beside one that does not join keep their clearance (a period after
-  an exit stroke stays clear of it).
+  and kerned. Failing that, when at least half the a–z touch at least half
+  of the a–z set after them: strokes that meet flush, without overlapping,
+  join too. Text faces never are, nor are scripts and casual hands whose
+  strokes reach past the advance but stop short of the next letter.
+- **Which sides join?** Every side with a join band (the heights where it
+  overlaps most of its a–z partners, or reaches past its advance), and every
+  side that touches an a–z letter in the master as spaced and kerned (the
+  join checker below): every letter is measured against the basic a–z, so
+  accented and alternate letters count like their bases.
+- **Keep joins** (the default). Every joining side keeps its sidebearing, and
+  every pair of two joining sides keeps the master's kerning, exactly (a
+  glyph–glyph exception where class kerning, the threshold or Max pairs would
+  give it another value, an exception of 0 included). A glyph whose advance
+  is fixed (tabular figures, a glyph with a width metrics key) keeps both
+  sides when either is kept. Every join stays as drawn. Kinetikern2 spaces
+  and kerns everything else — punctuation, figures, capitals that do not
+  join, a letter next to a period (it keeps clear of the exit stroke) — at
+  the tightness of the kept lowercase letters: the Looseness is fitted to
+  them (the label says *matched to the kept joins*) and the slider moves
+  from there. The designer harness leaves the kept sides and pairs alone,
+  and the sides of any glyph that keeps its advance.
+  The kept pairs' entries come on top of Max pairs, as the harness's do; the
+  status line counts them apart.
+- **Space joined letters.** Each joining side's body — the side without its
+  join band — is spaced in Pass 1, so the join stroke overhangs like the hook
+  of a j, and a pair whose facing sides both join gets no kerning. Joins whose
+  strokes stop meeting break; the Joins… button counts them.
+- **Designs whose glyphs touch by construction.** A line, a grid, a
+  background or an effect through every glyph (underline, charted and
+  guide-line fonts) makes every glyph touch its neighbours, figures
+  included, while a script's figures stand apart from its letters. When at
+  least 60 % of the sides of the default figures 0–9 touch at least half the
+  a–z as the master sets them (with at least 5 of the figures and 13 of the
+  a–z present), every side that touches an a–z letter is kept, letter or
+  not, so the line stays whole. The test also runs when the overlap rule
+  finds no joins (an underline drawn exactly from edge to edge). The note
+  beside the setting then says *its glyphs touch by construction (a line, a
+  grid or an effect through every glyph): every side that touches is kept*,
+  and the Joins window says *the line does not meet* where it breaks.
 
-The joins are found on the main thread when the setting is turned on or the
-master is read (milliseconds: 69 ms for Great Vibes' 1,630 letters on a busy
-machine), then Phase 1 runs again with them. The same detector decides joins
-in Spacing QA, which spaces every connected family this way. The design and
-its evaluation on 365 families are in `notes/connected-scripts.md`.
+**The join checker** finds joins by ink contact, not boxes: each glyph's ink
+on scanlines one unit per 1000 em apart, so the offsets at which two glyphs
+touch, and the room a join has to close and to open, are read off in one
+pass (`engine/src/contact.rs`; against exact outline geometry on 118 Google
+Fonts scripts it agrees on 99.8 % of joins). It measures the ink of every
+glyph with an outline and finds the pairs of a letter and a basic a–z
+letter, either way round, that touch as the master sets them (in a design
+whose glyphs touch by construction, of any glyph and an a–z letter).
+**Joins…** lists:
+
+- *Findings*: the basic a–z pairs as the master sets them (as drawn, without
+  features), judged as Spacing QA judges them. A side joins when it joins at
+  least half its a–z partners, and two joining sides that do not meet make a
+  broken join, 3 units per 1000 em apart or more; closer, they *nearly
+  touch: a hairline gap*. That holds in a script where fewer than 1 in 20
+  such pairs fail to meet. In a partly connected hand (1 in 20 or more) only
+  a pair whose sides both join at least 75 % of their partners is broken; its
+  other non-joins are listed as *not joined: partly connected* (style, not
+  flagged). A broken join shows the kerning that would join it, or why
+  kerning does not: *the kern that joins it makes the strokes cross*, *too
+  far for kerning* (more than 100 units per 1000 em; a longer stroke or an
+  alternate joins it), or *no small kern joins it*. Then fragile joins (less
+  than 5 units per 1000 em of room to open) and crossing strokes (white that
+  neither letter has alone, or a counter changed by more than 1 %);
+- *Under the preview*: what the result shown does to every join between a
+  letter and an a–z letter — Keep joins breaks none — and, with Space joined
+  letters, the sides that break the most and the a–z pairs that break;
+- *Drawing advice* (Keep joins): for each kept side, the sidebearing
+  Kinetikern2 would give its body, relative to the font's own body rhythm
+  (the median kept a–z side); sides within 5 units of it are not listed.
+  Negative: the body sits further from its neighbour than the other letters'
+  do (shorten the stroke that reaches out and the advance follows). Advice,
+  not edits.
+
+Select rows and **Open Proof** for an Edit tab of the pairs in context
+(n + pair + n). The joins are found on the main thread when the setting is
+turned on or the master is read (milliseconds: 59 ms for Great Vibes' 1,630
+letters); every glyph with an outline is measured for the checker in Phase 1.
+Spacing QA uses the same detector, checker and decoration test, with two
+differences. It sets every a–z pair inside a word (n + pair + n, the default
+features), so it also sees joins made by contextual alternates and connector
+glyphs (TypeTogether's Playwrite), which the plugins cannot, and it applies
+the touching rule to those shaped pairs. And it skips a design whose glyphs
+touch by construction (`spacing/decorated`). It keeps the joins the same way.
 
 ### Italics
 
 Kinetikern2's model is built on upright letters: it measures the white
 between letters with disks and a distance field, which a slanted design
 fools, so that it looks crammed. Measured upright, an italic comes out too
-loose and uneven. On a master that leans by its italic angle (3° or more),
-**Along the italic angle** (on by default) gives the engine the outlines
-sheared upright about half the x-height, where the eye judges a leaning
-letter's sides and Glyphs measures italic sidebearings. Sidebearings and
-kerning are horizontal offsets, which a shear keeps, so the results apply to
-the slanted outlines as they are; Apply, Revert and the proofs work on the
-outlines as drawn.
+loose and uneven. On a master that leans by its italic angle (3° or more,
+under 60°: a larger angle is an error in the font), **Along the italic
+angle** (on by default) gives the engine the outlines sheared upright about
+half the x-height, where the eye judges a leaning letter's sides and Glyphs
+measures italic sidebearings. Sidebearings and kerning are horizontal
+offsets, which a shear keeps, so the results apply to the slanted outlines
+as they are; Apply, Revert and the proofs work on the outlines as drawn.
 
 What it does, on the 171 italics of the Google Fonts library (Spacing QA,
 the declared italic angle, each italic against its designer's spacing, units
@@ -398,10 +493,11 @@ gave −6.00 (the limit) measured upright and −0.06 along the angle.
     `alignComponents`). The engine solved with those same rules, so the
     kerning fits the spacing the font really gets.
   * **Keeping their advance:** tabular figures, glyphs with a width metrics
-    key, and the glyphs those keys follow.
+    key, and the glyphs those keys follow. The designer harness leaves their
+    sides alone too.
   * **Untouched:** right-to-left glyphs, glyphs of joining scripts (Mongolian,
     Devanagari, Bengali, Gurmukhi and a few others) and box-drawing
-    characters keep their sidebearings.
+    characters keep their sidebearings, and none of them is kerned.
 * **Composites stay rigid:** when a base glyph's outline moves, the components
   that draw it move back by the same amount, so an accent never slides off its
   letter.
@@ -574,6 +670,9 @@ engine never goes below v1's 0.5-unit rounding.
 * **Weighting:** class pairs are weighted by √(member pairs covered), and
   compressed exceptions by √(pairs covered).
 * **Dropping:** an exception whose class pair is dropped goes with it.
+* **After the budget:** Keep joins sets the pairs of two kept sides to the
+  font's kerning, and the designer harness adds its corrections, after the
+  budget (`run.rs`), so neither is ever dropped.
 
 On whole Arial the budget of 30,000 keeps 29,991 of 298,918 entries: 4,825
 class pairs and 25,166 exceptions.
@@ -594,6 +693,7 @@ class pairs and 25,166 exceptions.
 | `kk2_pairs_window.py` | The Pairs window: measurement through the engine, the list and the pair preview. |
 | `kk2_harness.py` | The designer harness: the learned table (`kk2_harness.json`), the glyphs it applies to, the stem, and each glyph side's shift and the pair corrections for a master, Looseness and strength (`Plan`). |
 | `kk2_harness_window.py` | The Designer Harness window: the pairs it changes most, drawn as in the font, as Kinetikern2 sets them, and with the harness. |
+| `kk2_joins_window.py` | The Joins window: the join checker's findings as drawn (Spacing QA's rule), what the result shown does to the joins, drawing advice for the kept sides, proofs. The RoboFont extension has the same file; a host object opens the proofs (an Edit tab here, the Space Center there). |
 | `kk2_selftest.py` | The unattended in-Glyphs test behind `build.sh --verify`. |
 
 ## Verification
@@ -606,16 +706,31 @@ GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/
 ```
 
 The figures below were measured on an Apple M1 (4 performance and 4
-efficiency cores, 16 GB, macOS 14) on 6 October 2026. Gates and timings
-marked *final build* were run on the installed library after the last
-change. The load average was 2–6 while they ran, and a run's own threads
-count towards it.
+efficiency cores, 16 GB, macOS 14) on 6 October 2026, unless a later date
+is given. Gates and timings marked *final build* were run on the installed
+library after the last change of that day. The load average was 2–6 while
+they ran, and a run's own threads count towards it.
 
 ### Engine unit tests
 
-`./build.sh --test` (or `cargo test --release` in `engine/`): **28 passed**
-(final build). Two of them cover the designer harness: the exact side shifts
-and pair corrections in pair and class mode, and frozen glyphs left alone.
+`./build.sh --test` (or `cargo test --release` in `engine/`): **44 passed**
+(9 October). They cover:
+- v1's model (22): outline geometry, DMAT disk packing, the adaptive SDF
+  profiles, the Pass 1 and Pass 2 physics;
+- the window solver's bounds (4) and the spacing zones from the base
+  letters (1);
+- the designer harness (2: the exact side shifts and pair corrections in
+  pair and class mode, frozen glyphs left alone) and the bare model beside
+  it (1);
+- connected scripts (14): the detector and the 8 October join mode; the
+  contact geometry (touch sets and windows against brute force on boxes and
+  a diagonal entry, strokes that meet flush, crossings, a changed counter,
+  unions); Keep joins (every join and the font's kerning kept through a
+  10-unit threshold in pair and class mode, a period clear of the exit
+  stroke, the Looseness fitted to the kept sides); Space joined letters'
+  break counts; letters that join by touching; the decoration test, and
+  tabular figures keeping their sides in a decorated design; a kerning fix
+  flagged when it would make the strokes cross.
 
 ### Equivalence gates: `tools/kk2_equivalence.py`
 
@@ -752,14 +867,33 @@ in Glyphs' import):
 
 `./build.sh --verify FONT --connected` adds a connected-script stage after
 the harness (FONT must be a connected script; an OFL script from Google
-Fonts such as Great Vibes): it turns **Connected script** on as a user does,
-waits for Phase 1 and the preview, and checks that joins were found, that
-the join pairs of the sample text are not kerned and that most overlap, and
-that a period after a joining letter keeps its distance (the narrowest white
-between the inks, from the engine's own profiles). It applies the preview
-and checks the font against it, reverts, and turns the setting off: every
-glyph must be back to the spacing without joins. It saves `connected.png`.
-On Great Vibes: 1,615 of 1,630 letters join; 1,368 join pairs, none kerned.
+Fonts such as Great Vibes): with **Connected script** off, then on as a user
+turns it on, it waits for Phase 1 and the preview and checks, with Keep
+joins, that the join checker finds no join broken, that the kept sides keep
+the master's sidebearings and the sample's pairs of two kept sides the
+master's kerning, and that a period after a joining letter keeps its
+distance (the narrowest white between the inks, from the engine's own
+profiles). It applies the preview, checks the font against it, reads the
+master again and checks by ink contact that every join between the sample's
+letters still touches, reverts (exactly), counts what Space joined letters
+breaks, and turns the setting off: every glyph must be back to the spacing
+without joins. It saves `connected.png`.
+
+Results (Glyphs 3.5.1, M1, 9 October 2026):
+
+- **Great Vibes** (the 15:41 build): **PASSED**. 56,355 of 56,355 joins
+  kept, 3,147 kept sides, the Looseness matched to them −0.54; the 1,444
+  sample pairs of two kept sides kept the master's kerning; a period after a
+  joining letter keeps its distance (closest: A, +12 units per 1000 em
+  between the inks); all 999 joins between the sample's letters still touch
+  after Apply; Revert exact; Space joined letters breaks 26,531.
+- **Pacifico** (the 16:25 build): **PASSED**. 44,642 of 44,642 joins kept,
+  2,199 kept sides, the Looseness matched +0.21; the 1,406 sample pairs of
+  two kept sides kept the master's kerning; all 1,170 joins still touch
+  after Apply; Revert exact; Space joined letters breaks 5,436.
+- The re-runs on the evening build are pending. Its Pacifico run found the
+  same joins and failed only on one 740 ms main-thread pause during the
+  whole-font run, under heavy machine load.
 
 `./build.sh --verify [font] --groups` adds a spacing-groups stage after
 those:
@@ -769,9 +903,11 @@ those:
    dragged rectangle), All / None / Invert and the name filter. It picks the
    "Latin · Uppercase" section from the list, then uses New Group, the name
    field and Freeze. Next it picks "Figures" and sets Looseness +0.4 and 50 %
-   force with the sliders. Finally it checks "Glyphs in no group", takes a
+   force with the sliders. Then it checks "Glyphs in no group", takes a
    glyph out of its group and puts it back. Each step is checked, and so is
-   what the engine receives.
+   what the engine receives. Finally it presses **By Category** (the glyphs
+   in no group go into groups of their kind at the main settings, the
+   painted groups kept) and deletes those groups again: 21 steps in all.
 2. Opens the Spacing Groups and Pairs windows and runs the whole font.
 3. Checks the result: the Looseness fitted to the capitals, frozen glyphs at
    their own sidebearings, and no entries between frozen glyphs.
@@ -782,17 +918,19 @@ those:
    model on average. Saves `groups.png`.
 6. Reverts, and checks that the font is as before.
 
-Results (Glyphs 3.5.1, M1, 8 October 2026): **PASSED** on Lato and on Arial.
-Lato was run last, on the final plugin (one label of the harness window was
-reworded after it).
-The reports are in `notes/verification-2026-10-08/`: Lato with its window,
-groups and pairs images, and Arial as text, so its outlines are not
-published.
+Results (Glyphs 3.5.1, M1): **PASSED** on Lato and on Arial on 8 October
+2026, before By Category (19 steps), and on Arial again on 9 October
+(15:45) with it (21 steps). On 8 October Lato was run last, on the final
+plugin of that day (one label of the harness window was reworded after it).
+The 8 October reports are in `notes/verification-2026-10-08/`: Lato with
+its window, groups and pairs images, and Arial as text, so its outlines are
+not published.
 
 | Font | Groups window, driven like a user | Frozen / spaced | Whole-font run | Frozen glyphs and kerning between them after Apply | Pairs measured | Longest main-thread stall |
 |---|---|---|---|---|---|---|
-| Lato (245 glyphs) | 19 of 19 steps | 68 capitals / 10 figures | 0.4 s, Looseness fitted −0.00 | unchanged | 52,789 pairs in 0.9 s; after Apply, mean difference 1.0 | 120 ms (the harness stage) |
-| Arial (2,674 glyphs) | 19 of 19 steps | 354 capitals / 26 figures | 14.0 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.8 s, off the main thread; after Apply, mean difference 0.1 | 228 ms |
+| Lato (245 glyphs), 8 October | 19 of 19 steps | 68 capitals / 10 figures | 0.4 s, Looseness fitted −0.00 | unchanged | 52,789 pairs in 0.9 s; after Apply, mean difference 1.0 | 120 ms (the harness stage) |
+| Arial (2,674 glyphs), 8 October | 19 of 19 steps | 354 capitals / 26 figures | 14.0 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.8 s, off the main thread; after Apply, mean difference 0.1 | 228 ms |
+| Arial, 9 October | 21 of 21 steps (By Category included) | 354 capitals / 26 figures | 15.1 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.3 s, off the main thread; after Apply, mean difference 0.1 | 291 ms (the spacing-groups stage) |
 
 The designer harness stage. Lato ran last, with the second table (416 pairs,
 the Display and Handwriting conventions); Arial ran with the first (294
@@ -816,10 +954,13 @@ the Display conventions 2,506 pairs; Apply wrote the 48 shifted glyphs as
 previewed and Revert put the font back; the spacing-groups stage passed all
 19 steps; the longest main-thread stall was 124 ms (`lato-summary-kernel.txt`,
 `lato-selftest-kernel.json`, `lato-kernel-harness.png`). Great Vibes (OFL,
-1,839 spacing glyphs) with `--connected`: **PASSED**. The connected-script
-stage: 1,615 of 1,630 letters join, found in 63 ms; 1,368 join pairs in the
-sample, none kerned, 761 overlapping as drawn; a period after a joining
-letter keeps at least 20 units per 1000 em of white between the inks (Y);
+1,839 spacing glyphs) with `--connected`: **PASSED**. Its connected-script
+stage tested the 8 October join mode (the body spacing that is now *Space
+joined letters*) and judged overlaps by boxes, not ink; the Keep joins
+stage above supersedes it. 1,615 of 1,630 letters joined, found in 63 ms;
+1,368 join pairs in the sample, none kerned, 761 overlapping as drawn; a
+period after a joining letter kept at least 20 units per 1000 em of white
+between the inks (Y);
 Apply as previewed, Revert exact, off restores the spacing without joins
 exactly. The harness stage corrected 607 sides and 2,005 pairs exactly as
 planned. The whole-font Apply read back 0 mismatches and Revert put all
@@ -846,19 +987,28 @@ Result on the final build: **PASSED** in 33.2 s.
 
 * **Right-to-left scripts are not kerned yet.** Hebrew, Arabic and other
   right-to-left glyphs are left out of kerning, and their sidebearings are
-  kept. The same goes for joining scripts and box drawing. v1 kerned
-  right-to-left glyphs in left-to-right order, which is wrong for them;
-  leaving them alone is the safe choice until there is a right-to-left pair
-  order. The proofs do set right-to-left text right to left.
+  kept. v1 kerned right-to-left glyphs in left-to-right order, which is
+  wrong for them; leaving them alone is the safe choice until there is a
+  right-to-left pair order. The proofs do set right-to-left text right to
+  left. Joining scripts (Devanagari, Bengali, Gurmukhi, Mongolian and a few
+  others) keep their sidebearings too and are not kerned (their headlines and
+  strokes run through the advance edges, which the model's clearance would
+  open); box-drawing and block characters keep theirs and are not kerned.
 * **Connected scripts need some spacing first.** The joins are learned from
   the master's own spacing and kerning: a script whose letters do not yet
-  overlap where they join (a font just drawn, all sidebearings at their
-  defaults) has none to find, and is spaced as usual. Space a few letters so
-  that they join, then turn **Connected script** on. A script that declares
-  an italic angle is measured along it (*Italics*); one that declares none is
-  measured as drawn (measuring along a slant measured from the stems, an
-  experiment in Spacing QA, `spacingqa check --slant`, gave mixed results on
-  joined scripts).
+  meet where they join (a font just drawn, all sidebearings at their
+  defaults) has none to find, and is spaced as usual. Space at least half
+  the lowercase a–z so that each joins most of its partners, then read the
+  master again (↻). A script that declares an italic angle is measured
+  along it (*Italics*); one that declares none is measured as drawn.
+* **Scripts that join through contextual alternates.** The plugin finds joins
+  between the glyphs as drawn, without features: a script whose letters join
+  only through calt alternates and connector glyphs (TypeTogether's
+  Playwrite) is not seen as connected here. Spacing QA, which sets the pairs
+  inside words with their features, sees and keeps those joins.
+* **Joins stay manual.** Keep joins keeps the joins as drawn and says where
+  the bodies sit (drawing advice); redrawing a join stroke, choosing
+  alternates and writing the calt that picks them stay with the designer.
 * **Multiple equilibria.** Some pairs have more than one equilibrium gap. The
   window solver picks its root by force signs; v1 searched from the Pass 1
   gap. Most of the time they agree, but on 0.004–0.031 % of pairs the values

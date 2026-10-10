@@ -21,7 +21,8 @@ as the data say (strength 100 %) or less:
 
 The corrections are learned by tools/kk2_harness_learn.py from Spacing QA's
 reports and live in kk2_harness.json next to this file. Glyphs outside the
-core set (other scripts, symbols, figures) are left as the model spaces them.
+core set (other scripts, figures, and the symbols outside the kernel's scored
+set: $ ¢ £ ¥ € + − × ÷ = < > # ^ ~ _) are left as the model spaces them.
 
 Display and handwriting faces space their punctuation more openly than text
 faces. With their conventions (`style`), the punctuation also gets what the
@@ -143,9 +144,11 @@ class Plan(object):
     """The harness for one snapshot at one Looseness and strength: the shift
     of every glyph side and the pair corrections, in font units. `frozen`:
     glyph indices the solve keeps as they are (the engine does not touch
-    them, and neither does the plan)."""
+    them, and neither does the plan). `kept`: (left sides, right sides), the
+    glyph indices whose side a connected script keeps as drawn (Keep joins):
+    those sides do not move, and a pair of two kept sides keeps its kerning."""
 
-    def __init__(self, snap, looseness, strength, frozen=None, style="text"):
+    def __init__(self, snap, looseness, strength, frozen=None, style="text", kept=None):
         t = table()
         extra = _style_table(style)
         self.style = style if extra is not None else "text"
@@ -227,7 +230,10 @@ class Plan(object):
             return v
 
         frozen = frozenset(frozen or ())
-        self.sides = [[0.0, 0.0] if i in frozen else [side(i, True), side(i, False)] for i in range(n)]
+        kept_l, kept_r = (frozenset(kept[0]), frozenset(kept[1])) if kept else (frozenset(), frozenset())
+        self.sides = [[0.0, 0.0] if i in frozen else
+                      [0.0 if i in kept_l else side(i, True), 0.0 if i in kept_r else side(i, False)]
+                      for i in range(n)]
         # pair corrections: glyphs that are their core glyph (not accented
         # variants), both kerned
         pairs_t = dict(t["pairs"])
@@ -248,7 +254,7 @@ class Plan(object):
             value = unit * v
             for i in by_key[a]:
                 for j in by_key[b]:
-                    if i in frozen and j in frozen:
+                    if (i in frozen and j in frozen) or (i in kept_r and j in kept_l):
                         continue
                     self.pairs.append((i, j, value))
                     self.pair_value[(i, j)] = value

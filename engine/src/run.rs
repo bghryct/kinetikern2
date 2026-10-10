@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 use crate::classes::{Classes, PART_FROZEN};
-use crate::engine::{Context, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, NONE};
+use crate::engine::{Context, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, GLYPH_ZONE, NONE};
 use crate::job::{pool, Cancelled, JobError, Progress};
 use crate::pass2::{
     Fields, Kernel, Knobs, PairOut, Probes, Scratch, Solver, Verify, Windows, PAIR_BOUNDED, PAIR_CLEARANCE, PAIR_CREVICE,
@@ -207,11 +207,27 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     let opts: Option<&[GlyphOpt]> = p.glyph_opts.as_deref().map(|v| v.as_slice());
     let frozen: Vec<bool> = (0..n).map(|i| opts.and_then(|o| o.get(i)).is_some_and(|x| x.frozen)).collect();
     let any_frozen = frozen.iter().any(|&f| f);
-    // the frozen glyphs' own tightness, then the solve at it
+    // sides that keep their sidebearings: frozen glyphs and kept joins
+    let fixed_l: Vec<bool> = (0..n).map(|i| frozen[i] || ctx.glyphs[i].kept_left).collect();
+    let fixed_r: Vec<bool> = (0..n).map(|i| frozen[i] || ctx.glyphs[i].kept_right).collect();
+    let any_kept = ctx.glyphs.iter().any(|g| g.kept_left || g.kept_right);
+    // the frozen glyphs' (and kept joins') own tightness, then the solve at
+    // it: the kept joins of the lowercase base letters (GLYPH_ZONE, where the
+    // caller marks them), as a script's swash capitals and alternates reach
+    // far past their bodies (Great Vibes' capitals alone fit below −6, its
+    // lowercase at −0.5)
     let mut fitted = f64::NAN;
     let mut options = p.options.clone();
-    if p.fit_frozen && any_frozen {
-        if let Some(dt) = ctx.fit_looseness(&options, &frozen) {
+    if p.fit_frozen && (any_frozen || any_kept) {
+        let zone_marks = ctx.glyphs.iter().any(|g| g.flags & GLYPH_ZONE != 0);
+        let lowercase_base = |g: &PreparedGlyph| {
+            g.group_id == crate::engine::GROUP_LOWERCASE && (g.flags & GLYPH_ZONE != 0 || !zone_marks)
+        };
+        let base_kept = ctx.glyphs.iter().any(|g| (g.kept_left || g.kept_right) && lowercase_base(g));
+        let counts = |i: usize| !base_kept || lowercase_base(&ctx.glyphs[i]);
+        let fit_l: Vec<bool> = (0..n).map(|i| frozen[i] || (ctx.glyphs[i].kept_left && counts(i))).collect();
+        let fit_r: Vec<bool> = (0..n).map(|i| frozen[i] || (ctx.glyphs[i].kept_right && counts(i))).collect();
+        if let Some(dt) = ctx.fit_looseness_sides(&options, &fit_l, &fit_r) {
             fitted = dt;
             options = options.shifted(dt);
         }
@@ -268,7 +284,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
                 bare = Some((pass1.clone(), entries.clone()));
             }
             let built = classes.as_ref().unwrap_or(&ctx.classes);
-            apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, &frozen, &kern, p.threshold, false);
+            apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, (&fixed_l, &fixed_r), &kern, p.threshold, false);
         }
         return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare });
     }
@@ -297,17 +313,99 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     stats.pass2_ms = t2.elapsed().as_secs_f64() * 1000.0;
     let t3 = Instant::now();
     let mut entries = prune(entries, p.budget, &mut stats);
+    let built = classes.as_ref().unwrap_or(&ctx.classes);
+    // kept joins at the font's own values, whatever the threshold and budget did
+    keep_joins(ctx, &mut entries, built, p.mode, &kern, &frozen, p.scope_scripts);
     let mut bare = None;
     if let Some(h) = &p.harness {
         if p.keep_bare {
             bare = Some((pass1.clone(), entries.clone()));
         }
-        let built = classes.as_ref().unwrap_or(&ctx.classes);
-        apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, &frozen, &kern, p.threshold, true);
+        apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, (&fixed_l, &fixed_r), &kern, p.threshold, true);
     }
     stats.prune_ms = t3.elapsed().as_secs_f64() * 1000.0;
     progress.add(1);
     Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare })
+}
+
+/// Keep joins: every pair of two kept sides gets the font's kerning, exactly
+/// (glyph–glyph entries where the class kerning, the threshold or the budget
+/// left another value). Most such pairs already have it: Pass 2 gives kept
+/// pairs their own values, so classes of them carry the font's class kerning.
+fn keep_joins(
+    ctx: &Context,
+    entries: &mut Vec<Entry>,
+    classes: &Classes,
+    mode: Mode,
+    kern: &[bool],
+    frozen: &[bool],
+    scope_scripts: bool,
+) {
+    let Some(fj) = ctx.joins.as_ref().filter(|j| j.keep) else {
+        return;
+    };
+    let n = ctx.glyphs.len();
+    let left: Vec<usize> = (0..n).filter(|&i| kern[i] && ctx.glyphs[i].kept_right).collect();
+    let right: Vec<usize> = (0..n).filter(|&i| kern[i] && ctx.glyphs[i].kept_left).collect();
+    if left.is_empty() || right.is_empty() {
+        return;
+    }
+    let mut gg: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut gc: HashMap<(u32, u32), f64> = HashMap::new();
+    let mut cg: HashMap<(u32, u32), f64> = HashMap::new();
+    let mut cc: HashMap<(u32, u32), f64> = HashMap::new();
+    for (k, e) in entries.iter().enumerate() {
+        match e.kind {
+            KIND_GLYPH_GLYPH => {
+                gg.insert((e.left, e.right), k);
+            }
+            KIND_GLYPH_CLASS => {
+                gc.insert((e.left, e.right), e.value);
+            }
+            KIND_CLASS_GLYPH => {
+                cg.insert((e.left, e.right), e.value);
+            }
+            _ => {
+                cc.insert((e.left, e.right), e.value);
+            }
+        }
+    }
+    let (rc, lc) = (&classes.right.class_of, &classes.left.class_of);
+    let fixes: Vec<(u32, u32, f64, Option<usize>)> = left
+        .par_iter()
+        .flat_map_iter(|&a| right.iter().map(move |&b| (a, b)))
+        .filter_map(|(a, b)| {
+            // two frozen glyphs keep whatever kerning is between them
+            if !script_ok(&ctx.glyphs[a], &ctx.glyphs[b], scope_scripts) || (frozen[a] && frozen[b]) {
+                return None;
+            }
+            let (l, r) = (a as u32, b as u32);
+            let want = fj.font_kern(a, b);
+            let at = gg.get(&(l, r)).copied();
+            let have = match at {
+                Some(k) => entries[k].value,
+                None if mode == Mode::Classes => {
+                    let (ra, lb) = (rc.get(a).copied().unwrap_or(NONE), lc.get(b).copied().unwrap_or(NONE));
+                    gc.get(&(l, lb)).or_else(|| cg.get(&(ra, r))).or_else(|| cc.get(&(ra, lb))).copied().unwrap_or(0.0)
+                }
+                None => 0.0,
+            };
+            ((have - want).abs() > 1e-9).then_some((l, r, want, at))
+        })
+        .collect();
+    for (l, r, want, at) in fixes {
+        match at {
+            Some(k) => entries[k].value = want,
+            None => entries.push(Entry {
+                kind: KIND_GLYPH_GLYPH,
+                left: l,
+                right: r,
+                value: want,
+                importance: importance(want, 0.0, ctx.upm),
+                parent: NONE,
+            }),
+        }
+    }
 }
 
 /// Applies the designer harness to a finished solve (see `Harness`): after
@@ -320,18 +418,20 @@ fn apply_harness(
     entries: &mut Vec<Entry>,
     classes: &Classes,
     mode: Mode,
-    frozen: &[bool],
+    (fixed_l, fixed_r): (&[bool], &[bool]),
     kern: &[bool],
     threshold: f64,
     kerning: bool,
 ) {
     let n = ctx.glyphs.len();
     for (i, s) in h.sides.iter().enumerate().take(n) {
-        if frozen[i] || !pass1.metrics[i].valid {
+        // a glyph whose advance is kept (tabular figures, width keys, a kept
+        // join on a glyph with a width key) keeps its sides too
+        if (fixed_l[i] && fixed_r[i]) || !pass1.metrics[i].valid || ctx.glyphs[i].fixed_advance {
             continue;
         }
-        let dl = if s[0].is_finite() { s[0] } else { 0.0 };
-        let dr = if s[1].is_finite() { s[1] } else { 0.0 };
+        let dl = if s[0].is_finite() && !fixed_l[i] { s[0] } else { 0.0 };
+        let dr = if s[1].is_finite() && !fixed_r[i] { s[1] } else { 0.0 };
         let m = &mut pass1.metrics[i];
         m.lsb += dl;
         m.rsb += dr;
@@ -369,7 +469,7 @@ fn apply_harness(
         if li >= n || ri >= n || !d.is_finite() || d == 0.0 {
             continue;
         }
-        if !kern[li] || !kern[ri] || (frozen[li] && frozen[ri]) {
+        if !kern[li] || !kern[ri] || (fixed_r[li] && fixed_l[ri]) {
             continue;
         }
         if let Some(&k) = gg.get(&(l, r)) {

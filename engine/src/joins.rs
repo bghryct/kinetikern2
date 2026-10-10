@@ -14,7 +14,7 @@
 
 use crate::geometry::{Outline, Vec2};
 
-/// What a glyph is to the joins: only letters join, and the partners
+/// What a glyph is to the joins: for the detector only letters join, and the partners
 /// (`Lower`) are the letters every letter's sides are measured against: the
 /// basic lowercase a–z (Spacing QA's, and the plugin's), whatever else the
 /// font has — accented and alternate letters are `Upper` here, measured but

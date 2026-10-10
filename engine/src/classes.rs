@@ -228,7 +228,7 @@ fn signatures_close(a: &[f64; SIGNATURE], b: &[f64; SIGNATURE], eps: f64) -> boo
 impl SideClasses {
     fn build(glyphs: &[PreparedGlyph], right: bool, eps: f64, shape_eps: f64, part: Option<&[u32]>) -> SideClasses {
         let n = glyphs.len();
-        let joins = |i: usize| if right { glyphs[i].join_right.is_some() } else { glyphs[i].join_left.is_some() };
+        let joins = |i: usize| glyphs[i].join_side(right);
         let any_join = (0..n).any(|i| glyphs[i].valid && joins(i));
         let key = |i: usize| part.map_or(0, |p| p.get(i).copied().unwrap_or(0)) | if joins(i) { PART_JOIN } else { 0 };
         let is_frozen = |i: usize| key(i) & PART_FROZEN != 0;

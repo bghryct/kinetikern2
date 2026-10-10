@@ -17,11 +17,19 @@ use crate::run::{self, Params, KIND_CLASS_CLASS, KIND_CLASS_GLYPH, KIND_GLYPH_CL
 
 pub use crate::classes::{EXISTING, GLYPH_KEYED};
 pub use crate::engine::{
-    physics_for_looseness, GlyphInput, GlyphOpt, SideRule, SolveOptions, COUPLING_CALIBRATION, GLYPH_FIXED_ADVANCE,
+    physics_for_looseness, GlyphInput, GlyphOpt, SideRule, SolveOptions, COUPLING_CALIBRATION, GLYPH_FIGURE, GLYPH_FIXED_ADVANCE,
     GLYPH_KERN, GLYPH_RTL, GROUP_LOWERCASE, GROUP_OTHER, GROUP_UPPERCASE, LOOSENESS_GAIN, LOOSENESS_RATIO, MAX_GROUPS,
     NONE,
 };
 pub use crate::geometry::{Vec2, NODE_CURVE, NODE_LINE, NODE_OFFCURVE, NODE_QCURVE};
+pub use crate::checker::{
+    decorated_design, letters_touching, FontJoin, JoinCheck, JoinSetup, PairCheck, SideBreaks, DECORATED as JOIN_DECORATED,
+    FRAGILE as JOIN_FRAGILE, MIN_CROSSING_CELLS,
+};
+pub use crate::contact::{
+    contact as join_contact, contact_both, contact_height, contact_in, crossings, row_step, touch_heights, touch_set,
+    touch_set_rows, touches, Contact, InkRows,
+};
 pub use crate::joins::{detect as detect_joins, Bands as JoinBands, JoinGlyph, JoinKind, JoinRule};
 pub use crate::measure::{KernIn, Measured, PairOut};
 pub use crate::pass2::Solver;
@@ -147,6 +155,74 @@ impl Engine {
         Ok(Engine { ctx: Arc::new(ctx) })
     }
 
+    /// `prepare` for a connected script (its join bands in the inputs): every
+    /// glyph with an outline is measured for the join checker, and with `setup.keep`
+    /// (Keep joins) every joining side keeps its sidebearing and every pair
+    /// of two joining sides the font's kerning (crate::checker).
+    pub fn prepare_with_joins(inputs: Vec<GlyphInput>, upm: f64, threads: usize, setup: &JoinSetup) -> Result<Engine, String> {
+        let progress = Progress::new();
+        let ctx = Context::prepare_with_joins(inputs, upm, threads, &progress, Some(setup))
+            .map_err(|_| "cancelled".to_string())?;
+        Ok(Engine { ctx: Arc::new(ctx) })
+    }
+
+    /// The join bands each glyph was prepared with (Keep joins adds the sides
+    /// with joins in the font), (left, right).
+    pub fn join_bands(&self) -> Vec<JoinBands> {
+        self.ctx.glyphs.iter().map(|g| (g.join_left, g.join_right)).collect()
+    }
+
+    /// Keep joins: the sides that keep their sidebearings, (left, right).
+    pub fn kept_sides(&self) -> Vec<(bool, bool)> {
+        self.ctx.glyphs.iter().map(|g| (g.kept_left, g.kept_right)).collect()
+    }
+
+    /// Keep joins was asked for.
+    pub fn keeps_joins(&self) -> bool {
+        self.ctx.joins.as_ref().is_some_and(|j| j.keep)
+    }
+
+    /// The glyphs touch by construction (a line, a grid or a background
+    /// through every glyph, figures included: `checker::DECORATED`); every
+    /// side that touches the a–z is then kept, letter or not.
+    pub fn join_decorated(&self) -> bool {
+        self.ctx.joins.as_ref().is_some_and(|j| j.decorated)
+    }
+
+    /// The pairs of glyphs that join as the font sets them (empty without
+    /// `prepare_with_joins`).
+    pub fn font_joins(&self) -> &[FontJoin] {
+        self.ctx.joins.as_ref().map_or(&[], |j| &j.pairs)
+    }
+
+    /// The font's kerning of a glyph pair, as the join checker reads it.
+    pub fn font_kerning(&self, a: usize, b: usize) -> f64 {
+        self.ctx.joins.as_ref().map_or(0.0, |j| j.font_kern(a, b))
+    }
+
+    /// What a solution does to the font's joins (None without
+    /// `prepare_with_joins`). `scope`: the glyphs that take the solution
+    /// (None: all; the others keep their sides and kerning).
+    pub fn check_joins(&self, solution: &Solution, scope: Option<&[bool]>) -> Option<JoinCheck> {
+        let j = self.ctx.joins.as_ref()?;
+        let kern = |a: usize, b: usize| solution.kerning(a, b);
+        Some(crate::job::pool(0).install(|| j.check(&solution.lsb, &solution.rsb, &kern, scope)))
+    }
+
+    /// Pairs in detail as the font sets them, and under `solution` if given.
+    pub fn check_pairs(&self, pairs: &[(u32, u32)], solution: Option<&Solution>, scope: Option<&[bool]>) -> Vec<PairCheck> {
+        let Some(j) = self.ctx.joins.as_ref() else {
+            return Vec::new();
+        };
+        crate::job::pool(0).install(|| match solution {
+            Some(sol) => {
+                let kern = |a: usize, b: usize| sol.kerning(a, b);
+                j.pairs_in_detail(pairs, &sol.lsb, &sol.rsb, &kern, scope)
+            }
+            None => j.pairs_in_detail(pairs, &[], &[], &|_, _| 0.0, scope),
+        })
+    }
+
     pub fn upm(&self) -> f64 {
         self.ctx.upm
     }
@@ -191,6 +267,13 @@ impl Engine {
     pub fn fit_looseness(&self, settings: &Settings, which: &[bool]) -> Option<f64> {
         let o = settings.options(self.ctx.upm);
         self.ctx.fit_looseness(&o, which).map(|dt| settings.looseness + dt)
+    }
+
+    /// `fit_looseness` over sides: the left sides flagged in `left` and the
+    /// right sides in `right` (kept joins, frozen glyphs).
+    pub fn fit_looseness_sides(&self, settings: &Settings, left: &[bool], right: &[bool]) -> Option<f64> {
+        let o = settings.options(self.ctx.upm);
+        self.ctx.fit_looseness_sides(&o, left, right).map(|dt| settings.looseness + dt)
     }
 
     /// One solve; blocks until done.
@@ -251,6 +334,8 @@ impl Engine {
             Solution {
                 lsb: pass1.lsb.clone(),
                 rsb: pass1.rsb.clone(),
+                wanted_lsb: pass1.wanted_lsb.clone(),
+                wanted_rsb: pass1.wanted_rsb.clone(),
                 advance: m.iter().map(|x| x.advance).collect(),
                 valid: m.iter().map(|x| x.valid).collect(),
                 kerned: out.kern.clone(),
@@ -309,6 +394,10 @@ struct Lookup {
 pub struct Solution {
     pub lsb: Vec<f64>,
     pub rsb: Vec<f64>,
+    /// What Pass 1 wanted before rules, frozen glyphs and kept joins: for a
+    /// kept join, the sidebearing the model would give its body (drawing advice).
+    pub wanted_lsb: Vec<f64>,
+    pub wanted_rsb: Vec<f64>,
     pub advance: Vec<f64>,
     pub valid: Vec<bool>,
     /// Glyphs kerned in this solve.
@@ -365,11 +454,19 @@ mod tests {
 
     /// H, V, O (an octagon), period.
     fn font() -> Engine {
-        let h = GlyphInput::simple(
+        font_with(false)
+    }
+
+    /// `font`, with H's advance kept (`fixed_h`: a width-keyed glyph).
+    fn font_with(fixed_h: bool) -> Engine {
+        let mut h = GlyphInput::simple(
             vec![rect(60.0, 0.0, 140.0, 700.0), rect(460.0, 0.0, 540.0, 700.0), rect(140.0, 320.0, 460.0, 390.0)],
             600.0,
             GROUP_UPPERCASE,
         );
+        if fixed_h {
+            h.flags |= GLYPH_FIXED_ADVANCE;
+        }
         let v = GlyphInput::simple(
             vec![poly(&[(10.0, 700.0), (95.0, 700.0), (300.0, 110.0), (505.0, 700.0), (590.0, 700.0), (340.0, 0.0), (260.0, 0.0)])],
             600.0,
@@ -415,6 +512,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_harness_keeps_an_advance_that_is_kept() {
+        // H keeps its advance (a width key): the harness's side shifts would
+        // change it, so they leave H alone; the other glyphs take theirs
+        let e = font_with(true);
+        let plain = e.solve(&Settings::new()).unwrap();
+        let with = e.solve(&Settings { harness: Some(harness()), ..Settings::new() }).unwrap();
+        assert_eq!((with.lsb[0], with.rsb[0], with.advance[0]), (plain.lsb[0], plain.rsb[0], plain.advance[0]));
+        assert!((with.lsb[2] - plain.lsb[2] - 2.0).abs() < 1e-9 && (with.rsb[2] - plain.rsb[2] - 4.0).abs() < 1e-9);
     }
 
     #[test]
@@ -491,6 +599,214 @@ mod tests {
             assert!(gap(&joined, 0, 3) >= 0.0, "{mode:?} letter period {}", gap(&joined, 0, 3));
             assert!(gap(&joined, 3, 1) >= 0.0, "{mode:?} period letter {}", gap(&joined, 3, 1));
         }
+    }
+
+    /// The script of `script(true)` as a font would have it: current
+    /// sidebearings, the letters' kinds and some kerning (a join pair −7, a
+    /// letter before the period −15); the third letter's entry has no band
+    /// (the detector missed it) but touches in the font.
+    fn script_font(keep: bool) -> Engine {
+        let mut inputs = Vec::new();
+        for (k, w) in [280.0, 300.0, 260.0].into_iter().enumerate() {
+            let mut g = GlyphInput::simple(
+                vec![
+                    rect(-20.0, 0.0, 100.0, 40.0),
+                    rect(100.0, 0.0, 170.0, 500.0),
+                    rect(170.0, 430.0, 30.0 + w, 500.0),
+                    rect(30.0 + w, 0.0, 100.0 + w, 500.0),
+                    rect(100.0 + w, 0.0, 220.0 + w, 40.0),
+                ],
+                200.0 + w,
+                GROUP_LOWERCASE,
+            );
+            g.join_left = if k == 2 { None } else { Some((0.0, 40.0)) };
+            g.join_right = Some((0.0, 40.0));
+            g.cur_lsb = -20.0;
+            g.cur_rsb = -20.0;
+            inputs.push(g);
+        }
+        let mut dot = GlyphInput::simple(vec![rect(60.0, 0.0, 150.0, 90.0)], 210.0, GROUP_OTHER);
+        dot.cur_lsb = 60.0;
+        dot.cur_rsb = 60.0;
+        inputs.push(dot);
+        let kinds = vec![JoinKind::Lower, JoinKind::Lower, JoinKind::Lower, JoinKind::Other];
+        let kerning = vec![
+            KernIn { kind: ENTRY_GLYPH_GLYPH, left: 0, right: 1, value: -7.0 },
+            KernIn { kind: ENTRY_GLYPH_GLYPH, left: 1, right: 3, value: -15.0 },
+        ];
+        Engine::prepare_with_joins(inputs, 1000.0, 1, &JoinSetup { kinds, kerning, keep }).unwrap()
+    }
+
+    #[test]
+    fn keep_joins_keeps_every_join_as_drawn() {
+        let e = script_font(true);
+        assert!(e.keeps_joins());
+        // the third letter's entry joins in the font: it got a band and is kept
+        let kept = e.kept_sides();
+        assert!(kept[..3].iter().all(|&(l, r)| l && r), "{kept:?}");
+        assert_eq!(kept[3], (false, false));
+        // every letter pair joins in the font (the strokes overlap by 33–40)
+        assert_eq!(e.font_joins().len(), 9, "{:?}", e.font_joins());
+        for mode in [Mode::Pairs, Mode::Classes] {
+            for looseness in [-1.0, 0.0, 1.0] {
+                // a threshold above the kept −7 must not drop it
+                let s = Settings { mode, looseness, threshold_per_1000: 10.0, ..Settings::new() };
+                let sol = e.solve(&s).unwrap();
+                for i in 0..3 {
+                    assert_eq!((sol.lsb[i], sol.rsb[i]), (-20.0, -20.0), "{mode:?} {looseness} letter {i}");
+                }
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let want = if (a, b) == (0, 1) { -7.0 } else { 0.0 };
+                        assert_eq!(sol.kerning(a, b), want, "{mode:?} {looseness} pair {a} {b}");
+                    }
+                }
+                let check = e.check_joins(&sol, None).unwrap();
+                assert_eq!((check.joins, check.kept, check.broken, check.moved), (9, 9, 0, 0), "{mode:?} {looseness}");
+                // the period is spaced by the model: clear of the exit stroke
+                let gap = sol.rsb[1] + sol.lsb[3] + sol.kerning(1, 3);
+                assert!(gap >= 0.0, "{mode:?} {looseness} letter period {gap}");
+                // what the model wanted for a kept side: its body spacing
+                assert!(sol.wanted_rsb[0].is_finite() && sol.wanted_rsb[0] != -20.0, "{}", sol.wanted_rsb[0]);
+            }
+        }
+        // the Looseness fitted to the kept sides
+        let fitted = e.solve(&Settings { fit_frozen: true, ..Settings::new() }).unwrap();
+        assert!(fitted.fitted.is_some());
+    }
+
+    #[test]
+    fn spacing_joined_letters_is_checked_against_the_font() {
+        let e = script_font(false);
+        assert!(!e.keeps_joins());
+        assert_eq!(e.kept_sides().iter().filter(|s| s.0 || s.1).count(), 0);
+        // the joins are found either way
+        assert_eq!(e.font_joins().len(), 9);
+        for looseness in [-1.0, 0.0, 1.0, 3.0] {
+            let sol = e.solve(&Settings { looseness, ..Settings::new() }).unwrap();
+            let check = e.check_joins(&sol, None).unwrap();
+            assert_eq!(check.kept + check.broken, 9);
+            let breaks: u32 = check.sides.iter().map(|s| s.breaks).sum();
+            assert_eq!(breaks as usize, 2 * check.broken, "{looseness} {check:?}");
+            // pair details agree with the summary
+            let pairs: Vec<(u32, u32)> = e.font_joins().iter().map(|p| (p.left, p.right)).collect();
+            let detail = e.check_pairs(&pairs, Some(&sol), None);
+            assert_eq!(detail.iter().filter(|d| !d.joins_after).count(), check.broken, "{looseness}");
+            assert!(detail.iter().all(|d| d.drawn.joins));
+        }
+        // loose enough, the bodies part and every join breaks
+        let sol = e.solve(&Settings { looseness: 6.0, ..Settings::new() }).unwrap();
+        assert!(e.check_joins(&sol, None).unwrap().broken > 0);
+    }
+
+    /// Thirteen letters, five figures (`tabular`: with a fixed advance) and a
+    /// period; with `underline`, a line runs under every glyph exactly from
+    /// its origin to its advance (touching its neighbours, overlapping none).
+    fn underlined_inputs(underline: bool, tabular: bool) -> (Vec<GlyphInput>, Vec<JoinKind>) {
+        let mut inputs = Vec::new();
+        let mut kinds = Vec::new();
+        let glyph = |w: f64, group: u32| {
+            let mut c = vec![rect(40.0, 0.0, w - 40.0, 500.0)];
+            if underline {
+                c.push(rect(0.0, -120.0, w, -80.0));
+            }
+            let mut g = GlyphInput::simple(c, w, group);
+            g.cur_lsb = if underline { 0.0 } else { 40.0 };
+            g.cur_rsb = g.cur_lsb;
+            g
+        };
+        for k in 0..13 {
+            inputs.push(glyph(300.0 + 10.0 * k as f64, GROUP_LOWERCASE));
+            kinds.push(JoinKind::Lower);
+        }
+        for _ in 0..5 {
+            let mut g = glyph(320.0, GROUP_FIGURES);
+            if tabular {
+                g.flags |= GLYPH_FIXED_ADVANCE;
+            }
+            inputs.push(g);
+            kinds.push(JoinKind::Other);
+        }
+        inputs.push(glyph(200.0, GROUP_OTHER));
+        kinds.push(JoinKind::Other);
+        (inputs, kinds)
+    }
+
+    fn underlined(underline: bool) -> Engine {
+        let (inputs, kinds) = underlined_inputs(underline, false);
+        Engine::prepare_with_joins(inputs, 1000.0, 1, &JoinSetup { kinds, kerning: Vec::new(), keep: true }).unwrap()
+    }
+
+    #[test]
+    fn a_line_through_every_glyph_is_a_decoration_not_a_script() {
+        let e = underlined(true);
+        assert!(e.join_decorated());
+        // every glyph keeps both sides, the figures and the period included,
+        // so the line stays continuous
+        assert!(e.kept_sides().iter().all(|&(l, r)| l && r), "{:?}", e.kept_sides());
+        // without the line the letters stand apart: no joins, no decoration
+        let plain = underlined(false);
+        assert!(!plain.join_decorated());
+        assert!(plain.kept_sides().iter().all(|&(l, r)| !l && !r));
+        // a script's figures stand apart from its letters
+        assert!(!script_font(true).join_decorated());
+        // the same rule on the glyphs alone (what the plugin asks when the
+        // detector finds nothing overlapping): an edge-to-edge line touches
+        let (inputs, kinds) = underlined_inputs(true, false);
+        assert!(decorated_design(&inputs, 1000.0, &kinds, &[]));
+        let (inputs, kinds) = underlined_inputs(false, false);
+        assert!(!decorated_design(&inputs, 1000.0, &kinds, &[]));
+    }
+
+    #[test]
+    fn letters_that_meet_flush_join_by_touching() {
+        // the line runs exactly from edge to edge: every letter touches
+        // every partner, though none overlaps (the detector finds nothing)
+        let (inputs, kinds) = underlined_inputs(true, false);
+        assert_eq!(letters_touching(&inputs, 1000.0, &kinds, &[]), (13, 13));
+        let (inputs, kinds) = underlined_inputs(false, false);
+        assert_eq!(letters_touching(&inputs, 1000.0, &kinds, &[]), (0, 13));
+        // a script's letters overlap at their joins, so they touch too
+        let e = script_font(true);
+        assert!(e.font_joins().len() >= 9);
+    }
+
+    #[test]
+    fn tabular_figures_keep_their_sides_when_the_line_runs_through_them() {
+        let (inputs, kinds) = underlined_inputs(true, true);
+        let e = Engine::prepare_with_joins(inputs, 1000.0, 1, &JoinSetup { kinds, kerning: Vec::new(), keep: true }).unwrap();
+        assert!(e.join_decorated());
+        let sol = e.solve(&Settings::new()).unwrap();
+        for i in 13..18 {
+            assert_eq!((sol.lsb[i], sol.rsb[i]), (0.0, 0.0), "figure {i} keeps its sides (and its advance)");
+        }
+        let check = e.check_joins(&sol, None).unwrap();
+        assert_eq!(check.broken, 0, "{check:?}");
+    }
+
+    #[test]
+    fn a_fix_that_would_cross_the_strokes_is_flagged() {
+        // a bracket whose arms reach right at the top and the bottom, a full
+        // bar and a bar at the top only, each set 20 units after it
+        let bracket = GlyphInput::simple(
+            vec![rect(0.0, 0.0, 60.0, 500.0), rect(60.0, 440.0, 300.0, 500.0), rect(60.0, 0.0, 300.0, 60.0)],
+            320.0,
+            GROUP_LOWERCASE,
+        );
+        let bar = GlyphInput::simple(vec![rect(0.0, 0.0, 60.0, 500.0)], 60.0, GROUP_LOWERCASE);
+        let top = GlyphInput::simple(vec![rect(0.0, 440.0, 60.0, 500.0)], 60.0, GROUP_LOWERCASE);
+        let setup = JoinSetup { kinds: vec![JoinKind::Lower; 3], kerning: Vec::new(), keep: false };
+        let e = Engine::prepare_with_joins(vec![bracket, bar, top], 1000.0, 1, &setup).unwrap();
+        let d = e.check_pairs(&[(0, 1), (0, 2)], None, None);
+        assert_eq!(d.len(), 2);
+        for p in &d {
+            assert!(!p.drawn.joins && (p.drawn.gap - 20.0).abs() <= 1.0, "{p:?}");
+            assert!(p.drawn.fix < -19.0, "{p:?}");
+        }
+        // kerned to touch, the bar closes the white inside the bracket
+        assert!(d[0].fix_crosses, "{:?}", d[0]);
+        // the short bar meets the top arm only
+        assert!(!d[1].fix_crosses, "{:?}", d[1]);
     }
 
     #[test]

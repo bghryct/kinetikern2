@@ -48,6 +48,10 @@ pub const GLYPH_RTL: u32 = 4;
 /// letters reach above or below and outnumber the base letters in most
 /// fonts; without such glyphs every member of the group counts (feature 16).
 pub const GLYPH_ZONE: u32 = 32;
+/// One of the default figures 0–9: the decoration test reads these (a font
+/// whose glyphs carry none: every glyph of `GROUP_FIGURES`), so tabular,
+/// old-style and superior variants do not change its share.
+pub const GLYPH_FIGURE: u32 = 64;
 
 /// "No index" for optional glyph and group references.
 pub const NONE: u32 = u32::MAX;
@@ -207,6 +211,10 @@ pub struct PreparedGlyph {
     pub join_right: Option<(f64, f64)>,
     pub left_body: Option<SdfProfile>,
     pub right_body: Option<SdfProfile>,
+    /// Keep joins: the side keeps its sidebearing, and a pair of two kept
+    /// sides the font's kerning (crate::checker).
+    pub kept_left: bool,
+    pub kept_right: bool,
 }
 
 impl PreparedGlyph {
@@ -223,6 +231,19 @@ impl PreparedGlyph {
     /// The pair (self, b) joins: self's right side and b's left side both have joins.
     pub fn joins(&self, b: &PreparedGlyph) -> bool {
         self.join_right.is_some() && b.join_left.is_some()
+    }
+    /// Keep joins: the pair (self, b) keeps the font's kerning.
+    pub fn keeps(&self, b: &PreparedGlyph) -> bool {
+        self.kept_right && b.kept_left
+    }
+    /// The side joins (a band, or kept): it never shares a kerning class
+    /// with a side that does not.
+    pub fn join_side(&self, right: bool) -> bool {
+        if right {
+            self.join_right.is_some() || self.kept_right
+        } else {
+            self.join_left.is_some() || self.kept_left
+        }
     }
     /// How far the bbox reaches past the zone's extreme ink on each side.
     fn overhang(&self) -> (f64, f64) {
@@ -245,6 +266,9 @@ pub struct Context {
     pub prep_ms: f64,
     /// Kerning classes (physics-independent, built once).
     pub classes: crate::classes::Classes,
+    /// A connected script's letters for the join checker, and whether its
+    /// joins are kept (`prepare_with_joins`); None otherwise.
+    pub joins: Option<crate::checker::FontJoins>,
 }
 
 #[derive(Clone, Debug)]
@@ -326,6 +350,10 @@ pub struct GlyphMetrics {
 pub struct Pass1 {
     pub lsb: Vec<f64>,
     pub rsb: Vec<f64>,
+    /// The sidebearings Pass 1 wanted before rules, frozen glyphs and kept
+    /// joins (the drawing advice for a kept side: what the model would give it).
+    pub wanted_lsb: Vec<f64>,
+    pub wanted_rsb: Vec<f64>,
     pub metrics: Vec<GlyphMetrics>,
     pub iterations: u32,
     pub residual: f64,
@@ -391,6 +419,19 @@ fn tip_protrusion(tips: &[Disk], side: Side, edge: f64) -> f64 {
 
 impl Context {
     pub fn prepare(inputs: Vec<GlyphInput>, upm: f64, threads: usize, progress: &Progress) -> Result<Context, Cancelled> {
+        Self::prepare_with_joins(inputs, upm, threads, progress, None)
+    }
+
+    /// `prepare` for a connected script (`setup`): every glyph with an outline
+    /// is measured for the join checker first, and with Keep joins every side with a join
+    /// in the font gets a band (crate::checker) and is kept.
+    pub fn prepare_with_joins(
+        mut inputs: Vec<GlyphInput>,
+        upm: f64,
+        threads: usize,
+        progress: &Progress,
+        setup: Option<&crate::checker::JoinSetup>,
+    ) -> Result<Context, Cancelled> {
         let t0 = Instant::now();
         let upm = if upm.is_finite() && upm >= 16.0 { upm } else { 1000.0 };
         let s = upm / 1000.0;
@@ -398,7 +439,18 @@ impl Context {
         let dcfg = DmatConfig::for_upm(upm);
         let n = inputs.len();
         let pool = pool(threads);
-        progress.begin(1, 3, 2 * n as u64 + 1);
+        progress.begin(1, 3, (2 + setup.is_some() as u64) * n as u64 + 1);
+        let joins = match setup {
+            Some(setup) => {
+                let fj = pool.install(|| crate::checker::FontJoins::build(&inputs, upm, setup, progress))?;
+                if fj.keep {
+                    fj.add_bands(&mut inputs, upm);
+                }
+                Some(fj)
+            }
+            None => None,
+        };
+        let keep = joins.as_ref().is_some_and(|j| j.keep);
 
         // Phase A: outlines, adaptive profiles, counters, facing micro-disk series.
         let mut glyphs: Vec<PreparedGlyph> = pool.install(|| {
@@ -408,7 +460,7 @@ impl Context {
                     if progress.cancelled() {
                         return None;
                     }
-                    let g = prepare_glyph(inp, s, &plan, &dcfg);
+                    let g = prepare_glyph(inp, s, &plan, &dcfg, keep);
                     progress.add(1);
                     Some(g)
                 })
@@ -523,6 +575,7 @@ impl Context {
             depth_pack,
             prep_ms: t0.elapsed().as_secs_f64() * 1000.0,
             classes,
+            joins,
         })
     }
 
@@ -580,6 +633,7 @@ impl Context {
                 }
             }
         }
+        let (wanted_lsb, wanted_rsb) = (lsb.clone(), rsb.clone());
         let ruled = self.apply_rules(&mut lsb, &mut rsb, opts);
 
         let metrics: Vec<GlyphMetrics> = self
@@ -606,6 +660,8 @@ impl Context {
         Pass1 {
             lsb,
             rsb,
+            wanted_lsb,
+            wanted_rsb,
             metrics,
             iterations: free.iterations,
             residual: free.residual,
@@ -621,26 +677,41 @@ impl Context {
     /// spacing is final. None with fewer than three such glyphs. Pass 1 only,
     /// a few milliseconds per evaluation.
     pub fn fit_looseness(&self, o: &SolveOptions, which: &[bool]) -> Option<f64> {
-        let idx: Vec<usize> = (0..self.glyphs.len())
-            .filter(|&i| {
+        self.fit_looseness_sides(o, which, which)
+    }
+
+    /// `fit_looseness` over sides: the left sides flagged in `left` and the
+    /// right sides flagged in `right` (kept joins, frozen glyphs). None with
+    /// fewer than six such sides.
+    pub fn fit_looseness_sides(&self, o: &SolveOptions, left: &[bool], right: &[bool]) -> Option<f64> {
+        let ok = |i: usize, flags: &[bool], cur: f64| {
+            let g = &self.glyphs[i];
+            flags.get(i).copied().unwrap_or(false) && g.valid && !g.fixed_advance && cur.is_finite()
+        };
+        let sides: Vec<(usize, bool)> = (0..self.glyphs.len())
+            .flat_map(|i| [(i, false), (i, true)])
+            .filter(|&(i, r)| {
                 let g = &self.glyphs[i];
-                which.get(i).copied().unwrap_or(false)
-                    && g.valid
-                    && !g.fixed_advance
-                    && g.cur_lsb.is_finite()
-                    && g.cur_rsb.is_finite()
+                if r {
+                    ok(i, right, g.cur_rsb)
+                } else {
+                    ok(i, left, g.cur_lsb)
+                }
             })
             .collect();
-        if idx.len() < 3 {
+        if sides.len() < 6 {
             return None;
         }
-        let target = idx.iter().map(|&i| self.glyphs[i].cur_lsb + self.glyphs[i].cur_rsb).sum::<f64>() / idx.len() as f64;
-        // model minus current, mean over the glyphs: grows with the looseness
+        let cur = |i: usize, r: bool| if r { self.glyphs[i].cur_rsb } else { self.glyphs[i].cur_lsb };
+        let target = sides.iter().map(|&(i, r)| cur(i, r)).sum::<f64>() / sides.len() as f64;
+        // model minus current, mean over the sides: grows with the looseness
         let f = |dt: f64| -> f64 {
             let free = self.free_sidebearings(&o.shifted(dt));
-            idx.iter().map(|&i| free.lsb[i] + free.rsb[i]).sum::<f64>() / idx.len() as f64 - target
+            sides.iter().map(|&(i, r)| if r { free.rsb[i] } else { free.lsb[i] }).sum::<f64>() / sides.len() as f64
+                - target
         };
-        let tol = 0.05 * self.upm / 1000.0;
+        // half of 0.05 units: the fit on glyphs stopped at 0.05 on a glyph's two sides
+        let tol = 0.025 * self.upm / 1000.0;
         let (mut a, mut fa): (f64, f64) = (0.0, f(0.0));
         if !fa.is_finite() {
             return None;
@@ -789,9 +860,22 @@ impl Context {
                 continue;
             }
             if g.fixed_advance {
+                // its advance is kept: a kept join keeps its side as drawn, and
+                // so the other side too (the two add up to the advance) —
+                // tabular figures in a design whose glyphs touch, a letter
+                // whose width follows another's in a script
+                if (g.kept_left || g.kept_right) && g.cur_lsb.is_finite() && g.cur_rsb.is_finite() {
+                    lsb[i] = g.cur_lsb;
+                    rsb[i] = g.cur_rsb;
+                    flags[i] |= METRIC_LSB_RULED | METRIC_RSB_RULED;
+                }
                 continue;
             }
-            for (left, rule, cur) in [(true, g.lsb_rule, g.cur_lsb), (false, g.rsb_rule, g.cur_rsb)] {
+            for (left, rule, cur, kept) in
+                [(true, g.lsb_rule, g.cur_lsb, g.kept_left), (false, g.rsb_rule, g.cur_rsb, g.kept_right)]
+            {
+                // a kept join stays as drawn, whatever rule the side has
+                let rule = if kept && cur.is_finite() { SideRule::Fixed(cur) } else { rule };
                 match rule {
                     SideRule::Free => {}
                     SideRule::Fixed(v) => {
@@ -868,7 +952,7 @@ impl Context {
     }
 }
 
-fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig) -> PreparedGlyph {
+fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig, keep: bool) -> PreparedGlyph {
     let outline = Outline::from_contours(&inp.contours, 0.05 * s);
     let bbox = outline.bbox;
     let valid = !outline.is_empty() && bbox.width() > 0.5 * s && bbox.height() > 0.5 * s;
@@ -887,6 +971,8 @@ fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig) -> 
     // a joining side's body: the profile without its join band
     let band = |b: Option<(f64, f64)>| b.filter(|(y0, y1)| valid && y0.is_finite() && y1.is_finite() && y1 > y0);
     let (join_left, join_right) = (band(inp.join_left), band(inp.join_right));
+    // kept whether or not a body remains without the band
+    let (kept_left, kept_right) = (keep && join_left.is_some(), keep && join_right.is_some());
     let left_body = join_left.map(|b| left.masked(b)).filter(|p| !p.is_empty());
     let right_body = join_right.map(|b| right.masked(b)).filter(|p| !p.is_empty());
     let (join_left, join_right) = (join_left.filter(|_| left_body.is_some()), join_right.filter(|_| right_body.is_some()));
@@ -932,6 +1018,8 @@ fn prepare_glyph(inp: GlyphInput, s: f64, plan: &RayPlan, dcfg: &DmatConfig) -> 
         join_right,
         left_body,
         right_body,
+        kept_left,
+        kept_right,
     }
 }
 

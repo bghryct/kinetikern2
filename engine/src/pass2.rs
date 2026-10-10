@@ -1047,9 +1047,18 @@ impl<'a> Kernel<'a> {
         (s_star + rlo, s_star + rhi, s_star)
     }
 
+    /// Keep joins: the font's kerning of a pair of two kept sides.
+    fn kept(&self, ia: usize, ib: usize) -> f64 {
+        self.ctx.joins.as_ref().map_or(0.0, |j| j.font_kern(ia, ib))
+    }
+
     /// Full evaluation of one ordered pair.
     pub fn solve(&self, ia: usize, ib: usize, sc: &mut Scratch) -> PairOut {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        if a.keeps(b) {
+            let v = self.kept(ia, ib);
+            return PairOut { value: v, pre: v, flags: PAIR_JOIN, ..PairOut::default() };
+        }
         if a.joins(b) {
             return PairOut { flags: PAIR_JOIN, ..PairOut::default() };
         }
@@ -1165,6 +1174,10 @@ impl<'a> Kernel<'a> {
     /// the force evaluations it cost and whether the force bounds alone decided.
     pub fn verify(&self, ia: usize, ib: usize, target: f64, sc: &mut Scratch) -> (Verify, u32, bool) {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        if a.keeps(b) {
+            // a kept join keeps the font's value: its own (solving costs nothing)
+            return (Verify::Differs, 0, true);
+        }
         if a.joins(b) {
             // a join pair is 0, as its class representative (classes never mix joins)
             return (if target.abs() < self.knobs.threshold { Verify::Within } else { Verify::Differs }, 0, true);
@@ -1251,6 +1264,9 @@ impl<'a> Kernel<'a> {
     /// Final value of a pair whose pre-floor value is `pre` (floors, rounding).
     pub fn finish(&self, ia: usize, ib: usize, pre: f64) -> (f64, u32) {
         let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        if a.keeps(b) {
+            return (self.kept(ia, ib), PAIR_JOIN);
+        }
         if a.joins(b) {
             return (0.0, PAIR_JOIN);
         }

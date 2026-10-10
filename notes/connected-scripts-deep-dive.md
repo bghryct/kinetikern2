@@ -1,8 +1,11 @@
 # Connected scripts: ugly combinatorial pairs, a deep dive
 
 9 October 2026. Follows `connected-scripts.md` (the join mode as built on
-8 October). Question: how do we make sure Kinetikern2 does not produce ugly
-combinatorial pairs in connected scripts, and what should stay manual?
+8 October). Built the same day: the join checker and Keep joins as the
+default (`join-checker.md`). "Today's join mode" below is the 8 October body
+spacing, now the *Space joined letters* option. Question: how do we make
+sure Kinetikern2 does not produce ugly combinatorial pairs in connected
+scripts, and what should stay manual?
 
 Numbers are in units per 1000 em. "The model" is Kinetikern2 with its
 designer harness, as Spacing QA's reports have it at each family's best-fit
@@ -40,9 +43,9 @@ Looseness. How everything was measured is in section 2.1 and the appendix.
   every join is held inside half of its window, the sidebearings can keep a
   median 29 % of the model's side-to-side variation (53 % with the full
   window). Without the join mode the model breaks 80–99 % of joins, so the
-  mode was necessary. But it spaces bodies, and the designers spaced the
-  connection points. Measuring along the slant does not change this
-  (section 2.5).
+  mode was necessary. But it spaces the bodies, while the designers'
+  sidebearings follow the connection points. Measuring along the slant does
+  not change this (section 2.5).
 - **The designers' own joins are mostly sound.** Only 506 of 44,641
   expected joins are broken in the fonts themselves (1.1 %, in 39 of 85
   families). They cluster after high exits (w, o, v, c) and before
@@ -57,6 +60,17 @@ Looseness. How everything was measured is in section 2.1 and the appendix.
   them, they do not join. Only 12 of the 85 joining scripts use calt on a–z
   pairs, and none of the 355 handwriting families uses cursive attachment
   (`curs`) for Latin.
+- **Practice and tools agree.** Designers' advice (Glyphs forum,
+  TypeDrawers, Alphabettes) matches the data:
+  - set joining sidebearings so that exits meet entries;
+  - do not kern joined lowercase;
+  - fix high exits with contextual alternates or connector glyphs.
+
+  None of the spacing tools surveyed (HT Letterspacer, Kern On, iKern,
+  MetricsMachine, HalfKern) documents any handling of joins. No published
+  tool checks every pair's join. "kern-coup" was not found. Cursive
+  attachment is not a dependable way out for Latin: HarfBuzz applies it,
+  InDesign only in the World-Ready Composer, Word not by default.
 - **Recommendation.**
   1. First, build a join checker: pair-level, shaped with calt in a word
      context, exact contact, gap, window and crossings, grouped by side, with
@@ -89,9 +103,9 @@ is set by the drawing, inside a window [−close, +open]. Within that window
 the strokes still meet. A right sidebearing serves all 26 partners at once,
 and so does a left sidebearing. The basic a–z has 52 sidebearings and up to
 676 joins. When every join is drawn to meet at kern 0, the joins fix every
-joining sidebearing up to one shared constant: move all right sides by +c and
-all left sides by −c and nothing visible changes. Nothing else moves without
-moving joins.
+joining sidebearing up to one shared constant. Move all right sides by +c
+and all left sides by −c and no join changes; only the white next to spaces
+and punctuation does. Any other change moves joins.
 
 The data suggests designers build scripts this way: their joining
 sidebearings follow the connection points more closely than the bodies. The
@@ -101,10 +115,11 @@ bodies (IQR 15–27 against 24–43 units, section 2.5).
 
 ### 1.2 Side changes add up pair by pair
 
-For a pair the engine treats as a join (both facing sides have join bands),
-Kinetikern2 sets no kerning (`PAIR_JOIN` in `pass2.rs`: `solve`, `verify`
-and `finish` all return 0 when `a.joins(b)`). The change in the pair's
-offset is therefore exactly
+With Space joined letters, for a pair the engine treats as a join (both
+facing sides have join bands), Kinetikern2 sets no kerning (`PAIR_JOIN` in
+`pass2.rs`: `solve`, `verify` and `finish` all return 0 when `a.joins(b)`;
+with Keep joins, `solve` and `finish` give the font's kerning when
+`a.keeps(b)`). The change in the pair's offset is therefore exactly
 
     ΔS(a, b) = Δrsb(a) + Δlsb(b) − designer kern(a, b)
 
@@ -194,7 +209,7 @@ They come from three sources:
 |---|---:|---:|
 | Side changes alone (ΔS = Δrsb + Δlsb outside the window) | 7,633 | 79 % |
 | The pair joins in the font, but not both its sides have join bands. The engine treats it as an ordinary pair and kerns it apart with the no-overlap floors. The model kerns 14 % of the fonts' joins. | 1,663 | 17 % |
-| The designer kerned the join pair and the join mode resets it to 0 | 307 | 3 % |
+| The designer kerned the join pair and the join mode's solution has 0 for it. In the plugin, Apply removes the old kern only with Replace. | 307 | 3 % |
 
 The detector decides joins per side, by majority: a side joins where it
 overlaps at least half of the a–z partners. A letter that joins most
@@ -211,12 +226,15 @@ Two smaller findings:
   "ad" (ΔS −52) puts d's bowl over a's exit. Great Vibes at −6 runs n's
   first stroke through a. The 6,861 crossings counted in section 2.4
   include collisions like these as well as strokes that cross.
-- **The self-test checks boxes, not ink.** Its connected stage
+- **The self-test checks boxes, not ink** (before 9 October; the connected
+  stage now checks ink contact). Its connected stage
   (`kk2_selftest.py`, `connected_on_ready`) counts a join pair as
   "overlapping" when rsb + lsb + kern < 0. 127 of the 163 joins the model
   breaks in Dancing Script still pass that test, because the overhanging
   strokes keep the boxes overlapped after the inks have parted. The engine
-  test `a_connected_script_overlaps_at_its_joins` has the same blind spot.
+  test `a_connected_script_overlaps_at_its_joins` has the same blind spot
+  (it still does; the engine tests of Keep joins and Space joined letters
+  added since check ink contact).
 
 ### 1.6 How designers deal with it
 
@@ -316,6 +334,23 @@ families:
 | … of those, that touch with a kern within 80 units | 467 (median −10; 90 % within 38) |
 | … that touch with a kern of 10 units or less, at the letter's usual join height, without crossing | 226 |
 | Crossings in the fonts' own joins (calt off) | 1,426 pairs |
+
+How much a side's joins vary across its partners, in the fonts' own
+spacing (IQR over the partners of each side, then the median and 75th
+percentile over all sides):
+
+| Per side | Median IQR | p75 |
+|---|---:|---:|
+| Opening window, exits (right sides) | 6.3 units | 14.9 |
+| Opening window, entries (left sides) | 1.5 units | 6.5 |
+| Contact height, exits | 0.02 x-height | 0.04 |
+| Contact height, entries | 0.01 x-height | 0.03 |
+
+Where a join sits belongs to the exit. The exit letter alone explains a
+median 57 % of the variation in contact height, both letters together 72 %.
+How much room a join has belongs mostly to the entry. Within a side the
+joins are consistent, and that is why freezing sides keeps them and why
+reporting by side makes sense.
 
 Families with the most broken joins:
 
@@ -538,8 +573,9 @@ kerning are where scripts are usually weakest and least looked at.
 - A side that joins only some partners needs per-pair handling: keep the
   kerning of exactly the pairs that join.
 
-**Effort.** 1–2 days: per-side Fixed rules from the join bands, frozen-pair
-kerning kept for join pairs, `fit_frozen` on, UI note, self-test update.
+**Effort.** 1–2 days for per-side Fixed rules from the join bands, the
+kerning of join pairs kept, `fit_frozen` on, a UI note and the self-test
+update. 2–3 days with the drawing advice.
 
 **Risk.** Low.
 
@@ -595,7 +631,8 @@ the findings by side and give proof strings.
 - The designers' own fonts have 506 broken joins, 1,055 fragile ones and
   1,426 crossings.
 - The model's breaks are explained by a handful of sides.
-- The current self-test's box test misses 78 % of breaks (127 of 163).
+- The current self-test's box test misses 78 % of breaks (127 of 163)
+  (before 9 October; the connected stage now checks ink contact).
 
 **Pros.** No risk to the font. Useful with any spacing mode, including
 fully manual spacing. It is the only way to make "we don't get ugly pairs"
@@ -688,19 +725,165 @@ questionable.
 
 ### (g) What others do (literature and tools)
 
-LITERATURE_PLACEHOLDER
+A web survey (9 October 2026). Everything below is paraphrased. Items
+marked *unverified* could not be read in full.
+
+**Designers' practice agrees with the data.**
+
+- On the Glyphs forum, the advice for Latin scripts is consistent:
+  - Make the exits that end alike end at the same place, and give them the
+    same right sidebearing (Georg Seifert suggests e.g. −50 for every glyph
+    with the same exit stroke).
+  - Set each left sidebearing by testing it in "nxn", kern what is left,
+    and use contextual alternates for the combinations that do not work.
+  - Sources: https://forum.glyphsapp.com/t/cursive-font-issue/14587,
+    https://forum.glyphsapp.com/t/spacing-problems-with-connected-font/5038.
+    In the second thread the designer's worst letters were v, w, z, x, o, r
+    and s, close to the high-exit list in section 1.4.
+- Several posters say a connected script's lowercase should not need
+  kerning: some apps ignore kerning, users switch it off, and the strokes
+  should overlap exactly.
+  https://forum.glyphsapp.com/t/kerning-is-shifting-slightly-when-font-exported/8659
+- Kent Lew recommends contextual alternates for high, middle and low
+  connections rather than pair ligatures. Ligatures multiply across the
+  accented letters; he built Tilda that way and would not again. Laura
+  Worthington names r, s, x and z as the hard letters to space.
+  https://typedrawers.com/discussion/1768/spacing-problems-with-connected-font
+- Victoria Rushton describes the o-v-w-b problem for her script Gautreaux.
+  n starts from the baseline, o from the middle. She allowed four
+  alternates (r, s, x, z) used after b, o, v and w, and closed the loops of
+  o, b and v.
+  https://alphabettes.org/make-those-connections
+- For school cursives, Georg Seifert's method is Playwrite's: strip entry
+  and exit strokes and insert small connector glyphs with feature code
+  (about a dozen were enough). Others used many alternates, and Mark
+  Frömberg advises keeping the connection types to a minimum.
+  https://forum.glyphsapp.com/t/making-an-educational-connected-script-font-opentype-help-and-glyph-setup/9799
+  Connectors as smart components, chosen by context:
+  https://forum.glyphsapp.com/t/kerning-in-cursive-by-resizing-attachment/30194
+- Microsoft's TrueType guidance for cursive fonts asks for at least
+  70 units of overlap at 2048 units per em (about 34 per 1000), all on the
+  trailing side, against pixel dropouts from rounding.
+  https://learn.microsoft.com/en-us/typography/truetype/cursive-script
+  By that measure 63 % of the 45,665 joins here have less room (window
+  under 34), and so does the median join of 59 of the 85 families. The
+  window is a comparable quantity, though not the one the guidance defines.
+- Users break joins too. Adobe's Optical kerning pulls script joins apart
+  (https://blog.fontspring.com/?p=381). CSS exempts only Unicode cursive
+  scripts (Arabic and others) from letter-spacing, so a Latin script is
+  tracked apart like any text face (https://www.w3.org/TR/css-text-3/).
+  Android does the same.
+
+**Spacing and kerning tools say nothing about joins.**
+
+- HT Letterspacer spaces by a target white area, depth and overshoot. Its
+  rules can target a script or a category, but its documentation says
+  nothing about script typefaces, cursive fonts or overlaps.
+  https://letterspacer.htfonts.com/tutorial/en.html,
+  https://github.com/huertatipografica/HTLetterspacer
+- Kern On's manual mentions script designs only to suggest a helper glyph
+  as the zero-kerning reference; its autospacing is a one-off operation.
+  No statement on connected scripts was found (its forum was not checked).
+  https://kern-on.com/manual
+- iKern: nothing found on scripts.
+  https://www.ikern.space/about
+  The ATypI 2022 panel on automated spacing with Ahrens, Marini, Hornus and
+  Omagari was not watched.
+  https://atypi.org/presentation/automated-kerning-and-spacing-present-and-future/
+- MetricsMachine's documentation has nothing on connected letters.
+  https://extensionstore.robofont.com/extensions/metricsMachine/documentation/
+- "kern-coup" was not found under any spelling. The nearest tools assume
+  separate letters:
+  - HalfKern, which fits blurred pairs to ll/nn/oo:
+    https://github.com/behdad/halfkern
+  - Impallari's Contextual Kerning Tool, KernTool4, kerndeterminer.
+- No published tool was found that checks every pair's join. The methods
+  in use are proof strings ("nxn"), comparison windows and mekkablue's calt
+  builder. No Glyphs reporter or plugin that draws or checks joins was
+  found.
+- Papers:
+  - Kokula 1994 (EPODD 7(4)) generates joins at rasterization time.
+    *Unverified*: only its bibliographic entry was found.
+  - "Learning to Kern" (Nakatsuru and Uchida, 2024) trains on about 2,500
+    Google Fonts, Latin letters only.
+    https://arxiv.org/abs/2402.14313
+  - Nastaliq work treats joins through cursive attachment and kerning on
+    diagonal baselines (Gulzar and Rahman, TUGboat 29:1).
+
+**Glyphs' own features.**
+
+- The handbook's anchors chapter describes cursive attachment with `exit`
+  and `entry` anchors, written for Arabic.
+  https://handbook.glyphsapp.com/anchors/
+- Glyphs builds the `curs` feature from those anchors on export, as an
+  implicit feature not shown in the Features tab.
+  https://handbook.glyphsapp.com/layout/
+- The positional-forms tutorial says init/medi/fina are meant for scripts
+  with built-in joining behaviour, not Latin, and shows how to get
+  positional forms through calt instead.
+  https://glyphsapp.com/learn/features-part-4-positional-alternates
+- The spacing tutorial and handbook chapter say nothing about scripts.
+
+### (h) Cursive attachment (`curs`)
+
+**What.** GPOS lookup type 3 moves each glyph so that its entry anchor lands
+on the previous glyph's exit anchor, whatever the advances say.
+https://learn.microsoft.com/en-us/typography/opentype/spec/gpos
+
+A Latin script built that way keeps its joins under any sidebearing change.
+Glyphs builds the feature from `exit`/`entry` anchors, and Kinetikern2
+could read the same anchors as exact join points.
+
+**Evidence.**
+
+- No Latin script on Google Fonts uses it. 0 of the 85 joining scripts; the
+  one handwriting family with `curs` is Playpen Sans Arabic.
+- App support for Latin is uneven:
+  - HarfBuzz applies `curs` by default in every script (Chrome, Firefox,
+    Android, LibreOffice; `hb-ot-shape.cc`).
+  - InDesign applies it only in the World-Ready Composer.
+    https://forum.glyphsapp.com/t/why-does-my-curs-feature-work-in-glyphs-and-fontgoggles-but-not-in-adobe-indesign/36283
+  - Word ignores it unless OpenType shaping is triggered.
+    https://typedrawers.com/discussion/comment/42723/
+  - CoreText and DirectWrite are *unverified* for Latin.
+- The Glyphs team advised against it for Latin unless joins need vertical
+  shifts.
+  https://forum.glyphsapp.com/t/cursive-fonts/1439,
+  https://forum.glyphsapp.com/t/arabic-style-entry-and-exit-anchors-in-ltr-font/4158
+- Kern lookups have to come after the cursive ones, and renderers
+  disagreed on kerning across attachments.
+  https://forum.glyphsapp.com/t/kerning-is-ignored-between-glyphs-attached-with-cusrive-anchors/14312
+- Letter-spacing runs after shaping, when the attachment is already gone.
+  https://typedrawers.com/discussion/comment/23739
+
+**Recommendation.** Not a route for Kinetikern2 to push fonts onto. Use
+`exit`/`entry` anchors as input when a font has them (section 4.3).
+
+**Takeaways from the survey for Kinetikern2**
+
+1. Joins are constraints, not white to balance. Every spacer surveyed
+   assumes separate letters.
+2. Think in a few connection classes (low, middle, high exits and
+   entries), and test each exit class against each entry class, with calt
+   on and off.
+3. Do not kern joined lowercase. Kern capitals into lowercase, punctuation
+   and non-joining forms.
+4. Verify joins on the outlines, with a minimum overlap, not on
+   sidebearing numbers.
+5. `curs` is not a reliable escape for Latin.
 
 ### Comparison
 
 | Approach | Joins kept | Uses the model on letters | Effort | Risk |
 |---|---|---|---|---|
-| (a) Keep joining sides | all, by construction | no (advice only) | 1–2 days | low |
+| (a) Keep joining sides | all, by construction | no (advice only) | 1–3 days | low |
 | (b) Constraints within tolerance | all inside the windows | 29–53 % of its side variation | 1–2 weeks | medium |
 | (c) Join checker | verifies any mode | n/a | 1–2 weeks across Spacing QA and plugin | low |
 | (d1) Kern suggestions for broken joins | fixes about 45 % of the fonts' own breaks | n/a | inside (c) | low |
 | (d2) Kern every join back | all, if complete | yes | days, fragile | medium |
 | (e) calt suggestions | fixes height mismatches | n/a | 1–2 days (report) | low |
 | (f) Slant | no effect on joins | changes body measure | built | n/a |
+| (h) Cursive attachment | all, where apps apply it | n/a | font-side; anchors as input 1 day | app support |
 | Today's join mode | 79 % at best tightness (median family) | yes | built | — |
 
 ---
@@ -862,8 +1045,11 @@ option. Always show the checker's count next to it ("breaks 121 joins").
 
 ## Appendix: how this was measured
 
-The scripts ran in the session's scratchpad (temporary). They are short and
-rebuild the numbers from Spacing QA's data:
+The scripts ran in the session's scratchpad,
+`/private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/connected/`.
+That folder is temporary. The scripts are short (Python with uharfbuzz,
+skia-pathops, fontTools and numpy) and rebuild the numbers from Spacing QA's
+data:
 
 - `pairs.py`: per family and ordered a–z pair: shaping (calt off, calt on),
   join, gap, opening and closing windows, crossings, contact height, and the
@@ -883,8 +1069,8 @@ Caveats:
 - The model is Spacing QA's, at the best fit with the harness. The plugin at
   another Looseness moves every ΔS by about the same amount, which the "best
   tightness" column already takes out.
-- Joins were judged on a–z only. Accented letters inherit their bases' joins
-  in most of these fonts, but not always.
+- Joins were judged on a–z only. Accented letters and other alternates were
+  not checked; composites usually share their base's joins.
 - The Playwrite model figures assume alternates move like their base
   letters.
 - Rendering (seams where strokes only touch, hinting at small sizes) was not
@@ -895,4 +1081,5 @@ Caveats:
 - calt results for the 85 families come from shaping each pair as a
   two-letter word. That brings in word-final forms in a few fonts (WindSong,
   Momo Signature, Pacifico). The word-context check (`context.py`) was run
-  on the ten families with calt and is the one quoted in section 1.6.
+  on ten of the twelve families with calt (not the two Betania Patmos) and
+  is the one quoted in section 1.6.

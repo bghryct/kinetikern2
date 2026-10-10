@@ -12,8 +12,11 @@
 #                               (frozen capitals, looser figures, the Pairs window)
 #   ./build.sh --verify FONT --connected  and its connected-script stage (FONT must
 #                               be a connected script, e.g. an OFL script from Google
-#                               Fonts): joins found, join pairs unkerned and overlapping,
-#                               a period's distance kept, Apply/Revert, off again
+#                               Fonts): Keep joins keeps every join (the join checker),
+#                               kept sides and join kerning as drawn, a period's
+#                               distance kept, Apply then the font read back with every
+#                               join still touching (ink contact), Revert exact, Space
+#                               joined letters counted, off again
 #
 # The library is replaced atomically (built into a staging file, signed, then renamed
 # over the old one), so a Glyphs or a tool that has the old one loaded keeps it.
@@ -54,7 +57,7 @@ while [ $# -gt 0 ]; do
       VERIFY=1
       # an optional font path follows (anything not starting with "-")
       if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then FONT="$2"; shift; fi ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift

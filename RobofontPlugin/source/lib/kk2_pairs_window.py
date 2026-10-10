@@ -11,8 +11,8 @@ its own rhythm: the list shows the extremes either way, each drawn as it is
 and as Kinetikern2 would set it. Double-click a pair (or Open in Space Center)
 to look at it in RoboFont.
 
-The engine does the measuring (all pairs of a whole font in a fraction of a
-second); the font's kerning is read once per measurement, on the main thread.
+The engine does the measuring (all pairs of a whole font in seconds,
+off the main thread: about 20 s for Arial); the font's kerning is read once per measurement, on the main thread.
 """
 
 from __future__ import division, print_function, unicode_literals

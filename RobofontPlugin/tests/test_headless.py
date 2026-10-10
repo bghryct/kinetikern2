@@ -1,33 +1,64 @@
 # encoding: utf-8
 """
-Headless tests of the Kinetikern2 extension: everything but the windows,
-outside RoboFont, on in-memory UFO fonts (fontParts' fontshell over defcon,
-what RoboFont edits) with the real engine.
+Headless tests of the Kinetikern2 extension: everything but the windows
+(the Joins window's rows are checked with vanilla stubbed), outside
+RoboFont, on in-memory UFO fonts (fontParts' fontshell over defcon, what
+RoboFont edits) with the real engine.
 
     python3 tests/test_headless.py [font.ufo | font.ttf ...]
 
 Needs python3 with fontParts, defcon and fontTools, and the engine library in
 the built extension (./build.sh). The library must have this Python's
-architecture (the universal build has both).
+architecture (the universal build has both). glyphsLib is optional: without
+it the categories are not compared with Glyphs' glyph database.
 
-1. A synthetic font with what Glyphs knows and a UFO does not: unencoded
-   glyphs (a.sc, f_i, zero.tf), an accented letter built from components, a
-   ligature built from components, a metrics key from Glyphs (glyphsLib's
-   lib keys), kerning groups and kerning. The snapshot must read categories,
-   groups, aligned composites and rules as the Glyphs plugin would.
-2. On it, and on each font given (a real font, its GPOS pair kerning turned
-   into UFO groups and pairs): solve the whole font, plan, Apply, read back
-   (kerning, groups, sidebearings on the ink, composites rigid, followers
-   moved with their bases), Revert and compare every glyph (outlines,
-   components, anchors, widths), the kerning and the groups with the font
-   before: they must be identical, every coordinate to the last bit.
-3. Spacing groups: frozen glyphs keep everything.
-4. Italics measured along their italic angle: the frame, results back in
-   the font's frame, Apply and Revert on a slanted synthetic font.
-5. ink_x (the ink measure Apply and Revert use) against the pen, on odd
-   shapes (transformed and nested components, a contour of off-curve points
-   only, curves past their points, open and one-point contours) and on every
-   glyph of the fonts given.
+main() runs, in this order:
+
+1. test_snapshot: a synthetic font with what Glyphs knows and a UFO does
+   not: unencoded glyphs (a.sc, f_i, zero.tf), an accented letter built
+   from components, a ligature built from components, a metrics key from
+   Glyphs (glyphsLib's lib keys), kerning groups and kerning. The snapshot
+   must read categories, groups, aligned composites and rules as the Glyphs
+   plugin would.
+2. test_glyphs_categories: the snapshot's categories against Glyphs' own
+   glyph database (glyphsLib), on the encoded Latin, Greek, Cyrillic,
+   punctuation and symbol glyphs: at least 99.5 % the same.
+3. test_ink_x: ink_x (the ink measure Apply and Revert use) against the
+   pen, on odd shapes (transformed and nested components, a contour of
+   off-curve points only, curves past their points, open and one-point
+   contours) and on every glyph of the fonts given.
+4. test_slant: italics measured along their italic angle: the frame,
+   results back in the font's frame, then apply_and_revert on a slanted
+   synthetic font.
+5. apply_and_revert on the synthetic font, without and with the designer
+   harness: solve the whole font, plan, Apply, read back (kerning, groups,
+   sidebearings on the ink, composites rigid, followers moved with their
+   bases), Revert and compare every glyph (outlines, components, anchors,
+   widths), the kerning and the groups with the font before: they must be
+   identical, every coordinate to the last bit.
+6. test_groups: spacing groups: frozen glyphs keep everything.
+7. test_by_category: groups by category (figures, punctuation, symbols and
+   each script but Latin, at the main settings; a second run adds nothing),
+   and a Looseness on Punctuation that opens the punctuation only.
+8. test_conflict: a Revert that keeps a glyph changed after Apply.
+9. test_keep_joins: a synthetic connected script: Keep joins keeps every
+   join through Apply (read back from the font by ink contact) and the
+   font's kerning of a join pair, a period keeps clear of the exit stroke,
+   Revert is exact; Space joined letters is counted.
+10. test_joins_window: the Joins window's rows: the broken join with the
+    kerning that mends it, nothing broken by Keep joins, drawing advice,
+    Open Proof in context; Spacing QA's rule on crafted findings (a
+    consistent joiner, a hairline gap that nearly touches, a partly
+    connected hand, a design whose glyphs touch by construction).
+11. test_decorated: an underline drawn exactly from edge to edge: the
+    detector finds no overlap, the decoration test finds it, every glyph
+    keeps both sides and Keep joins keeps the line whole.
+12. test_flush_joins: a script whose strokes meet exactly flush: the
+    detector finds no overlap, the touching rule finds it connected, and
+    Keep joins keeps every join.
+13. apply_and_revert on each font given (a real font's GPOS pair kerning
+    turned into UFO groups and pairs), without and with the designer
+    harness.
 """
 
 from __future__ import division, print_function, unicode_literals
@@ -590,6 +621,282 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
     return counts
 
 
+def script_font(broken=False):
+    """A connected script: a–z, each a body with an entry stroke before its
+    origin and an exit stroke past its advance, which overlap the next
+    letter's (40 units); a period and two capitals that do not join; the
+    designer kerned one join pair (c d −6) and a letter before the period."""
+    f = fontshell.RFont()
+    f.info.familyName, f.info.styleName = "Kinetikern Script Test", "Regular"
+    f.info.unitsPerEm, f.info.ascender, f.info.descender = 1000, 750, -250
+    f.info.capHeight, f.info.xHeight = 700, 500
+    for k, ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
+        w = 240 + 7 * ((k * 5) % 11)  # bodies of different widths
+        g = f.newGlyph(ch)
+        g.unicodes = [ord(ch)]
+        g.width = 200 + w
+        p = g.getPen()
+        _box(p, -20, 0, 100, 40)  # entry stroke
+        _box(p, 100, 0, 170, 500)
+        _box(p, 170, 430, 30 + w, 500)
+        _box(p, 30 + w, 0, 100 + w, 500)
+        _box(p, 100 + w, 0, 220 + w, 40)  # exit stroke
+    for name, uni, width, boxes in (("period", ".", 260, [(80, 0, 180, 100)]),
+                                    ("H", "H", 700, [(80, 0, 170, 700), (530, 0, 620, 700), (170, 320, 530, 400)]),
+                                    ("O", "O", 760, [(80, 0, 680, 80), (80, 620, 680, 700), (80, 0, 160, 700),
+                                                     (600, 0, 680, 700)])):
+        g = f.newGlyph(name)
+        g.unicodes = [ord(uni)]
+        g.width = width
+        p = g.getPen()
+        for b in boxes:
+            _box(p, *b)
+    f.kerning[("c", "d")] = -6
+    f.kerning[("e", "period")] = -12
+    if broken:
+        f.kerning[("o", "r")] = 60  # r 20 units clear of o's exit stroke: a broken join
+    f.lib["public.glyphOrder"] = list(f.keys())
+    return f
+
+
+def test_keep_joins(engine):
+    """Keep joins: every join of the script holds through Apply, read back
+    from the font by ink contact; join pairs keep the font's kerning; Revert
+    is exact. Space joined letters breaks some (counted)."""
+    print("\n== a connected script: Keep joins")
+    if not engine.features & kb.FEATURE_JOIN_CHECK:
+        check(False, "this engine build has no join checker")
+        return
+    f = script_font()
+    before = copy.deepcopy(font_state(f))
+    snap, _ms = read(f)
+    n = len(snap.names)
+    kinds = bytearray(n)
+    for i, name in enumerate(snap.names):
+        if snap.specs[i].group in (kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE):
+            cp = snap.infos[name].unicode
+            kinds[i] = kb.JOINKIND_LOWER if cp is not None and 0x61 <= cp <= 0x7A else kb.JOINKIND_UPPER
+    current = [(kb.ENTRY_GLYPH_GLYPH, snap.index[a], snap.index[b], float(v)) for (a, b), v in f.kerning.items()]
+    bands = engine.detect_joins(snap.packer, snap.upm, 500.0, kinds, current)
+    check(sum(1 for l, r in bands if l or r) >= 26, "the detector finds the joins (%d glyphs)" % sum(1 for l, r in bands if l or r))
+
+    def solve(keep):
+        job = engine.prepare(snap.packer, snap.upm, joins=bands, join_kinds=kinds, current=current, keep_joins=keep)
+        job.wait(120.0)
+        ctx = job.take()
+        job.free()
+        params = kb.make_params(threshold=5.0, budget=30000, fit_frozen=keep)
+        job = engine.solve(ctx, params, None)
+        job.wait(300.0)
+        res = job.take()
+        job.free()
+        return ctx, res
+
+    ctx, res = solve(True)
+    if engine.features & kb.FEATURE_JOIN_DECORATED:
+        check(not engine.join_decorated(ctx), "a script's figures stand apart: not a decoration")
+    st, sides = engine.join_check(ctx, res)
+    check(st["joins"] >= 26 * 26 and st["broken"] == 0,
+          "Keep joins keeps every join (%d of %d, %d kept sides, Looseness matched %+.2f)"
+          % (st["kept"], st["joins"], st["kept_sides"], res.fitted_looseness or 0.0))
+    cd = res.value(snap.index["c"], snap.index["d"])
+    check(abs(cd + 6.0) < 1e-6, "the join pair c d keeps the font's kerning (%g)" % cd)
+    az = [snap.index[ch] for ch in "abcdefghijklmnopqrstuvwxyz"]
+    joined = [(snap.names[d["left"]], snap.names[d["right"]]) for d in engine.join_pairs(ctx, [(a, b) for a in az for b in az]) if d["joins"]]
+    check(len(joined) == 26 * 26, "as drawn every a–z pair joins (%d)" % len(joined))
+    period, e = snap.index["period"], snap.index["e"]
+    m = res.metrics
+    gap = m[e].rsb + m[period].lsb + res.value(e, period)
+    check(gap >= 0.0, "a period after a letter keeps clear of its exit stroke (%+.1f)" % gap)
+    p = ka.plan(snap, res, True)
+    summary, point = ka.apply(f, snap, p)
+    check(summary["ok"] and not summary.get("error"), "Apply reads back as planned")
+    # the font read again: every join still touches (ink contact)
+    snap2, _ms = read(f)
+    job = engine.prepare(snap2.packer, snap2.upm, joins=bands, join_kinds=kinds, current=[
+        (kb.ENTRY_GLYPH_GLYPH, snap2.index[a], snap2.index[b], float(v)) for (a, b), v in f.kerning.items()
+        if a in snap2.index and b in snap2.index], keep_joins=True)
+    job.wait(120.0)
+    ctx2 = job.take()
+    job.free()
+    idx = snap2.index
+    after = engine.join_pairs(ctx2, [(idx[a], idx[b]) for a, b in joined])
+    lost = [(snap2.names[d["left"]], snap2.names[d["right"]]) for d in after if not d["joins"]]
+    check(not lost, "after Apply every join still touches, read back from the font (%d of %d lost, e.g. %s)"
+          % (len(lost), len(joined), lost[:5]))
+    check(f.kerning.get(("c", "d")) == -6, "after Apply the font still kerns c d by -6 (%s)" % f.kerning.get(("c", "d")))
+    point.restore(overwrite=False)
+    diff = diff_state(before, font_state(f))
+    check(not diff, "Revert puts the script back exactly (%d differences, e.g. %s)" % (len(diff), diff[:4]))
+    for x in (res, ctx, ctx2):
+        x.close()
+    # Space joined letters: the bodies spaced, the joins counted
+    ctx, res = solve(False)
+    st, _sides = engine.join_check(ctx, res)
+    print("      Space joined letters: %d of %d joins kept, %d broken" % (st["kept"], st["joins"], st["broken"]))
+    check(st["kept"] + st["broken"] == st["joins"], "Space joined letters: the checker counts every join")
+    res.close()
+    ctx.close()
+
+
+def _stub_vanilla():
+    """A stand-in for vanilla (no AppKit here): the Joins window's controls
+    keep what is set on them."""
+    import types
+    stub = types.ModuleType("vanilla")
+
+    class Control(object):
+        def __init__(self, *args, **kwargs):
+            self.value, self.selection = None, []
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value if self.value is not None else 0
+
+        def getSelection(self):
+            return self.selection
+
+        def bind(self, *args):
+            pass
+
+        def open(self):
+            pass
+
+        def close(self):
+            pass
+
+        def makeKey(self):
+            pass
+
+    for name in ("FloatingWindow", "TextBox", "SegmentedButton", "Button", "List"):
+        setattr(stub, name, type(name, (Control,), {}))
+    sys.modules["vanilla"] = stub
+
+
+def test_joins_window(engine):
+    """The Joins window's rows on a script with a broken join (its UI stubbed):
+    the broken pair with the kerning that mends it, nothing broken by Keep
+    joins, drawing advice, and a proof in context."""
+    print("\n== the Joins window")
+    if not engine.features & kb.FEATURE_JOIN_CHECK:
+        check(False, "this engine build has no join checker")
+        return
+    _stub_vanilla()
+    import kk2_joins_window as kj
+    f = script_font(broken=True)
+    snap, _ms = read(f)
+    n = len(snap.names)
+    kinds = bytearray(n)
+    for i, name in enumerate(snap.names):
+        if snap.specs[i].group in (kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE):
+            cp = snap.infos[name].unicode
+            kinds[i] = kb.JOINKIND_LOWER if cp is not None and 0x61 <= cp <= 0x7A else kb.JOINKIND_UPPER
+    current = [(kb.ENTRY_GLYPH_GLYPH, snap.index[a], snap.index[b], float(v)) for (a, b), v in f.kerning.items()]
+    bands = engine.detect_joins(snap.packer, snap.upm, 500.0, kinds, current)
+    job = engine.prepare(snap.packer, snap.upm, joins=bands, join_kinds=kinds, current=current, keep_joins=True)
+    job.wait(120.0)
+    ctx = job.take()
+    job.free()
+    job = engine.solve(ctx, kb.make_params(threshold=5.0, fit_frozen=True), None)
+    job.wait(300.0)
+    res = job.take()
+    job.free()
+
+    class Window(object):
+        pass
+
+    kw = Window()
+    kw.snapshot, kw.context, kw.result, kw.engine = snap, ctx, res, engine
+    kw.joins, kw.join_kinds, kw.join_note = bands, kinds, "26 of 29 letters join"
+    kw.join_check = engine.join_check(ctx, res)
+    kw._result_kind = "whole"
+    kw._keeps_joins = lambda: True
+    kw.joins_window_closed = lambda: None
+
+    class Host(object):
+        lines = None
+
+        def open_proof(self, lines):
+            Host.lines = lines
+
+    win = kj.JoinsWindow(kw, host=Host())
+    broken = [r for r in win.findings if r["finding"].startswith("broken")]
+    check(len(broken) == 1 and broken[0]["what"] == "o r",
+          "Findings: the one broken join, o r (%s)" % [(r["what"], r["value"], r["note"]) for r in win.findings][:4])
+    check(broken and broken[0]["value"] == "20.0 apart" and "kern -25 joins it" in broken[0]["note"],
+          "…20 units apart, and the kerning that joins it (%s; %s)" % (broken[0]["value"] if broken else "–",
+                                                                     broken[0]["note"] if broken else "–"))
+    check(not win.under, "Under the preview: Keep joins breaks nothing (%d rows)" % len(win.under))
+    check("Keep joins" in win.text and "kept" in win.text, "the summary says what the preview keeps (%r)" % win.text.split("\n")[-1][:90])
+    win.w.list.selection = [0]
+    win.view = kj.FINDINGS
+    win._show()
+    win.openProof()
+    check(Host.lines == [[("n", "o", "r", "n")]], "Open Proof sets the pair in context (%s)" % Host.lines)
+    win.view = kj.ADVICE
+    win._show()
+    check(all(r["what"].split()[-1] in ("left", "right") for r in win.advice),
+          "Drawing advice: %d kept sides off the font's rhythm by 5 units or more, e.g. %s"
+          % (len(win.advice), [(r["what"], r["value"]) for r in win.advice[:3]]))
+
+    # Spacing QA's rule on crafted findings: a consistent joiner's exceptions
+    # are broken (a hairline gap nearly touches); a partly connected hand's
+    # non-joins are style, except between two strongly joining sides
+    az = win._letters()
+    nan = float("nan")
+    per = snap.upm / 1000.0
+
+    def row(a, b, joins, gap=nan):
+        return {"left": a, "right": b, "joins": joins, "joins_after": joins, "crossing": False,
+                "crossing_after": False, "fragile": False, "fix_crosses": False, "close": 50.0 if joins else nan,
+                "open": 20.0 if joins else nan, "gap": nan if joins else gap, "fix": nan if joins else -gap - 5.0,
+                "height": 100.0 if joins else nan, "delta": 0.0}
+
+    class Crafted(object):
+        detail = []
+
+        def __getattr__(self, name):
+            return getattr(engine, name)
+
+        def join_pairs(self, context, pairs, result=None, scope=None):
+            return Crafted.detail
+
+    def consistent(a, b):
+        if (a, b) == (az[0], az[1]):
+            return row(a, b, False, 20.0 * per)
+        if (a, b) == (az[2], az[3]):
+            return row(a, b, False, 2.0 * per)
+        return row(a, b, True)
+
+    name = lambda a, b: "%s %s" % (snap.names[a], snap.names[b])
+    found = lambda what: [r["what"] for r in win.findings if r["finding"].startswith(what)]
+    kw.engine = Crafted()
+    Crafted.detail = [consistent(a, b) for a in az for b in az]
+    win.refresh()
+    check(found("broken") == [name(az[0], az[1])] and found("nearly touch") == [name(az[2], az[3])]
+          and not found("not joined"),
+          "a consistent joiner: its exception is broken, a 2-unit gap nearly touches (%s; %s)"
+          % (found("broken"), found("nearly touch")))
+    apart = set((a, b) for a in az[13:] for b in az[:10]) | {(az[10], az[11])}
+    Crafted.detail = [row(a, b, (a, b) not in apart, 30.0 * per) for a in az for b in az]
+    win.refresh()
+    check(found("broken") == [name(az[10], az[11])] and len(found("not joined")) == 130
+          and "partly connected hand" in win.text,
+          "a partly connected hand (19 %% of its joining pairs apart): the non-join between strong sides broken, "
+          "130 listed as style (%d broken, %d listed)" % (len(found("broken")), len(found("not joined"))))
+    kw.join_decorated = True
+    Crafted.detail = [row(a, b, (a, b) != (az[0], az[1]), 20.0 * per) for a in az for b in az]
+    win.refresh()
+    check(found("the line does not meet") == [name(az[0], az[1])],
+          "a design whose glyphs touch by construction: where the line does not meet (%s)"
+          % found("the line does not meet"))
+    kw.engine, kw.join_decorated = engine, False
+    res.close()
+    ctx.close()
+
+
 def test_glyphs_categories():
     """The snapshot's categories against Glyphs' own glyph database (when
     glyphsLib is here): the encoded glyphs of the scripts and the
@@ -718,6 +1025,132 @@ def test_conflict(engine):
     context.close()
 
 
+def underline_font():
+    """a–z, 0–9 and a period, each a body over an underline drawn exactly from
+    its origin to its advance: every glyph touches its neighbours and none
+    overlaps them; the figures share one advance."""
+    f = fontshell.RFont()
+    f.info.familyName, f.info.styleName = "Kinetikern Underline Test", "Regular"
+    f.info.unitsPerEm, f.info.ascender, f.info.descender = 1000, 750, -250
+    f.info.capHeight, f.info.xHeight = 700, 500
+    glyphs = [(ch, ord(ch), 300 + 10 * (k % 7), (50, 0, 250 + 10 * (k % 7), 500))
+              for k, ch in enumerate("abcdefghijklmnopqrstuvwxyz")]
+    figures = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+    glyphs += [(name, 0x30 + k, 560, (60, 0, 500, 700)) for k, name in enumerate(figures)]
+    glyphs.append(("period", ord("."), 240, (70, 0, 170, 100)))
+    for name, uni, width, body in glyphs:
+        g = f.newGlyph(name)
+        g.unicodes = [uni]
+        g.width = width
+        p = g.getPen()
+        _box(p, *body)
+        _box(p, 0, -120, width, -80)  # the underline, edge to edge
+    f.lib["public.glyphOrder"] = list(f.keys())
+    return f
+
+
+def test_decorated(engine):
+    """An underline drawn exactly from edge to edge: the detector finds no
+    overlap, the decoration test finds the glyphs touch by construction, and
+    Keep joins keeps every side that touches — figures and the period too —
+    so no part of the line breaks."""
+    print("\n== a design whose glyphs touch by construction")
+    if not engine.features & kb.FEATURE_JOIN_DECORATED:
+        check(False, "this engine build has no decoration test")
+        return
+    snap, _ms = read(underline_font())
+    n = len(snap.names)
+    kinds = bytearray(n)
+    for i, name in enumerate(snap.names):
+        if snap.specs[i].group in (kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE):
+            cp = snap.infos[name].unicode
+            kinds[i] = kb.JOINKIND_LOWER if cp is not None and 0x61 <= cp <= 0x7A else kb.JOINKIND_UPPER
+    bands = engine.detect_joins(snap.packer, snap.upm, 500.0, kinds, [])
+    check(not any(left or right for left, right in bands), "the detector finds no joins: nothing overlaps")
+    check(engine.detect_decorated(snap.packer, snap.upm, kinds, []),
+          "the decoration test finds the glyphs touch by construction")
+    job = engine.prepare(snap.packer, snap.upm, joins=bands, join_kinds=kinds, current=[], keep_joins=True)
+    job.wait(120.0)
+    ctx = job.take()
+    job.free()
+    check(engine.join_decorated(ctx), "the join checker agrees")
+    bits = engine.join_sides(ctx)
+    both = kb.JOINSIDE_LEFT_KEPT | kb.JOINSIDE_RIGHT_KEPT
+    kept = sum(1 for i in range(n) if bits[i] & both == both)
+    check(kept == n, "every glyph keeps both sides, the figures and the period too (%d of %d)" % (kept, n))
+    job = engine.solve(ctx, kb.make_params(threshold=5.0, fit_frozen=True), None)
+    job.wait(300.0)
+    res = job.take()
+    job.free()
+    st, _sides = engine.join_check(ctx, res)
+    check(st["joins"] > 0 and st["broken"] == 0,
+          "Keep joins keeps the line whole (%d of %d touching pairs kept)" % (st["kept"], st["joins"]))
+    res.close()
+    ctx.close()
+
+
+def flush_font():
+    """A script whose strokes meet exactly flush: each letter's exit stroke
+    ends at its advance and the next letter's entry stroke starts at its
+    origin, so the letters touch without overlapping."""
+    f = fontshell.RFont()
+    f.info.familyName, f.info.styleName = "Kinetikern Flush Test", "Regular"
+    f.info.unitsPerEm, f.info.ascender, f.info.descender = 1000, 750, -250
+    f.info.capHeight, f.info.xHeight = 700, 500
+    for k, ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
+        w = 240 + 7 * ((k * 5) % 11)
+        g = f.newGlyph(ch)
+        g.unicodes = [ord(ch)]
+        g.width = 200 + w
+        p = g.getPen()
+        _box(p, 0, 0, 100, 40)  # entry stroke, from the origin
+        _box(p, 100, 0, 170, 500)
+        _box(p, 170, 430, 30 + w, 500)
+        _box(p, 30 + w, 0, 100 + w, 500)
+        _box(p, 100 + w, 0, 200 + w, 40)  # exit stroke, to the advance
+    g = f.newGlyph("period")
+    g.unicodes = [ord(".")]
+    g.width = 260
+    _box(g.getPen(), 80, 0, 180, 100)
+    f.lib["public.glyphOrder"] = list(f.keys())
+    return f
+
+
+def test_flush_joins(engine):
+    """Letters that join by touching, without overlapping: the detector finds
+    no joins, the touching rule finds the font connected, and Keep joins
+    keeps every join."""
+    print("\n== a script whose strokes meet flush")
+    if not engine.features & kb.FEATURE_JOIN_CONTACT:
+        check(False, "this engine build has no touching rule")
+        return
+    snap, _ms = read(flush_font())
+    n = len(snap.names)
+    kinds = bytearray(n)
+    for i, name in enumerate(snap.names):
+        if snap.specs[i].group in (kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE):
+            cp = snap.infos[name].unicode
+            kinds[i] = kb.JOINKIND_LOWER if cp is not None and 0x61 <= cp <= 0x7A else kb.JOINKIND_UPPER
+    bands = engine.detect_joins(snap.packer, snap.upm, 500.0, kinds, [])
+    check(not any(left or right for left, right in bands), "the detector finds no joins: nothing overlaps")
+    joining, measured = engine.detect_contact(snap.packer, snap.upm, kinds, [])
+    check(measured == 26 and joining == 26, "the touching rule: %d of %d letters join" % (joining, measured))
+    check(not engine.detect_decorated(snap.packer, snap.upm, kinds, []), "not a decoration: there are no figures")
+    job = engine.prepare(snap.packer, snap.upm, joins=bands, join_kinds=kinds, current=[], keep_joins=True)
+    job.wait(120.0)
+    ctx = job.take()
+    job.free()
+    job = engine.solve(ctx, kb.make_params(threshold=5.0, fit_frozen=True), None)
+    job.wait(300.0)
+    res = job.take()
+    job.free()
+    st, _sides = engine.join_check(ctx, res)
+    check(st["joins"] >= 26 * 26 and st["broken"] == 0,
+          "Keep joins keeps every flush join (%d of %d)" % (st["kept"], st["joins"]))
+    res.close()
+    ctx.close()
+
+
 def main():
     engine = load_engine()
     print("engine %s, features %d, %d threads" % (engine.version, engine.features, engine.default_threads))
@@ -731,6 +1164,10 @@ def main():
         test_groups(engine)
         test_by_category(engine)
         test_conflict(engine)
+        test_keep_joins(engine)
+        test_joins_window(engine)
+        test_decorated(engine)
+        test_flush_joins(engine)
         for path in sys.argv[1:]:
             apply_and_revert(engine, load_font(path), os.path.basename(path))
             apply_and_revert(engine, load_font(path), os.path.basename(path) + " with the designer harness",

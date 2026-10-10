@@ -38,6 +38,7 @@ GLYPH_LEFT_KEY = 8
 GLYPH_RIGHT_KEY = 16
 # a base letter: its extents set its group's spacing zone (FEATURE_ZONES)
 GLYPH_ZONE = 32
+GLYPH_FIGURE = 64  # one of the default figures 0–9 (the decoration test reads these)
 
 RULE_FREE, RULE_FIXED, RULE_FOLLOW_SAME, RULE_FOLLOW_OPPOSITE = 0, 1, 2, 3
 
@@ -55,6 +56,25 @@ FEATURE_MEASURE = 2
 FEATURE_HARNESS = 4
 FEATURE_JOINS = 8
 FEATURE_ZONES = 16  # spacing zones from the base letters (GLYPH_ZONE)
+# the join checker and Keep joins (kk2_prepare_start3, kk2_join_check,
+# kk2_join_pairs, kk2_join_sides, kk2_result_wanted)
+FEATURE_JOIN_CHECK = 32
+# the decoration test (kk2_join_decorated, kk2_detect_decorated): glyphs that
+# touch by construction (a line, a grid, a background or an effect through
+# every glyph) keep every touching side
+FEATURE_JOIN_DECORATED = 64
+# letters that join by touching, without overlapping (kk2_detect_contact)
+FEATURE_JOIN_CONTACT = 128
+
+# kk2_prepare_start3 flags: keep joins (else space joined letters)
+PREPARE_KEEP_JOINS = 1
+# KK2JoinPair.flags
+JOINPAIR_JOINS, JOINPAIR_JOINS_AFTER, JOINPAIR_CROSSING, JOINPAIR_CROSSING_AFTER, JOINPAIR_FRAGILE = 1, 2, 4, 8, 16
+JOINPAIR_FIX_CROSSES = 32  # not joined, and the kerning that joins it makes the strokes cross
+# kk2_join_sides bits per glyph
+JOINSIDE_LEFT_JOINS, JOINSIDE_RIGHT_JOINS = 1, 2
+JOINSIDE_LEFT_KEPT, JOINSIDE_RIGHT_KEPT = 4, 8
+JOINSIDE_LEFT_BAND, JOINSIDE_RIGHT_BAND = 16, 32
 
 # kk2_detect_joins: what a glyph is to the joins (only letters join; the
 # lowercase letters are the partners whose overlaps are counted) and what
@@ -158,6 +178,25 @@ class KK2Joins(Structure):
     _fields_ = [(n, c_double) for n in ("left_y0", "left_y1", "right_y0", "right_y1")]
 
 
+class KK2JoinStats(Structure):
+    """What a spacing does to a connected script's joins (kk2_join_check)."""
+    _fields_ = [(n, c_uint32) for n in ("struct_size", "keep", "letters", "kept_sides")] + [
+        (n, c_uint64) for n in ("joins", "kept", "broken", "moved")] + [
+        (n, c_uint32) for n in ("az_joins", "az_broken", "az_crossings_drawn", "az_crossings_made")]
+
+
+class KK2JoinSide(Structure):
+    """A side whose joins a spacing breaks (side: 0 left, 1 right)."""
+    _fields_ = [("glyph", c_uint32), ("side", c_uint32), ("breaks", c_uint32), ("reserved", c_uint32),
+                ("delta", c_double)]
+
+
+class KK2JoinPair(Structure):
+    """One pair in detail (kk2_join_pairs), font units."""
+    _fields_ = [("left", c_uint32), ("right", c_uint32), ("flags", c_uint32), ("reserved", c_uint32)] + [
+        (n, c_double) for n in ("close", "open", "gap", "fix", "height", "delta")]
+
+
 class KK2PairOut(Structure):
     _fields_ = [("left", c_uint32), ("right", c_uint32), ("current", c_float), ("model", c_float),
                 ("residual", c_float), ("reserved", c_uint32)]
@@ -170,7 +209,8 @@ class KK2MeasureStats(Structure):
 
 _SIZES = {KK2Point: 24, KK2Glyph: 104, KK2Params: 152, KK2Progress: 40, KK2Metrics: 64, KK2Entry: 24,
           KK2Stats: 352, KK2Result: 464, KK2Ray: 24, KK2GlyphOpt: 24, KK2KernIn: 16, KK2PairOut: 24,
-          KK2MeasureStats: 40, KK2Harness: 32, KK2HarnessPair: 16, KK2Joins: 32}
+          KK2MeasureStats: 40, KK2Harness: 32, KK2HarnessPair: 16, KK2Joins: 32, KK2JoinStats: 64,
+          KK2JoinSide: 24, KK2JoinPair: 64}
 _POINT = struct.Struct("<ddII")
 _ENTRY = struct.Struct("<IIffII")
 
@@ -389,6 +429,17 @@ class Engine(object):
             "kk2_prepare_start2": ([c_void_p, c_uint32, c_double, c_uint32, c_void_p, c_uint32], c_void_p),
             "kk2_detect_joins": ([c_void_p, c_uint32, c_double, c_double, c_void_p, c_void_p, c_uint32, c_uint32,
                                   c_void_p], c_uint32),
+            "kk2_prepare_start3": ([c_void_p, c_uint32, c_double, c_uint32, c_void_p, c_uint32, c_void_p, c_void_p,
+                                   c_uint32, c_uint32], c_void_p),
+            "kk2_join_check": ([c_void_p, c_void_p, c_void_p, c_uint32, POINTER(KK2JoinStats), c_void_p, c_uint32],
+                               c_uint32),
+            "kk2_join_pairs": ([c_void_p, c_void_p, c_void_p, c_uint32, c_void_p, c_uint32, c_void_p], c_uint32),
+            "kk2_join_sides": ([c_void_p, c_void_p], c_uint32),
+            "kk2_result_wanted": ([c_void_p, c_void_p, c_uint32], c_uint32),
+            "kk2_join_decorated": ([c_void_p], ctypes.c_int32),
+            "kk2_detect_decorated": ([c_void_p, c_uint32, c_double, c_void_p, c_void_p, c_uint32], ctypes.c_int32),
+            "kk2_detect_contact": ([c_void_p, c_uint32, c_double, c_void_p, c_void_p, c_uint32, c_void_p],
+                                   ctypes.c_int32),
         }
         self.features = 0
         for name, (args, res) in optional.items():
@@ -409,11 +460,25 @@ class Engine(object):
     def last_error(self):
         return (self.lib.kk2_last_error() or b"").decode("utf-8", "replace")
 
-    def prepare(self, packer, units_per_em, threads=0, joins=None):
+    def prepare(self, packer, units_per_em, threads=0, joins=None, join_kinds=None, current=(), keep_joins=False):
         """Starts Phase 1. Returns a Job whose output is a Context. `joins`:
-        a connected script's join bands (detect_joins), or None."""
+        a connected script's join bands (detect_joins), or None. With
+        `join_kinds` (one JOINKIND_* per glyph) and `current` (the font's
+        kerning as measure() takes it) every glyph with an outline is also
+        measured for the join checker (join_check, join_pairs); `keep_joins` keeps every
+        joining side's sidebearing and the font's kerning between two joining
+        sides (Keep joins), else the joined letters' bodies are spaced."""
         arr, n, keep = packer.build()
-        if joins is not None:
+        if join_kinds is not None and self.features & FEATURE_JOIN_CHECK:
+            jarr = pack_joins(joins, n) if joins is not None else None
+            kinds_buf = (c_uint8 * max(n, 1)).from_buffer_copy(bytes(bytearray(join_kinds[:n])).ljust(max(n, 1), b"\0"))
+            cur = pack_kern_in(current)
+            ptr = self.lib.kk2_prepare_start3(ctypes.addressof(arr), n, float(units_per_em), int(threads),
+                                              ctypes.addressof(jarr) if jarr is not None else None, sizeof(KK2Joins),
+                                              ctypes.addressof(kinds_buf), ctypes.addressof(cur), len(current),
+                                              PREPARE_KEEP_JOINS if keep_joins else 0)
+            del jarr, kinds_buf, cur
+        elif joins is not None:
             if not self.features & FEATURE_JOINS:
                 raise EngineError("this engine build has no connected-script mode (kk2_prepare_start2)")
             jarr = pack_joins(joins, n)
@@ -448,6 +513,126 @@ class Engine(object):
             raise EngineError(self.last_error())
         band = lambda y0, y1: (y0, y1) if y0 == y0 and y1 == y1 else None
         return [(band(o.left_y0, o.left_y1), band(o.right_y0, o.right_y1)) for o in out[:n]]
+
+    def detect_decorated(self, packer, units_per_em, kinds, current=()):
+        """The glyphs touch by construction — a line, a grid, a background
+        or an effect runs through every glyph, figures included — tested on
+        the glyphs alone: for a font whose letters detect_joins finds
+        unjoined because nothing overlaps (an underline drawn exactly from
+        edge to edge). Prepared with the join checker and Keep joins, such a
+        font keeps every side that touches. False with an older engine."""
+        if not self.features & FEATURE_JOIN_DECORATED or getattr(self.lib, "kk2_detect_decorated", None) is None:
+            return False
+        arr, n, keep = packer.build()
+        kinds_buf = (c_uint8 * max(n, 1)).from_buffer_copy(bytes(bytearray(kinds[:n])).ljust(max(n, 1), b"\0"))
+        cur = pack_kern_in(current)
+        v = self.lib.kk2_detect_decorated(ctypes.addressof(arr), n, float(units_per_em), ctypes.addressof(kinds_buf),
+                                          ctypes.addressof(cur), len(current))
+        del keep, arr
+        if v < 0:
+            raise EngineError(self.last_error())
+        return bool(v)
+
+    def detect_contact(self, packer, units_per_em, kinds, current=()):
+        """Letters that join by touching, as the font sets them: (how many of
+        the basic a–z have a right side that touches at least half the a–z,
+        how many were measured). At least half: the font is connected even
+        where nothing overlaps (strokes that meet flush), which detect_joins
+        does not find — Spacing QA's rule, on the pairs as drawn. (0, 0) with
+        an older engine."""
+        if not self.features & FEATURE_JOIN_CONTACT or getattr(self.lib, "kk2_detect_contact", None) is None:
+            return 0, 0
+        arr, n, keep = packer.build()
+        kinds_buf = (c_uint8 * max(n, 1)).from_buffer_copy(bytes(bytearray(kinds[:n])).ljust(max(n, 1), b"\0"))
+        cur = pack_kern_in(current)
+        measured = c_uint32(0)
+        v = self.lib.kk2_detect_contact(ctypes.addressof(arr), n, float(units_per_em), ctypes.addressof(kinds_buf),
+                                        ctypes.addressof(cur), len(current), byref(measured))
+        del keep, arr
+        if v < 0:
+            raise EngineError(self.last_error())
+        return int(v), int(measured.value)
+
+    def join_check(self, context, result=None, scope=None, side_cap=64):
+        """What `result` (None: the font as it is) does to a connected
+        script's joins: (stats, sides). stats: dict of KK2JoinStats; sides:
+        [(glyph index, "left"|"right", breaks, delta)], most breaks first.
+        `scope`: the glyphs that take the result (None: the glyphs it
+        kerned); the rest keep their sides and kerning. A context prepared
+        without join_kinds has none (stats["joins"] 0). Synchronous: the
+        engine works in parallel, milliseconds for a script font."""
+        if not self.features & FEATURE_JOIN_CHECK:
+            raise EngineError("this engine build has no join checker (kk2_join_check)")
+        st = KK2JoinStats()
+        st.struct_size = sizeof(KK2JoinStats)
+        sides = (KK2JoinSide * max(side_cap, 1))()
+        sbuf, slen = None, 0
+        if scope is not None:
+            sbuf = (c_uint8 * max(len(scope), 1)).from_buffer_copy(bytes(bytearray(1 if x else 0 for x in scope)).ljust(1, b"\0"))
+            slen = len(scope)
+        n = self.lib.kk2_join_check(context.ptr, result.ptr if result is not None else None,
+                                    ctypes.addressof(sbuf) if sbuf is not None else None, slen, byref(st),
+                                    ctypes.addressof(sides), int(side_cap))
+        if n == 0xFFFFFFFF:
+            raise EngineError(self.last_error())
+        stats = dict((name, getattr(st, name)) for name, _ in KK2JoinStats._fields_ if name != "struct_size")
+        return stats, [(sides[k].glyph, "right" if sides[k].side else "left", sides[k].breaks, sides[k].delta)
+                       for k in range(n)]
+
+    def join_pairs(self, context, pairs, result=None, scope=None):
+        """Pairs [(left, right)] in detail, as the font sets them and under
+        `result`: [dict(left, right, joins, joins_after, crossing,
+        crossing_after, fragile, fix_crosses, close, open, gap, fix, height,
+        delta)], font units (NaN where it does not apply)."""
+        if not self.features & FEATURE_JOIN_CHECK:
+            raise EngineError("this engine build has no join checker (kk2_join_pairs)")
+        count = len(pairs)
+        if not count:
+            return []
+        flat = (c_uint32 * (2 * count))(*[int(x) for p in pairs for x in p])
+        out = (KK2JoinPair * count)()
+        sbuf, slen = None, 0
+        if scope is not None:
+            sbuf = (c_uint8 * max(len(scope), 1)).from_buffer_copy(bytes(bytearray(1 if x else 0 for x in scope)).ljust(1, b"\0"))
+            slen = len(scope)
+        n = self.lib.kk2_join_pairs(context.ptr, result.ptr if result is not None else None, ctypes.addressof(flat),
+                                    count, ctypes.addressof(sbuf) if sbuf is not None else None, slen,
+                                    ctypes.addressof(out))
+        if n == 0xFFFFFFFF:
+            raise EngineError(self.last_error())
+        rows = []
+        for k in range(n):
+            o = out[k]
+            rows.append({"left": o.left, "right": o.right, "joins": bool(o.flags & JOINPAIR_JOINS),
+                         "joins_after": bool(o.flags & JOINPAIR_JOINS_AFTER),
+                         "crossing": bool(o.flags & JOINPAIR_CROSSING),
+                         "crossing_after": bool(o.flags & JOINPAIR_CROSSING_AFTER),
+                         "fragile": bool(o.flags & JOINPAIR_FRAGILE),
+                         "fix_crosses": bool(o.flags & JOINPAIR_FIX_CROSSES), "close": o.close, "open": o.open,
+                         "gap": o.gap, "fix": o.fix, "height": o.height, "delta": o.delta})
+        return rows
+
+    def join_decorated(self, context):
+        """The glyphs touch by construction (a line, a grid or a background
+        runs through every glyph, figures included): Keep joins then keeps
+        every side that touches the a–z, letter or not. False without the
+        decoration test (an older engine) or the join checker."""
+        if not self.features & FEATURE_JOIN_DECORATED or context is None or context.ptr is None:
+            return False
+        v = self.lib.kk2_join_decorated(context.ptr)
+        if v < 0:
+            raise EngineError(self.last_error())
+        return bool(v)
+
+    def join_sides(self, context):
+        """Per glyph the JOINSIDE_* bits: joins in the font, kept, with a band."""
+        if not self.features & FEATURE_JOIN_CHECK:
+            return []
+        n = self.lib.kk2_context_glyph_count(context.ptr)
+        out = (c_uint8 * max(n, 1))()
+        if self.lib.kk2_join_sides(context.ptr, ctypes.addressof(out)) == 0xFFFFFFFF:
+            raise EngineError(self.last_error())
+        return list(out[:n])
 
     def solve(self, context, params, kern_mask=None, glyph_opts=None, harness=None):
         """Starts Phases 2–3. `kern_mask`: bytes (one per glyph) or None.
@@ -693,6 +878,18 @@ class Result(object):
             return None
         v = fn(self.ptr)
         return None if v != v else float(v)
+
+    def wanted(self):
+        """Per glyph (lsb, rsb) Pass 1 wanted before rules, frozen glyphs and
+        kept joins, in the engine's frame (a kept join's drawing advice is
+        this minus the side it has there); [] from an older engine."""
+        fn = getattr(self.engine.lib, "kk2_result_wanted", None)
+        if fn is None or not self.ptr:
+            return []
+        n = self.glyph_count
+        buf = (c_double * max(2 * n, 1))()
+        k = fn(self.ptr, ctypes.addressof(buf), n)
+        return [(buf[2 * i], buf[2 * i + 1]) for i in range(k)]
 
     def iter_entries(self):
         """(kind, left, right, value, importance) tuples, unpacked in C."""
