@@ -991,6 +991,246 @@
      -15.325,
      9.74
     ]
+   ],
+   "zerosuperior": [
+    [
+     -2.41,
+     -4.954,
+     -1.956
+    ],
+    [
+     0.84,
+     -7.482,
+     -2.001
+    ]
+   ],
+   "onesuperior": [
+    [
+     17.67,
+     -33.651,
+     15.757
+    ],
+    [
+     18.12,
+     -14.898,
+     5.239
+    ]
+   ],
+   "twosuperior": [
+    [
+     3.78,
+     -15.475,
+     13.162
+    ],
+    [
+     7.6,
+     -19.642,
+     10.044
+    ]
+   ],
+   "threesuperior": [
+    [
+     4.28,
+     -13.027,
+     11.743
+    ],
+    [
+     11.73,
+     -21.801,
+     4.279
+    ]
+   ],
+   "foursuperior": [
+    [
+     3.77,
+     -14.178,
+     3.284
+    ],
+    [
+     11.07,
+     -16.859,
+     -3.282
+    ]
+   ],
+   "fivesuperior": [
+    [
+     4.29,
+     -21.778,
+     9.384
+    ],
+    [
+     9.84,
+     -15.635,
+     -0.102
+    ]
+   ],
+   "sixsuperior": [
+    [
+     3.64,
+     -14.432,
+     0.786
+    ],
+    [
+     5.56,
+     -10.127,
+     -1.273
+    ]
+   ],
+   "sevensuperior": [
+    [
+     14.12,
+     -39.607,
+     14.084
+    ],
+    [
+     17.37,
+     -38.334,
+     11.628
+    ]
+   ],
+   "eightsuperior": [
+    [
+     0.98,
+     -13.206,
+     3.371
+    ],
+    [
+     6.46,
+     -16.969,
+     1.857
+    ]
+   ],
+   "ninesuperior": [
+    [
+     10.27,
+     -24.02,
+     5.718
+    ],
+    [
+     12.03,
+     -19.166,
+     -0.247
+    ]
+   ],
+   "zeroinferior": [
+    [
+     1.79,
+     -17.898,
+     5.711
+    ],
+    [
+     2.0,
+     -10.057,
+     0.138
+    ]
+   ],
+   "oneinferior": [
+    [
+     14.8,
+     -12.963,
+     -0.04
+    ],
+    [
+     28.51,
+     -29.987,
+     12.027
+    ]
+   ],
+   "threeinferior": [
+    [
+     11.7,
+     -34.45,
+     12.828
+    ],
+    [
+     13.29,
+     -20.907,
+     2.284
+    ]
+   ],
+   "fourinferior": [
+    [
+     3.12,
+     -38.644,
+     16.351
+    ],
+    [
+     11.29,
+     -29.557,
+     7.865
+    ]
+   ],
+   "fiveinferior": [
+    [
+     12.19,
+     -34.275,
+     12.448
+    ],
+    [
+     11.27,
+     -20.394,
+     5.341
+    ]
+   ],
+   "sixinferior": [
+    [
+     11.16,
+     -28.734,
+     7.404
+    ],
+    [
+     11.56,
+     -20.101,
+     4.127
+    ]
+   ],
+   "seveninferior": [
+    [
+     7.31,
+     -26.117,
+     8.756
+    ],
+    [
+     5.02,
+     -20.734,
+     1.747
+    ]
+   ],
+   "eightinferior": [
+    [
+     11.36,
+     -29.024,
+     7.912
+    ],
+    [
+     11.01,
+     -21.389,
+     3.887
+    ]
+   ],
+   "ordfeminine": [
+    [
+     0.99,
+     -12.49,
+     -5.774
+    ],
+    [
+     2.31,
+     -24.53,
+     10.21
+    ]
+   ],
+   "ordmasculine": [
+    [
+     1.03,
+     -18.371,
+     -1.892
+    ],
+    [
+     7.55,
+     -24.781,
+     1.032
+    ]
    ]
   },
   "display": {
@@ -1976,6 +2216,246 @@
      9.81,
      -15.325,
      9.74
+    ]
+   ],
+   "zerosuperior": [
+    [
+     1.31,
+     -4.954,
+     -1.956
+    ],
+    [
+     6.7,
+     -7.482,
+     -2.001
+    ]
+   ],
+   "onesuperior": [
+    [
+     12.28,
+     -33.651,
+     15.757
+    ],
+    [
+     17.62,
+     -14.898,
+     5.239
+    ]
+   ],
+   "twosuperior": [
+    [
+     5.12,
+     -15.475,
+     13.162
+    ],
+    [
+     9.27,
+     -19.642,
+     10.044
+    ]
+   ],
+   "threesuperior": [
+    [
+     5.78,
+     -13.027,
+     11.743
+    ],
+    [
+     12.54,
+     -21.801,
+     4.279
+    ]
+   ],
+   "foursuperior": [
+    [
+     3.22,
+     -14.178,
+     3.284
+    ],
+    [
+     10.18,
+     -16.859,
+     -3.282
+    ]
+   ],
+   "fivesuperior": [
+    [
+     4.63,
+     -21.778,
+     9.384
+    ],
+    [
+     11.18,
+     -15.635,
+     -0.102
+    ]
+   ],
+   "sixsuperior": [
+    [
+     6.07,
+     -14.432,
+     0.786
+    ],
+    [
+     7.19,
+     -10.127,
+     -1.273
+    ]
+   ],
+   "sevensuperior": [
+    [
+     8.17,
+     -39.607,
+     14.084
+    ],
+    [
+     9.0,
+     -38.334,
+     11.628
+    ]
+   ],
+   "eightsuperior": [
+    [
+     1.84,
+     -13.206,
+     3.371
+    ],
+    [
+     10.1,
+     -16.969,
+     1.857
+    ]
+   ],
+   "ninesuperior": [
+    [
+     5.03,
+     -24.02,
+     5.718
+    ],
+    [
+     12.97,
+     -19.166,
+     -0.247
+    ]
+   ],
+   "zeroinferior": [
+    [
+     3.49,
+     -17.898,
+     5.711
+    ],
+    [
+     7.24,
+     -10.057,
+     0.138
+    ]
+   ],
+   "oneinferior": [
+    [
+     2.81,
+     -12.963,
+     -0.04
+    ],
+    [
+     29.28,
+     -29.987,
+     12.027
+    ]
+   ],
+   "threeinferior": [
+    [
+     7.97,
+     -34.45,
+     12.828
+    ],
+    [
+     13.59,
+     -20.907,
+     2.284
+    ]
+   ],
+   "fourinferior": [
+    [
+     5.09,
+     -38.644,
+     16.351
+    ],
+    [
+     16.6,
+     -29.557,
+     7.865
+    ]
+   ],
+   "fiveinferior": [
+    [
+     10.31,
+     -34.275,
+     12.448
+    ],
+    [
+     11.97,
+     -20.394,
+     5.341
+    ]
+   ],
+   "sixinferior": [
+    [
+     13.49,
+     -28.734,
+     7.404
+    ],
+    [
+     13.71,
+     -20.101,
+     4.127
+    ]
+   ],
+   "seveninferior": [
+    [
+     2.29,
+     -26.117,
+     8.756
+    ],
+    [
+     4.12,
+     -20.734,
+     1.747
+    ]
+   ],
+   "eightinferior": [
+    [
+     9.23,
+     -29.024,
+     7.912
+    ],
+    [
+     13.33,
+     -21.389,
+     3.887
+    ]
+   ],
+   "ordfeminine": [
+    [
+     7.54,
+     -12.49,
+     -5.774
+    ],
+    [
+     7.93,
+     -24.53,
+     10.21
+    ]
+   ],
+   "ordmasculine": [
+    [
+     8.9,
+     -18.371,
+     -1.892
+    ],
+    [
+     12.9,
+     -24.781,
+     1.032
     ]
    ]
   },
@@ -2963,6 +3443,246 @@
      -15.325,
      9.74
     ]
+   ],
+   "zerosuperior": [
+    [
+     1.5,
+     -4.954,
+     -1.956
+    ],
+    [
+     28.14,
+     -7.482,
+     -2.001
+    ]
+   ],
+   "onesuperior": [
+    [
+     17.5,
+     -33.651,
+     15.757
+    ],
+    [
+     29.71,
+     -14.898,
+     5.239
+    ]
+   ],
+   "twosuperior": [
+    [
+     7.63,
+     -15.475,
+     13.162
+    ],
+    [
+     17.47,
+     -19.642,
+     10.044
+    ]
+   ],
+   "threesuperior": [
+    [
+     6.63,
+     -13.027,
+     11.743
+    ],
+    [
+     21.11,
+     -21.801,
+     4.279
+    ]
+   ],
+   "foursuperior": [
+    [
+     3.88,
+     -14.178,
+     3.284
+    ],
+    [
+     28.05,
+     -16.859,
+     -3.282
+    ]
+   ],
+   "fivesuperior": [
+    [
+     5.63,
+     -21.778,
+     9.384
+    ],
+    [
+     21.8,
+     -15.635,
+     -0.102
+    ]
+   ],
+   "sixsuperior": [
+    [
+     7.5,
+     -14.432,
+     0.786
+    ],
+    [
+     18.89,
+     -10.127,
+     -1.273
+    ]
+   ],
+   "sevensuperior": [
+    [
+     12.34,
+     -39.607,
+     14.084
+    ],
+    [
+     33.44,
+     -38.334,
+     11.628
+    ]
+   ],
+   "eightsuperior": [
+    [
+     2.88,
+     -13.206,
+     3.371
+    ],
+    [
+     20.47,
+     -16.969,
+     1.857
+    ]
+   ],
+   "ninesuperior": [
+    [
+     12.29,
+     -24.02,
+     5.718
+    ],
+    [
+     27.08,
+     -19.166,
+     -0.247
+    ]
+   ],
+   "zeroinferior": [
+    [
+     1.79,
+     -17.898,
+     5.711
+    ],
+    [
+     2.0,
+     -10.057,
+     0.138
+    ]
+   ],
+   "oneinferior": [
+    [
+     36.54,
+     -12.963,
+     -0.04
+    ],
+    [
+     31.07,
+     -29.987,
+     12.027
+    ]
+   ],
+   "threeinferior": [
+    [
+     30.37,
+     -34.45,
+     12.828
+    ],
+    [
+     23.79,
+     -20.907,
+     2.284
+    ]
+   ],
+   "fourinferior": [
+    [
+     28.67,
+     -38.644,
+     16.351
+    ],
+    [
+     21.77,
+     -29.557,
+     7.865
+    ]
+   ],
+   "fiveinferior": [
+    [
+     12.19,
+     -34.275,
+     12.448
+    ],
+    [
+     11.27,
+     -20.394,
+     5.341
+    ]
+   ],
+   "sixinferior": [
+    [
+     11.16,
+     -28.734,
+     7.404
+    ],
+    [
+     11.56,
+     -20.101,
+     4.127
+    ]
+   ],
+   "seveninferior": [
+    [
+     7.31,
+     -26.117,
+     8.756
+    ],
+    [
+     5.02,
+     -20.734,
+     1.747
+    ]
+   ],
+   "eightinferior": [
+    [
+     11.36,
+     -29.024,
+     7.912
+    ],
+    [
+     11.01,
+     -21.389,
+     3.887
+    ]
+   ],
+   "ordfeminine": [
+    [
+     5.91,
+     -12.49,
+     -5.774
+    ],
+    [
+     10.05,
+     -24.53,
+     10.21
+    ]
+   ],
+   "ordmasculine": [
+    [
+     9.98,
+     -18.371,
+     -1.892
+    ],
+    [
+     18.47,
+     -24.781,
+     1.032
+    ]
    ]
   }
  },
@@ -3547,6 +4267,72 @@
   ],
   "nine": [
    57
+  ],
+  "zerosuperior": [
+   8304
+  ],
+  "onesuperior": [
+   185
+  ],
+  "twosuperior": [
+   178
+  ],
+  "threesuperior": [
+   179
+  ],
+  "foursuperior": [
+   8308
+  ],
+  "fivesuperior": [
+   8309
+  ],
+  "sixsuperior": [
+   8310
+  ],
+  "sevensuperior": [
+   8311
+  ],
+  "eightsuperior": [
+   8312
+  ],
+  "ninesuperior": [
+   8313
+  ],
+  "zeroinferior": [
+   8320
+  ],
+  "oneinferior": [
+   8321
+  ],
+  "twoinferior": [
+   8322
+  ],
+  "threeinferior": [
+   8323
+  ],
+  "fourinferior": [
+   8324
+  ],
+  "fiveinferior": [
+   8325
+  ],
+  "sixinferior": [
+   8326
+  ],
+  "seveninferior": [
+   8327
+  ],
+  "eightinferior": [
+   8328
+  ],
+  "nineinferior": [
+   8329
+  ],
+  "ordfeminine": [
+   170
+  ],
+  "ordmasculine": [
+   186
   ]
  },
  "aliases": {
@@ -3557,7 +4343,9 @@
   "triangularbullet": "bullet",
   "exclamdbl": "exclam",
   "interrobang": "question",
-  "asterism": "asterisk"
+  "asterism": "asterisk",
+  "twoinferior": "twosuperior",
+  "nineinferior": "ninesuperior"
  },
  "figures": [
   "zero",
@@ -3659,8 +4447,66 @@
   "apostrophemod    its own   40.5, quoteright's   41.9, none   42.6 (held out) \u2192 its own",
   "equal            its own   25.4, none   23.6 (held out) \u2192 none",
   "yen              its own   25.9, none   25.4 (held out) \u2192 none",
-  "minus            its own   26.7, none   25.7 (held out) \u2192 none"
+  "minus            its own   26.7, none   25.7 (held out) \u2192 none",
+  "superscripts, subscripts and ordinals (2026-10-11):",
+  "zerosuperior     L   385 families    19.5 /   19.5 /   19.2   system fonts   24.8 /   24.8 /   21.5",
+  "onesuperior      L   899 families    28.4 /   28.4 /   25.1   system fonts   42.0 /   42.0 /   32.1",
+  "twosuperior      L   901 families    22.2 /   22.2 /   21.6   system fonts   25.3 /   25.3 /   26.5",
+  "threesuperior    L   901 families    22.7 /   22.7 /   21.9   system fonts   26.2 /   26.2 /   27.1",
+  "foursuperior     L   624 families    23.5 /   23.5 /   23.1   system fonts   19.9 /   19.9 /   20.1",
+  "fivesuperior     L   377 families    18.4 /   18.4 /   18.3   system fonts   19.3 /   19.4 /   19.1",
+  "sixsuperior      L   377 families    18.9 /   18.9 /   18.8   system fonts   21.2 /   21.2 /   19.4",
+  "sevensuperior    L   377 families    34.3 /   34.3 /   23.7   system fonts   33.2 /   33.2 /   22.8",
+  "eightsuperior    L   376 families    18.5 /   18.5 /   18.2   system fonts   21.4 /   21.4 /   19.4",
+  "ninesuperior     L   376 families    20.1 /   20.1 /   20.0   system fonts   21.8 /   21.8 /   20.8",
+  "zeroinferior     L   352 families    20.2 /   20.2 /   20.1   system fonts   24.2 /   24.2 /   22.1",
+  "oneinferior      L   379 families    31.4 /   31.4 /   25.1   system fonts   43.8 /   43.8 /   35.3",
+  "twoinferior      L   384 families    23.3 /   23.3 /   21.2   system fonts   24.8 /   24.8 /   22.3",
+  "threeinferior    L   381 families    22.9 /   22.9 /   20.7   system fonts   24.6 /   24.6 /   20.8",
+  "fourinferior     L   385 families    27.5 /   27.5 /   24.4   system fonts   22.6 /   22.6 /   23.0",
+  "fiveinferior     L   353 families    21.3 /   21.3 /   20.0   system fonts   23.9 /   23.9 /   20.2",
+  "sixinferior      L   353 families    21.4 /   21.4 /   20.6   system fonts   20.7 /   20.7 /   20.5",
+  "seveninferior    L   353 families    21.9 /   21.9 /   21.2   system fonts   23.4 /   23.4 /   22.9",
+  "eightinferior    L   354 families    20.2 /   20.2 /   20.0   system fonts   20.3 /   20.3 /   20.3",
+  "nineinferior     L   353 families    20.2 /   20.2 /   20.3   system fonts   22.3 /   22.3 /   21.2",
+  "ordfeminine      FL 1130 families    25.1 /   25.1 /   22.3   system fonts   32.6 /   32.5 /   27.0",
+  "ordmasculine     FL 1127 families    25.0 /   24.9 /   22.1   system fonts   31.8 /   31.7 /   24.3",
+  "zeroinferior     its own   20.1, zerosuperior's   20.1, none   20.2 (held out) \u2192 its own",
+  "oneinferior      its own   25.1, onesuperior's   25.7, none   31.4 (held out) \u2192 its own",
+  "twoinferior      its own   21.2, twosuperior's   21.1, none   23.3 (held out) \u2192 twosuperior's",
+  "threeinferior    its own   20.7, threesuperior's   20.7, none   22.9 (held out) \u2192 its own",
+  "fourinferior     its own   24.4, foursuperior's   26.0, none   27.5 (held out) \u2192 its own",
+  "fiveinferior     its own   20.0, fivesuperior's   20.6, none   21.3 (held out) \u2192 its own",
+  "sixinferior      its own   20.6, sixsuperior's   21.5, none   21.4 (held out) \u2192 its own",
+  "seveninferior    its own   21.2, sevensuperior's   21.4, none   21.9 (held out) \u2192 its own",
+  "eightinferior    its own   20.0, eightsuperior's   20.4, none   20.2 (held out) \u2192 its own",
+  "nineinferior     its own   20.3, ninesuperior's   20.1, none   20.2 (held out) \u2192 ninesuperior's"
  ],
- "id": "2026-10-11-f9fe7de3",
- "kernel_id": "2026-10-11-9f6bcf92"
+ "id": "2026-10-11-9ce96975",
+ "kernel_id": "2026-10-11-9f6bcf92",
+ "small_forms": [
+  "zerosuperior",
+  "onesuperior",
+  "twosuperior",
+  "threesuperior",
+  "foursuperior",
+  "fivesuperior",
+  "sixsuperior",
+  "sevensuperior",
+  "eightsuperior",
+  "ninesuperior",
+  "zeroinferior",
+  "oneinferior",
+  "twoinferior",
+  "threeinferior",
+  "fourinferior",
+  "fiveinferior",
+  "sixinferior",
+  "seveninferior",
+  "eightinferior",
+  "nineinferior",
+  "ordfeminine",
+  "ordmasculine"
+ ],
+ "qa_id": "2026-10-11-f9fe7de3"
 }

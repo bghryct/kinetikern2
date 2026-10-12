@@ -193,14 +193,17 @@ the figures were learned on.
 - Marks outside the table keep the model's reading, kerned at 0.3. That is
   the rest of Unicode's punctuation: Armenian, the Devanagari danda, CJK
   forms. (The Greek question mark and ano teleia are in the table as twins.)
-- Ordinals ª º and superscripts ¹ ² ³ are not measured against the model
-  yet. The designers' side of it is measured, over Google Fonts Regulars.
-  Superscript figures (1,372 fonts) are a median 0.59 times their figure's
-  height but keep 0.8 times its sidebearings (0.82 left, 0.79 right; 35
-  against 43 units per side per 1000 em). Ordinals ª º (1,733 fonts) are 0.68
-  times a and o and keep 0.83–0.90 of their sidebearings. So designers space
-  the small forms more openly than their size alone would give. Whether the
-  model's reading of the small shapes does too is the open question.
+- Superscripts, subscripts and ordinals: measured against the model at the
+  user's request (11 October 2026, `punctuation-data --small-forms`, the same
+  1,625 families) and learned like the marks, sides only (the engine kerns
+  figures and letters fully). They go under the Figures switch. Designers
+  keep superscripts about 0.8 times their figure's sidebearings at 0.59 times
+  its size (1,372 fonts), ordinals 0.83–0.90 of a's and o's at 0.68 (1,733).
+  Held out: ¹ 28.4 → 25.1, ⁷ 34.3 → 23.7, ₁ 31.4 → 25.1, ª º 25.1 / 25.0 →
+  22.3 / 22.1; the rest gain under a unit to 2 units. On the macOS fonts ²
+  and ³ come out about a unit worse. A set that shares one width (Arial's
+  ¹ ² ³) keeps the model's spacing; `.sups` / `.sinf` forms take their
+  encoded form's conventions.
 - `.case` forms follow their base mark. Proportional lining figures under a
   suffix (`.lf`, `.pnum`, `.plf`) take their figure's conventions. Other
   variants (`.sc`, old-style `.osf`) are left as the model spaces them,

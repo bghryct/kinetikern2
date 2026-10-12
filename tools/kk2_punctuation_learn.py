@@ -31,9 +31,14 @@ way against the letters of that run, and added to the table without changing the
 mark too few families have takes the conventions of its twin (ALIASES: a non-breaking hyphen the
 hyphen's), and the table lists every mark's characters (`marks`) for the plugins to find them by.
 
+Superscripts, subscripts and ordinals (--small-data: `punctuation-data --small-forms`) are learned the same
+way and added to a finished table (--base) without changing anything in it. Their sides only: the engine kerns
+figures and letters fully, as the model does, so they keep no share of their own. A design whose superscripts (or
+subscripts) share one width is not learned on, and the plugins keep such a set as it is.
+
 usage: kk2_punctuation_learn.py --data 'DIR/*.jsonl' --reports SpacingQA/data/reports
                                 --families families.csv --out kk2_punctuation.json
-                                [--more-data 'DIR2/*.jsonl']
+                                [--more-data 'DIR2/*.jsonl' | --small-data 'DIR3/*.jsonl' --base kk2_punctuation.json]
 """
 import glob, json, numpy as np, datetime, hashlib
 import argparse, csv, os
@@ -44,7 +49,11 @@ ap.add_argument("--families", required=True, help="google/fonts tags CSV (/Quali
 ap.add_argument("--min-quality", type=float, default=70)
 ap.add_argument("--out", required=True)
 ap.add_argument("--more-data", default=None, help="glob of punctuation-data --all-punctuation's JSON lines")
+ap.add_argument("--small-data", default=None, help="glob of punctuation-data --small-forms' JSON lines")
+ap.add_argument("--base", default=None, help="the finished table the small forms are added to (--small-data)")
 args = ap.parse_args()
+if args.small_data and (args.more_data or not args.base):
+    ap.error("--small-data takes --base and no --more-data")
 human = {}
 for row in csv.reader(open(args.families, encoding="utf-8")):
     if len(row) == 4 and row[2] == "/Quality/Spacing" and not row[1]:
@@ -313,6 +322,20 @@ ALIASES = {"hyphentwo": "hyphen", "nonbreakinghyphen": "hyphen", "figuredash": "
            "quotedblreversed": "quotedblleft", "tripleprime": "second", "asterism": "asterisk",
            "referencemark": "asterisk"}
 MIN_FAMILIES = 30      # reference families with the mark, to learn it on its own
+# superscripts, subscripts and ordinals (glyphset::SMALL_FORMS): a figure's small forms against the letters they
+# follow in text (a footnote¹, H₂O), an ordinal's left side against the figures (1º, 2ª); an inferior with too few
+# families takes its superior's conventions (the same shape, lower)
+SUP = ["zerosuperior", "onesuperior", "twosuperior", "threesuperior", "foursuperior", "fivesuperior", "sixsuperior",
+       "sevensuperior", "eightsuperior", "ninesuperior"]
+SUB = ["zeroinferior", "oneinferior", "twoinferior", "threeinferior", "fourinferior", "fiveinferior", "sixinferior",
+       "seveninferior", "eightinferior", "nineinferior"]
+SMALL = (list(zip(SUP, "⁰¹²³⁴⁵⁶⁷⁸⁹")) + list(zip(SUB, "₀₁₂₃₄₅₆₇₈₉")) +
+         [("ordfeminine", "ª"), ("ordmasculine", "º")])
+if args.small_data:
+    MORE = SMALL
+    FIGURE_SIDES = {"ordfeminine": (True, False), "ordmasculine": (True, False)}
+    ALIASES = dict(zip(SUB, SUP))
+    args.more_data = args.small_data
 lines_more, marks, aliases = [], {n: [ord(c)] for n, c in KERNEL_CHARS.items()}, {}
 if args.more_data:
     MN = [n for n, _ in MORE]
@@ -365,7 +388,13 @@ if args.more_data:
                 parts[(0, kind)] = dict(partner=ca[pm], mark=mb[pm], dg=P[pm, 2], mg=P[pm, 3], raw=raw[pm], floor=floor[pm], vdef=vdef[pm])
                 parts[(1, kind)] = dict(partner=cb[mp], mark=ma[mp], dg=P[mp, 2], mg=P[mp, 3], raw=raw[mp], floor=floor[mp], vdef=vdef[mp])
             cat_ = m["category"] if m else "System"
+            adv = r.get("adv")
+
+            def one_width(group):
+                w = [adv[k] for k, n in enumerate(names) if n in group] if adv else []
+                return len(w) >= 3 and max(w) - min(w) < 0.5
             mf.append(dict(slug=r["slug"], cat=cat_, style=STYLE_OF.get(cat_, "text"), tab=bool(m and m.get("tabular")),
+                           stab=one_width(SUP), btab=one_width(SUB),
                            q=(m["quality"] if m and m["quality"] is not None else np.nan), off=off, row=row, col=col,
                            rho=np.median(lc) if len(lc) >= 6 else np.nan, Bm=Bm, parts=parts))
     F2 = len(mf)
@@ -376,6 +405,9 @@ if args.more_data:
     have = np.isfinite(Bm2[:, :, 0]) | np.isfinite(Bm2[:, :, 1])
     KIND = np.array([["F" if FIGURE_SIDES.get(n, (False, False))[sd] else "L" for sd in (0, 1)] for n in MN])
     ISFIG = np.array([n in FIG for n in MN])
+    # the small forms: no kerning share (the engine kerns figures and letters fully); a set of one width is kept
+    ISSMALL = np.array([n in dict(SMALL) for n in MN])
+    TABKEY = ["tab" if n in FIG else "stab" if n in SUP else "btab" if n in SUB else None for n in MN]
     tab2 = np.array([fo["tab"] for fo in mf])
     print(f"\nthe rest of the punctuation: {F2} fonts; reference families with each mark:")
     print("  " + ", ".join(f"{n} {int((have[:, k] & ref2).sum())}" for k, n in enumerate(MN)))
@@ -400,7 +432,7 @@ if args.more_data:
                 term = fo["row"] if side == 0 else fo["col"]
                 res = d["dg"] - (d["mg"] + mvalue(d, Kx[d["mark"], side])) - fo["off"] - term[d["partner"]]
                 for j in np.unique(d["mark"]):
-                    if ISFIG[j] and fo["tab"]: continue
+                    if TABKEY[j] is not None and fo[TABKEY[j]]: continue
                     w = d["mark"] == j
                     need = 10 if KIND[j, side] == "L" else 6
                     if np.isfinite(res[w]).sum() >= need: T[i, j, side] = np.nanmedian(res[w])
@@ -452,12 +484,13 @@ if args.more_data:
         Kx = np.full((NM, 2), KERN_SCALE)
         enough = cnt >= 300
         Kx[enough] = GRID[np.argmin(acc, axis=2)][enough]
-        Kx[ISFIG] = 1.0   # figures kern as the model kerns them
+        Kx[ISFIG | ISSMALL] = 1.0   # figures and their small forms kern as the model kerns them
         return Kx
 
     def m_learn(sel):
         idx = np.where(sel)[0]
         Kx = np.full((NM, 2), KERN_SCALE); coef = {}
+        Kx[ISSMALL] = 1.0
         for _ in range(ROUNDS):
             coef = m_fit(m_targets(Kx, idx), idx)
             Kx = m_shares(m_predict(coef, idx), idx)
@@ -468,13 +501,14 @@ if args.more_data:
         fo = mf[i]
         acc = np.zeros((NM, 4))
         for side, d in sides_of(fo):
-            if fo["tab"]:
-                keep = ~ISFIG[d["mark"]]
+            kept = np.array([TABKEY[j] is not None and bool(fo[TABKEY[j]]) for j in range(NM)])
+            if kept.any():
+                keep = ~kept[d["mark"]]
                 d = {k: v[keep] for k, v in d.items()}
                 if not len(d["mark"]): continue
             base = d["dg"] - d["mg"] - fo["off"]
             e_off = np.abs(base - d["vdef"])
-            e_flat = np.abs(base - mvalue(d, np.where(ISFIG[d["mark"]], 1.0, KERN_SCALE)))
+            e_flat = np.abs(base - mvalue(d, np.where(ISFIG[d["mark"]] | ISSMALL[d["mark"]], 1.0, KERN_SCALE)))
             e_new = np.abs(base - coef_shift[i, d["mark"], side] - mvalue(d, Kx[d["mark"], side]))
             for k, e in enumerate((e_off, e_flat, e_new)):
                 np.add.at(acc[:, k], d["mark"], np.nan_to_num(e))
@@ -558,7 +592,7 @@ if args.more_data:
         for si, s_ in enumerate(STYLES):
             table[s_].setdefault(MN[j], [[None] * 3, [None] * 3])[sd] = [round(float(beta[si]), 2), round(float(beta[3]), 3), round(float(beta[4]), 3)]
     for j in learned:
-        if MN[j] in aliases or MN[j] in dropped or ISFIG[j]: continue
+        if MN[j] in aliases or MN[j] in dropped or ISFIG[j] or ISSMALL[j]: continue
         kern[MN[j]] = [round(float(Kx2[j, 0]), 2), round(float(Kx2[j, 1]), 2)]
     for n, c in MORE:
         marks[n] = [ord(c)]
@@ -577,5 +611,21 @@ out["id"] = kernel_id if not args.more_data else (
     today + "-" + hashlib.sha1(json.dumps([table, kern, marks, aliases], sort_keys=True).encode()).hexdigest()[:8])
 # the kernel's 36 marks as in that table: reports checked with it are checked with these (Spacing QA has the kernel only)
 out["kernel_id"] = kernel_id
+if args.small_data:
+    # the finished table, with the small forms added and nothing else changed
+    base = json.load(open(args.base))
+    small = [n for n, _c in SMALL]
+    for s_ in STYLES:
+        base["styles"].setdefault(s_, {}).update((n, v) for n, v in table[s_].items() if n in small)
+    base["marks"].update((n, marks[n]) for n in small if n in marks)
+    base["aliases"].update((n, t) for n, t in aliases.items() if n in small)
+    base["small_forms"] = [n for n in small if n in base["styles"]["text"] or n in base["aliases"]]
+    base["check"] = base["check"] + ["superscripts, subscripts and ordinals (" + today + "):"] + lines_more
+    # what Spacing QA applies (the kernel's marks, the symbols and the figures) is unchanged: its reports keep
+    # their stamp (qa_id) while the table's id follows the whole table
+    base["qa_id"] = base.get("qa_id") or base["id"]
+    base["id"] = today + "-" + hashlib.sha1(json.dumps([base["styles"], base["kern"], base["marks"], base["aliases"]],
+                                                       sort_keys=True).encode()).hexdigest()[:8]
+    out = base
 json.dump(out, open(args.out, "w"), indent=1)
 print("wrote", args.out, out["id"])

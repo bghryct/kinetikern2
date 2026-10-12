@@ -1775,6 +1775,32 @@ class SmokeTest(object):
         coefs2 = kpu.engine_arg(snap2, "text")[0]
         rep.check(not any(on(coefs2[snap2.index[n + ".lf"]]) for n in figs) and on(coefs2[snap2.index["one.pnum"]]),
                   "punctuation lookups: a .lf set whose figures share one width is tabular, kept")
+        if not kpu.small_marks():
+            rep.info("punctuation lookups: no superscripts, subscripts or ordinals in this table, not checked")
+            return
+        # superscripts, subscripts and ordinals: the Figures switch; one.sups by onesuperior; one width: kept
+        def small_master(sup_widths, sups_widths, generation):
+            glyphs = [(n, 0x30 + k, 556) for k, n in enumerate(figs)]
+            glyphs += [("onesuperior", 0xB9, sup_widths[0]), ("twosuperior", 0xB2, sup_widths[1]),
+                       ("threesuperior", 0xB3, sup_widths[2]), ("ordfeminine", 0xAA, 370), ("ordmasculine", 0xBA, 370),
+                       ("period", 0x2E, 278)]
+            glyphs += [(n + ".sups", None, w) for n, w in zip(("one", "two", "three"), sups_widths)]
+            return Snap(glyphs, generation)
+
+        snap3 = small_master((330, 360, 350), (330, 360, 350), 3)
+        c_on = kpu.engine_arg(snap3, "text", punctuation=False, figures=True)[0]
+        c_off = kpu.engine_arg(snap3, "text", punctuation=True, figures=False)[0]
+        row3 = lambda c, n: tuple(c[snap3.index[n]])
+        rep.check(all(on(row3(c_on, n)) for n in ("onesuperior", "twosuperior", "ordfeminine", "ordmasculine")) and
+                  not any(on(row3(c_off, n)) for n in ("onesuperior", "ordfeminine")) and on(row3(c_off, "period")),
+                  "punctuation lookups: superscripts and ordinals follow the Figures switch, not Punctuation")
+        rep.check(row3(c_on, "one.sups") == row3(c_on, "onesuperior") and on(row3(c_on, "one.sups")),
+                  "punctuation lookups: a figure's .sups form takes its superscript's conventions")
+        snap4 = small_master((330, 330, 330), (340, 340, 340), 4)
+        c4 = kpu.engine_arg(snap4, "text")[0]
+        rep.check(not any(on(c4[snap4.index[n]]) for n in ("onesuperior", "twosuperior", "threesuperior", "one.sups",
+                                                            "two.sups", "three.sups")) and on(c4[snap4.index["ordfeminine"]]),
+                  "punctuation lookups: superscripts that share one width are tabular, kept")
 
     def check_spaces_in_step(self):
         """Which blank spaces Apply keeps in step (kk2_apply._spaces_in_step),

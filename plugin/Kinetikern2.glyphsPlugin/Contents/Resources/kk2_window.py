@@ -403,7 +403,10 @@ class KK2Window(object):
             "space them. From their shapes alone the model sets every figure 6–26 units per side tighter than "
             "designers do (the 1 most, then 2, 3, 5 and 7). Learned from the Google Fonts families with "
             "proportional figures. Tabular figures keep their widths either way; old-style forms (.osf) are "
-            "left as the model spaces them.")
+            "left as the model spaces them. The switch also covers the small forms that go with figures: "
+            "superscripts and subscripts (¹ ² ³, ₁ ₂, and .sups / .sinf forms), which designers space more "
+            "openly than the model, and the ordinals ª º, which they set closer to the figure before them. A "
+            "set of superscripts or subscripts that shares one width keeps it.")
         self.styles = kh.style_choices()
         w.conventions = vanilla.PopUpButton((x + 98, 28, 106, 20), [label for _k, label in self.styles],
                                             callback=self.conventionsChanged, sizeStyle="mini")
@@ -704,7 +707,8 @@ class KK2Window(object):
         if self.punctuation_available():
             tip.append("Punctuation: " + (kpu.describe(self._style()) if p_on else "spaced and kerned from its shapes alone"))
         if figures:
-            tip.append("Figures: " + ("proportional figures by %s; tabular figures keep their widths"
+            tip.append("Figures: " + ("proportional figures, superscripts, subscripts and ordinals by %s; tabular "
+                                      "figures keep their widths"
                                       % kpu.STYLE_PHRASES.get(kpu.style_of(self._style()), "text faces' conventions")
                                       if f_on else "spaced from their shapes alone"))
         self.w.harnessValue.getNSTextField().setToolTip_("\n".join(tip))

@@ -49,6 +49,14 @@ CANONICAL_TWINS = {0x037E: 0x003B, 0x0387: 0x00B7}
 # Proportional lining figures under a suffix (one.lf, one.pnum), as a font has them when its default figures are
 # tabular or oldstyle: the shapes the figures' conventions were learned on. Oldstyle and tabular forms keep theirs.
 LINING_SUFFIXES = ("lf", "pnum", "plf")
+# Superscripts, subscripts and ordinals (the table's small_forms) go with the figures: the Figures switch. A
+# figure's superscript or subscript under a suffix (one.sups, one.sinf) takes its encoded form's conventions. A set
+# of them that shares one width (at least 3, as a tabular design has) keeps its widths: the conventions leave it.
+FIGURE_NAMES = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+SUPERIORS = tuple(n + "superior" for n in FIGURE_NAMES)
+INFERIORS = tuple(n + "inferior" for n in FIGURE_NAMES)
+SUPS_SUFFIXES = ("sups", "superior")
+SINF_SUFFIXES = ("sinf", "subs", "inferior")
 
 
 def table():
@@ -82,6 +90,11 @@ def figure_marks():
     return frozenset(table().get("figures", ()))
 
 
+def small_marks():
+    """The superscripts, subscripts and ordinals the table has conventions for (the Figures switch)."""
+    return frozenset(table().get("small_forms", ()))
+
+
 def has_figures():
     return available() and bool(figure_marks())
 
@@ -104,7 +117,8 @@ def style_of(style):
 
 def mark_of(snap, i):
     """The table's mark of glyph i: by its code point; .case punctuation by
-    its base mark, and proportional lining figures (one.lf) by their figure."""
+    its base mark, proportional lining figures (one.lf) by their figure, and
+    a figure's superscript or subscript form (one.sups) by the encoded one."""
     name = snap.names[i]
     info = snap.infos.get(name)
     if info is None or info.empty:
@@ -123,6 +137,13 @@ def mark_of(snap, i):
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
         if k is not None and resolve(k) in figure_marks():
             return k
+    if len(parts) == 2 and (parts[1] in SUPS_SUFFIXES or parts[1] in SINF_SUFFIXES):
+        base = snap.infos.get(parts[0])
+        k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
+        if k in FIGURE_NAMES:
+            small = (SUPERIORS if parts[1] in SUPS_SUFFIXES else INFERIORS)[FIGURE_NAMES.index(k)]
+            if small in small_marks():
+                return small
     return None
 
 
@@ -137,6 +158,24 @@ def _tabular_suffixes(snap, figs):
             if k is not None and resolve(k) in figs:
                 widths.setdefault(parts[1], []).append(int(round(snap.infos[name].width)))
     return frozenset(s for s, w in widths.items() if len(w) >= 5 and len(set(w)) == 1)
+
+
+def _one_width_sets(snap):
+    """The glyphs of a superscript or subscript set that shares one width (at
+    least 3 of them: a tabular design, whose widths stay). The encoded forms
+    are one set, those under each suffix another."""
+    sets = {}
+    for i, name in enumerate(snap.names):
+        k = mark_of(snap, i)
+        if k in SUPERIORS or k in INFERIORS:
+            info = snap.infos[name]
+            key = (k in SUPERIORS, None if info.unicode is not None else name.partition(".")[2])
+            sets.setdefault(key, []).append((i, int(round(info.width))))
+    out = set()
+    for members in sets.values():
+        if len(members) >= 3 and len(set(w for _i, w in members)) == 1:
+            out.update(i for i, _w in members)
+    return out
 
 
 def share_of(mark):
@@ -156,7 +195,8 @@ def engine_arg(snap, style, punctuation=True, figures=True):
     `parenleft.case`, follows its base mark as designers space it; NONE: its
     own), cached per snapshot, style and switches. `punctuation`: the
     punctuation's and symbols' conventions, shares and case forms (off: kern
-    scale 1, every mark kerned in full); `figures`: the figures'."""
+    scale 1, every mark kerned in full); `figures`: the figures' and their
+    small forms' (superscripts, subscripts, ordinals)."""
     key = (id(snap), getattr(snap, "generation", 0), style, bool(punctuation), bool(figures))
     hit = _cache.get(key)
     if hit is not None:
@@ -167,8 +207,10 @@ def engine_arg(snap, style, punctuation=True, figures=True):
     coefs = []
     shares = []
     figs = figure_marks()
+    smalls = small_marks()
     follow = []
     tabular = _tabular_suffixes(snap, figs)
+    one_width = _one_width_sets(snap) if smalls else frozenset()
     for i in range(len(snap.names)):
         name = snap.names[i]
         parts = name.split(".")
@@ -178,7 +220,9 @@ def engine_arg(snap, style, punctuation=True, figures=True):
         k = mark_of(snap, i)
         if k is not None and len(parts) == 2 and parts[1] in tabular:
             k = None  # figures under a suffix that all share one width: tabular whatever the name, kept
-        on = k is not None and (figures if resolve(k) in figs else punctuation)
+        if i in one_width:
+            k = None  # superscripts or subscripts that share one width: kept
+        on = k is not None and (figures if resolve(k) in figs or k in smalls else punctuation)
         shares.append((share_of(k) or (NAN, NAN)) if on else (NAN, NAN))
         c = marks.get(resolve(k)) if on else None
         if not c:

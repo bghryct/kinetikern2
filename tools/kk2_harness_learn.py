@@ -264,7 +264,7 @@ def main():
     punct_id = pt.get("id", "")
     # Spacing QA checks the kernel's glyphs only: a report checked with an earlier table whose kernel marks this one
     # keeps unchanged (kernel_id) has the same bare model
-    punct_ids = {punct_id, pt.get("kernel_id", punct_id)}
+    punct_ids = {punct_id, pt.get("kernel_id", punct_id), pt.get("qa_id", punct_id)}
     skipped = defaultdict(int)
     # a weight checked on its own (`spacingqa check`) knows no catalog: its
     # family's library report gives the category, primary script and name
