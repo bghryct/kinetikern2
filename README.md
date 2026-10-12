@@ -154,7 +154,7 @@ other two.
 | **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
 | **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
 | **Punctuation** | Punctuation by convention (see below), on by default: each punctuation mark's sides set the way designers of well-spaced fonts set them, and each mark kerned with its own share of what its shape suggests: every mark Latin text uses (guillemets, low quotes, ¡ ¿, § ¶ † ‡…) and the symbols that sit with figures ($ € £ # + × …). A mark's case form takes its base mark's sides. Off: punctuation is spaced and kerned from its shape alone, and the designer harness leaves it alone too. |
-| **Figures** | Figures by convention (see below), on by default: proportional figures (the default ones, or `.lf` / `.pnum` forms) spaced the way designers space them. From their shapes alone the model sets them 6–26 units per side too tight. Tabular figures keep their widths either way. Also the superscripts, subscripts and ordinals that go with figures. |
+| **Figures** | Figures by convention (see below), on by default: proportional figures (the default ones, or `.lf` / `.pnum` forms) spaced the way designers space them. From their shapes alone the model sets them 6–26 units per side too tight. Tabular figures keep their widths either way. Also what goes with figures: old-style figures, precomposed fractions, superscripts, subscripts and ordinals. |
 | **Conventions** | **Automatic** (default), **Text faces**, **Display** or **Handwriting**. Sets the punctuation's conventions, the harness's punctuation, and how far a capital reaches over its neighbour (see *Conventions and Pass 2's pair classes* below). Automatic follows handwriting for a connected script or a master whose stems lean without an italic angle, else text faces. |
 | **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning. A font whose letters do not join is spaced as usual, so it is on by default. The menu beside it: **Keep joins** (default) keeps every joining side's sidebearing and the master's kerning between two joining sides, so every join stays as drawn and the rest of the font is spaced around the letters; **Space joined letters** spaces the letter bodies without their join strokes and lets two joining letters overlap with no kerning (joins can break; Joins… counts them). A design whose glyphs touch by construction (a line or a grid through every glyph) keeps every side that touches. |
 | **Along the italic angle** | On an italic master (italic angle 3° or more, under 60°), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is disabled for an upright master (and for an angle of 60° or more, an error in the font). On a master that declares no angle but whose stems lean, it reads **Along the N° slant of its stems**, and Spacing QA's rule sets it (*Designs that lean without an italic angle* below); a click overrides the rule for that master. |
@@ -332,13 +332,14 @@ Off: punctuation and these symbols are spaced and kerned from their shapes
 alone, like the letters, and the designer harness (learned on top of these
 conventions) leaves them alone too.
 
-The table (`kk2_punctuation.json`, id `2026-10-11-9ce96975`) is learned by
+The table (`kk2_punctuation.json`, id `2026-10-11-ce689f52`) is learned by
 `tools/kk2_punctuation_learn.py` from Spacing QA's measurements. Those are
 the bare model at each family's best-fit Looseness, and every pair of the GF
 Latin Kernel's 88 scored glyphs; for the rest, `punctuation-data
 --all-punctuation` reads every font with the marks beyond the kernel too, and
-`--small-forms` with the superscripts, subscripts and ordinals (added with
-`--small-data … --base`, which leaves every other entry as it was; what
+`--small-forms` with the superscripts, subscripts and ordinals and
+`--feature-forms` with what features reach (added with `--small-data` or
+`--feature-data … --base`, which leave every other entry as it was; what
 Spacing QA applies keeps the id `2026-10-11-f9fe7de3`, its `qa_id`).
 The learner uses the 1,191 families that Google Fonts' reviewers rate well
 spaced (`/Quality/Spacing` ≥ 70). It fits the side shifts and the shares in
@@ -428,6 +429,48 @@ conventions. A set of superscripts or subscripts that shares one width
 (Arial's ¹ ² ³: 682 each) is a tabular design and is left as the model
 spaces it. The table records them under `small_forms`. Spacing QA does not
 measure them, so its reports keep their stamp (`qa_id`).
+
+**Old-style figures, fractions and small caps** were measured the same way,
+over the same families. Most fonts reach these glyphs only through OpenType
+features, so `punctuation-data --feature-forms` shapes text with HarfBuzz the
+way a reader gets it:
+- `0123456789` with `onum` gives the old-style figures, paired with each
+  other and with letters (in 1987, 10am);
+- `a–z` with `smcp` gives the small caps, paired with each other and with
+  capitals (Caps and Small Caps);
+- `1⁄2` gives the numerator, slash and denominator, which HarfBuzz sets by
+  itself around U+2044;
+- ½ ¼ ¾ ⅓ ⅔ ⅛ ⅜ ⅝ ⅞ come by character, after a figure (1½).
+
+Each pair is kerned as shaping kerns it. What came of it:
+- **Old-style figures** (151 reference families with a separate set) take
+  conventions of their own under the Figures switch. Designers space them
+  more openly than the model, as they do lining figures. Held out, over
+  their pairs with letters, the 1 comes from 26.7 to 23.2 units off, the 3
+  from 22.6 to 20.1, the 5 from 21.9 to 19.3; the others gain up to a unit
+  and a half. A `.osf`, `.onum` or `.oldstyle` form takes them. An old-style
+  set that shares one width keeps it, and `.tosf` is tabular anyway.
+- **Precomposed fractions** (905 families with ½) take conventions of their
+  own under the Figures switch: ½ 29.6 → 24.9, ¼ 28.2 → 24.1, ⅓ 24.2 → 20.6,
+  ⅛ 23.2 → 20.3. ¾ ⅔ ⅜ ⅝ ⅞ take their twins'.
+- **The slash in a fraction.** Designers tuck the numerator and the
+  denominator well under the slash: in 318 reference families the model's
+  pairs there are 108.7 units off the designers on average. The slash's
+  conventions learned beside full-size figures already bring that to 66.2.
+  Its own conventions in a fraction ("fraction.frac", about −130 to −140
+  units a side, kerned at 0.45 and 0.5) bring it to 52.8; on the macOS fonts
+  124.3 → 24.9. A master with numerators and denominators (`.numr` or
+  `.numerator`, `.dnom` or `.denominator`) gives its U+2044 these, under the
+  Punctuation switch. None of 120 fonts checked substitutes the slash itself
+  in a fraction.
+- **Small caps** (128–131 reference families) are left as the model spaces
+  them. The model is already about as close to their designers as it is to
+  the lowercase (17–21 units held out). Conventions of their own would bring
+  most letters only about half a unit closer, and j, s and u not at all,
+  which is not worth a switch.
+
+The table records these under `feature_forms` (id `2026-10-11-ce689f52`, its
+`qa_id` unchanged).
 
 ### The word space
 
@@ -1005,7 +1048,7 @@ class pairs and 25,166 exceptions.
 | `kk2_pairs_window.py` | The Pairs window: measurement through the engine, the list and the pair preview. |
 | `kk2_harness.py` | The designer harness: the learned table (`kk2_harness.json`), the glyphs it applies to, the stem, and each glyph side's shift and the pair corrections for a master, Looseness and strength (`Plan`). |
 | `kk2_harness_window.py` | The Designer Harness window: the pairs it changes most, drawn as in the font, as Kinetikern2 sets them, and with the harness. |
-| `kk2_punctuation.py` | Punctuation by convention: the learned table (`kk2_punctuation.json`), each glyph's mark (by code point, canonical twins included; `.case` punctuation by its base mark; `one.lf` and `one.pnum` by their figure; `one.sups` and `one.sinf` by their superscript and subscript), and the engine's argument: 6 coefficients and 2 kerning shares per glyph. |
+| `kk2_punctuation.py` | Punctuation by convention: the learned table (`kk2_punctuation.json`), each glyph's mark (by code point, canonical twins included; `.case` punctuation by its base mark; `one.lf` and `one.pnum` by their figure; `one.sups` and `one.sinf` by their superscript and subscript; `one.osf` by the old-style 1; a master's fraction slash as the slash in a fraction where it has numerators and denominators), and the engine's argument: 6 coefficients and 2 kerning shares per glyph. |
 | `kk2_joins_window.py` | The Joins window: the join checker's findings as drawn (Spacing QA's rule), what the result shown does to the joins, drawing advice for the kept sides, proofs. The RoboFont extension has the same file; a host object opens the proofs (an Edit tab here, the Space Center there). |
 | `kk2_selftest.py` | The unattended in-Glyphs test behind `build.sh --verify`. |
 
@@ -1151,8 +1194,10 @@ does:
 * closing and reopening the window.
 
 On small made-up masters it also checks which glyphs punctuation and figures
-by convention reach (superscripts and ordinals under the Figures switch, a
-`.sups` form by its superscript, a set of one width kept), and which blank
+by convention reach (superscripts, ordinals, old-style figures and ½ under
+the Figures switch, a `.sups` or `.oldstyle` form by its encoded or
+old-style figure, a set of one width kept, the fraction slash as in a
+fraction where the master has numerators and denominators), and which blank
 spaces Apply keeps in step: the figure space follows the zero only without
 tabular figures. Canonical twins take their mark's conventions, and a
 case form follows its base mark. `.lf` and `.pnum` figures take their
@@ -1160,7 +1205,7 @@ figure's conventions. Old-style and tabular forms are left alone, and so is
 a `.lf` set whose figures share one width. A preview is compared with a
 direct engine solve under the window's conventions.
 
-Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **107
+Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **111
 passed, 0 failed** on 400 glyphs (11 October 2026; 92 on 3,000 glyphs
 before the conventions, `--glyphs 3000 --max-pairs 30000`).
 

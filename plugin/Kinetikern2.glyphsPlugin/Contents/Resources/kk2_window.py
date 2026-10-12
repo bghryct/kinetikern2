@@ -394,7 +394,9 @@ class KK2Window(object):
             "spaced and kerned like the letters, from its shape alone, and the designer harness (learned on top "
             "of these conventions) leaves it alone too. It covers every mark Latin text uses — guillemets, low "
             "quotes, ¡ ¿, § ¶ † ‡ … — and the symbols that sit with figures ($ € £ # ‰ + × ÷ < >), whose sides "
-            "are learned against the figures; a mark's case form takes its base mark's sides.")
+            "are learned against the figures; a mark's case form takes its base mark's sides. In a master with "
+            "numerators and denominators the fraction slash takes the conventions of a slash in a fraction: "
+            "designers tuck the figures under it by well over 100 units a side.")
         w.figures = vanilla.CheckBox((x + 214, 9, 70, 18), "Figures", sizeStyle="small",
                                      value=self._setting("figures", True, bool), callback=self.figuresChanged)
         w.figures.getNSButton().setToolTip_(
@@ -402,11 +404,12 @@ class KK2Window(object):
             "forms when the default figures are tabular) spaced the way the designers of well-spaced fonts "
             "space them. From their shapes alone the model sets every figure 6–26 units per side tighter than "
             "designers do (the 1 most, then 2, 3, 5 and 7). Learned from the Google Fonts families with "
-            "proportional figures. Tabular figures keep their widths either way; old-style forms (.osf) are "
-            "left as the model spaces them. The switch also covers the small forms that go with figures: "
-            "superscripts and subscripts (¹ ² ³, ₁ ₂, and .sups / .sinf forms), which designers space more "
-            "openly than the model, and the ordinals ª º, which they set closer to the figure before them. A "
-            "set of superscripts or subscripts that shares one width keeps it.")
+            "proportional figures. Tabular figures (.tf, .tosf too) keep their widths either way. The switch "
+            "also covers what goes with figures: old-style figures (.osf, .onum), "
+            "precomposed fractions (½ ¼ ¾ ⅓ ⅛…), superscripts and subscripts (¹ ² ³, ₁ ₂, and .sups / .sinf "
+            "forms), which designers space more openly than the model, and the ordinals ª º, which they set "
+            "closer to the figure before them. A set of old-style figures, superscripts or subscripts that "
+            "shares one width keeps it.")
         self.styles = kh.style_choices()
         w.conventions = vanilla.PopUpButton((x + 98, 28, 106, 20), [label for _k, label in self.styles],
                                             callback=self.conventionsChanged, sizeStyle="mini")

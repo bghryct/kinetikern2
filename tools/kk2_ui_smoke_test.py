@@ -1766,8 +1766,11 @@ class SmokeTest(object):
                   "punctuation lookups: a case form follows its base mark")
         rep.check(all(row(n + ".lf") == row(n) and on(row(n)) for n in figs) and row("one.pnum") == row("one"),
                   "punctuation lookups: proportional lining forms (.lf, .pnum) take their figure's conventions")
-        rep.check(not on(row("one.osf")) and not on(row("one.tf")) and not on(row("a.lf")),
-                  "punctuation lookups: old-style, tabular and non-figure forms are left alone")
+        osf_ok = (on(row("one.osf")) and row("one.osf") != row("one")) if "one.osf" in kpu.feature_marks() \
+            else not on(row("one.osf"))
+        rep.check(osf_ok and not on(row("one.tf")) and not on(row("a.lf")),
+                  "punctuation lookups: an old-style figure takes the old-style figures' conventions (not the lining "
+                  "figure's); tabular and non-figure forms are left alone")
         off = kpu.engine_arg(snap, "text", punctuation=True, figures=False)[0]
         rep.check(not any(on(off[snap.index[n + ".lf"]]) for n in figs) and on(off[snap.index["semicolon"]]),
                   "punctuation lookups: Figures off leaves the lining forms alone, punctuation on")
@@ -1801,6 +1804,41 @@ class SmokeTest(object):
         rep.check(not any(on(c4[snap4.index[n]]) for n in ("onesuperior", "twosuperior", "threesuperior", "one.sups",
                                                             "two.sups", "three.sups")) and on(c4[snap4.index["ordfeminine"]]),
                   "punctuation lookups: superscripts that share one width are tabular, kept")
+        if "fraction.frac" not in kpu.feature_marks():
+            rep.info("punctuation lookups: no old-style figures or fractions in this table, not checked")
+            return
+        # old-style figures of one width are kept; ½ follows the Figures switch; the slash takes its conventions
+        # in a fraction where the master has numerators and denominators
+        def frac_master(numr, osf_widths, generation):
+            glyphs = [(n, 0x30 + k, 556) for k, n in enumerate(figs)]
+            glyphs += [(n + ".osf", None, w) for n, w in zip(figs, osf_widths)]
+            glyphs += [("onehalf", 0xBD, 834), ("fraction", 0x2044, 167), ("period", 0x2E, 278)]
+            if numr:
+                glyphs += [(n + ".numr", None, 330) for n in figs] + [(n + ".dnom", None, 330) for n in figs]
+            return Snap(glyphs, generation)
+
+        snap5 = frac_master(True, [520 + 7 * k for k in range(10)], 5)
+        c5 = kpu.engine_arg(snap5, "text", punctuation=True, figures=True)[0]
+        c5p = kpu.engine_arg(snap5, "text", punctuation=True, figures=False)[0]
+        snap6 = frac_master(False, [556] * 10, 6)
+        c6 = kpu.engine_arg(snap6, "text")[0]
+        mark5 = kpu.mark_of(snap5, snap5.index["fraction"])
+        mark6 = kpu.mark_of(snap6, snap6.index["fraction"])
+        rep.check(mark5 == "fraction.frac" and mark6 == "fraction" and on(c5[snap5.index["fraction"]]) and
+                  c5[snap5.index["fraction"]] != c6[snap6.index["fraction"]],
+                  "punctuation lookups: the fraction slash takes the slash-in-a-fraction conventions where the master "
+                  "has numerators and denominators", "%s / %s" % (mark5, mark6))
+        rep.check(on(c5[snap5.index["onehalf"]]) and not on(c5p[snap5.index["onehalf"]]) and on(c5p[snap5.index["fraction"]]),
+                  "punctuation lookups: ½ follows the Figures switch, the fraction slash the Punctuation switch")
+        rep.check(all(on(c5[snap5.index[n + ".osf"]]) for n in figs) and not any(on(c6[snap6.index[n + ".osf"]]) for n in figs),
+                  "punctuation lookups: old-style figures that share one width are tabular, kept")
+        # the longer names some fonts use: one.oldstyle, one.numerator, one.denominator
+        snap7 = Snap([(n, 0x30 + k, 556) for k, n in enumerate(figs)] + [("fraction", 0x2044, 167)] +
+                     [(n + ".oldstyle", None, 500 + 9 * k) for k, n in enumerate(figs)] +
+                     [(n + ".numerator", None, 330) for n in figs] + [(n + ".denominator", None, 330) for n in figs], 7)
+        rep.check(kpu.mark_of(snap7, snap7.index["one.oldstyle"]) == "one.osf" and
+                  kpu.mark_of(snap7, snap7.index["fraction"]) == "fraction.frac",
+                  "punctuation lookups: .oldstyle, .numerator and .denominator names count as .osf, .numr and .dnom")
 
     def check_spaces_in_step(self):
         """Which blank spaces Apply keeps in step (kk2_apply._spaces_in_step),

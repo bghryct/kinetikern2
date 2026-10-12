@@ -21,9 +21,12 @@ window, the same controls and the same tools:
 - **Figures** by convention (on by default): proportional figures (the
   default ones, or `.lf` / `.pnum` forms) spaced as designers space them
   (the model alone sets them 6–26 units per side too tight); tabular
-  figures keep their widths; also the superscripts, subscripts and ordinals
-  that go with figures (¹ ² ³, ₁, ª º and `.sups` / `.sinf` forms; a set of
-  one width keeps it);
+  figures keep their widths; also what goes with figures: old-style figures
+  (`.osf`, `.onum`, `.oldstyle`), precomposed fractions (½ ¼ ¾ ⅓ ⅛…),
+  superscripts, subscripts and ordinals (¹ ² ³, ₁, ª º and `.sups` / `.sinf`
+  forms); a set of one width keeps it; in a font with numerators and
+  denominators the fraction slash takes the conventions of a slash in a
+  fraction (under Punctuation);
 - after a whole-font run, where the word space sits against what designers
   of the font's kind set for its n (Kinetikern2 does not set it);
 - the punctuation and figure spaces kept in step: Apply gives a blank
@@ -230,6 +233,16 @@ meet exactly flush, which the touching rule finds connected
 (`test_flush_joins`); and a hand that joins only in part, whose stem letters
 carry exit strokes, which the test for hands that join in part finds
 connected while letters that touch at the top do not (`test_partly_joins`).
+
+## Verified again (12 October 2026)
+
+Old-style figures, precomposed fractions and the slash in a fraction.
+Inside RoboFont, on Arial: **PASSED**, with ½ ¼ ¾ ⅛ and the ordinals moved
+as their conventions say (22 figure sides). On Libre Caslon Text (OFL; its
+`.oldstyle`, `.numerator` and `.denominator` forms): **PASSED**, with 99
+figure sides and 123 punctuation sides moved as their conventions say, the
+fraction slash among them as a slash in a fraction. The headless suite
+PASSED.
 
 ## Verified again (11 October 2026, late night)
 

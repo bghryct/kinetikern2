@@ -57,6 +57,14 @@ SUPERIORS = tuple(n + "superior" for n in FIGURE_NAMES)
 INFERIORS = tuple(n + "inferior" for n in FIGURE_NAMES)
 SUPS_SUFFIXES = ("sups", "superior")
 SINF_SUFFIXES = ("sinf", "subs", "inferior")
+# Old-style figures under a suffix (one.osf, one.onum, one.oldstyle; the tabular .tosf keeps its widths) and the precomposed
+# fractions (½, by character) go with the figures too: the table's feature_forms, the Figures switch. The fraction
+# slash of a master with numerators and denominators sits between them (HarfBuzz sets a fraction typed with U+2044
+# so): it takes "fraction.frac", designers' slash in a fraction, under the Punctuation switch.
+OSF_SUFFIXES = ("osf", "onum", "oldstyle")
+NUMR_SUFFIXES = ("numr", "numerator")
+DNOM_SUFFIXES = ("dnom", "denominator")
+FRACTION_SLASH = 0x2044
 
 
 def table():
@@ -90,6 +98,29 @@ def figure_marks():
     return frozenset(table().get("figures", ()))
 
 
+def feature_marks():
+    """The old-style figures, precomposed fractions and the slash in a fraction the table has conventions for."""
+    return frozenset(table().get("feature_forms", ()))
+
+
+_fraction_forms = {}
+
+
+def has_fraction_forms(snap):
+    """A master with numerators and denominators (at least 5 of each: one.numr or one.numerator, one.dnom or
+    one.denominator), as a fraction typed with U+2044 gets them."""
+    key = (id(snap), getattr(snap, "generation", 0))
+    hit = _fraction_forms.get(key)
+    if hit is None:
+        tails = [n.rpartition(".")[2] for n in snap.names if "." in n]
+        hit = (sum(tails.count(t) for t in NUMR_SUFFIXES) >= 5 and
+               sum(tails.count(t) for t in DNOM_SUFFIXES) >= 5)
+        if len(_fraction_forms) > 16:
+            _fraction_forms.clear()
+        _fraction_forms[key] = hit
+    return hit
+
+
 def small_marks():
     """The superscripts, subscripts and ordinals the table has conventions for (the Figures switch)."""
     return frozenset(table().get("small_forms", ()))
@@ -118,7 +149,10 @@ def style_of(style):
 def mark_of(snap, i):
     """The table's mark of glyph i: by its code point; .case punctuation by
     its base mark, proportional lining figures (one.lf) by their figure, and
-    a figure's superscript or subscript form (one.sups) by the encoded one."""
+    a figure's superscript or subscript form (one.sups) by the encoded one,
+    an old-style figure (one.osf) by the old-style figures', and the slash
+    of a master with numerators and denominators as the slash in a
+    fraction."""
     name = snap.names[i]
     info = snap.infos.get(name)
     if info is None or info.empty:
@@ -126,6 +160,8 @@ def mark_of(snap, i):
     codes = by_code()
     k = codes.get(info.unicode) if info.unicode is not None else None
     if k is not None:
+        if info.unicode == FRACTION_SLASH and "fraction.frac" in feature_marks() and has_fraction_forms(snap):
+            return "fraction.frac"
         return k
     parts = name.split(".")
     if len(parts) > 1 and parts[-1] in kh.CASE_SUFFIXES:
@@ -137,6 +173,11 @@ def mark_of(snap, i):
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
         if k is not None and resolve(k) in figure_marks():
             return k
+    if len(parts) == 2 and parts[1] in OSF_SUFFIXES:
+        base = snap.infos.get(parts[0])
+        k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
+        if k in FIGURE_NAMES and k + ".osf" in feature_marks():
+            return k + ".osf"
     if len(parts) == 2 and (parts[1] in SUPS_SUFFIXES or parts[1] in SINF_SUFFIXES):
         base = snap.infos.get(parts[0])
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
@@ -161,19 +202,21 @@ def _tabular_suffixes(snap, figs):
 
 
 def _one_width_sets(snap):
-    """The glyphs of a superscript or subscript set that shares one width (at
-    least 3 of them: a tabular design, whose widths stay). The encoded forms
-    are one set, those under each suffix another."""
+    """The glyphs of a superscript, subscript or old-style set that shares one
+    width (at least 3 of them, 5 old-style figures: a tabular design, whose
+    widths stay). The encoded forms are one set, those under each suffix
+    another."""
     sets = {}
     for i, name in enumerate(snap.names):
         k = mark_of(snap, i)
-        if k in SUPERIORS or k in INFERIORS:
+        kind = "sup" if k in SUPERIORS else "inf" if k in INFERIORS else "osf" if k and k.endswith(".osf") else None
+        if kind is not None:
             info = snap.infos[name]
-            key = (k in SUPERIORS, None if info.unicode is not None else name.partition(".")[2])
+            key = (kind, None if info.unicode is not None else name.partition(".")[2])
             sets.setdefault(key, []).append((i, int(round(info.width))))
     out = set()
-    for members in sets.values():
-        if len(members) >= 3 and len(set(w for _i, w in members)) == 1:
+    for (kind, _suffix), members in sets.items():
+        if len(members) >= (5 if kind == "osf" else 3) and len(set(w for _i, w in members)) == 1:
             out.update(i for i, _w in members)
     return out
 
@@ -196,7 +239,8 @@ def engine_arg(snap, style, punctuation=True, figures=True):
     own), cached per snapshot, style and switches. `punctuation`: the
     punctuation's and symbols' conventions, shares and case forms (off: kern
     scale 1, every mark kerned in full); `figures`: the figures' and their
-    small forms' (superscripts, subscripts, ordinals)."""
+    small forms' (superscripts, subscripts, ordinals), old-style figures'
+    and precomposed fractions'."""
     key = (id(snap), getattr(snap, "generation", 0), style, bool(punctuation), bool(figures))
     hit = _cache.get(key)
     if hit is not None:
@@ -207,7 +251,7 @@ def engine_arg(snap, style, punctuation=True, figures=True):
     coefs = []
     shares = []
     figs = figure_marks()
-    smalls = small_marks()
+    smalls = small_marks() | (feature_marks() - set(["fraction.frac"]))
     follow = []
     tabular = _tabular_suffixes(snap, figs)
     one_width = _one_width_sets(snap) if smalls else frozenset()

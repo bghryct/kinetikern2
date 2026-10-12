@@ -204,10 +204,24 @@ the figures were learned on.
   and ³ come out about a unit worse. A set that shares one width (Arial's
   ¹ ² ³) keeps the model's spacing; `.sups` / `.sinf` forms take their
   encoded form's conventions.
+- Old-style figures, fractions and small caps: measured at the user's
+  request (11 October 2026) with `punctuation-data --feature-forms`. It
+  shapes text with HarfBuzz the way a reader gets it: `onum`, `smcp`, a
+  fraction typed with U+2044, and the precomposed fractions. 1,296 of the
+  1,625 families have at least one of these forms. Learned like the small
+  forms, sides only, with the slash in a fraction learned on its own.
+  Old-style figures (the 1 26.7 → 23.2, the 3 22.6 → 20.1, the 5 21.9 → 19.3
+  held out) and precomposed fractions (½ 29.6 → 24.9, ¼ 28.2 → 24.1, ⅓ 24.2 →
+  20.6) join the Figures switch. The slash in a fraction ("fraction.frac":
+  the model 108.7, today's slash 66.2, its own 52.8 over 318 reference
+  families) is used in masters with numerators and denominators. Small caps
+  are left out: the model is about as close to their designers as to the
+  lowercase (17–21), and conventions gain about half a unit. Numerators and
+  denominators themselves keep the model's spacing.
 - `.case` forms follow their base mark. Proportional lining figures under a
-  suffix (`.lf`, `.pnum`, `.plf`) take their figure's conventions. Other
-  variants (`.sc`, old-style `.osf`) are left as the model spaces them,
-  because they were not measured. Tabular forms keep their widths.
+  suffix (`.lf`, `.pnum`, `.plf`) take their figure's conventions, old-style
+  ones (`.osf`, `.onum`, `.oldstyle`) the old-style figures'. Small caps
+  (`.sc`) are left as the model spaces them. Tabular forms keep their widths.
 - The conventions are per style, not per font. What is left is each
   designer's own taste. The designer harness, learned on top of these
   conventions, corrects what is common to well-spaced text faces.

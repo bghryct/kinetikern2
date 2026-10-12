@@ -50,10 +50,11 @@ ap.add_argument("--min-quality", type=float, default=70)
 ap.add_argument("--out", required=True)
 ap.add_argument("--more-data", default=None, help="glob of punctuation-data --all-punctuation's JSON lines")
 ap.add_argument("--small-data", default=None, help="glob of punctuation-data --small-forms' JSON lines")
-ap.add_argument("--base", default=None, help="the finished table the small forms are added to (--small-data)")
+ap.add_argument("--feature-data", default=None, help="glob of punctuation-data --feature-forms' JSON lines")
+ap.add_argument("--base", default=None, help="the finished table --small-data or --feature-data adds to")
 args = ap.parse_args()
-if args.small_data and (args.more_data or not args.base):
-    ap.error("--small-data takes --base and no --more-data")
+if (args.small_data or args.feature_data) and (args.more_data or not args.base or (args.small_data and args.feature_data)):
+    ap.error("--small-data or --feature-data takes --base, and no --more-data")
 human = {}
 for row in csv.reader(open(args.families, encoding="utf-8")):
     if len(row) == 4 and row[2] == "/Quality/Spacing" and not row[1]:
@@ -336,6 +337,143 @@ if args.small_data:
     FIGURE_SIDES = {"ordfeminine": (True, False), "ordmasculine": (True, False)}
     ALIASES = dict(zip(SUB, SUP))
     args.more_data = args.small_data
+# old-style figures, small caps and precomposed fractions (--feature-data: what a font reaches through onum, smcp,
+# and by character): an old-style figure against the letters around it (in 1987, 10am), a small cap against the
+# capitals (Caps and Small Caps), a fraction's left side against the figure before it (1½); sides only, like the
+# small forms; an old-style set of one width keeps its widths. The fraction slash between a numerator and a
+# denominator (HarfBuzz sets a fraction typed with U+2044 so) is learned below, as "fraction.frac".
+OSF = [n + ".osf" for n in FIG]
+SCAPS = [chr(c) + ".sc" for c in range(97, 123)]
+VULGAR = [("onehalf", "½"), ("onequarter", "¼"), ("threequarters", "¾"), ("onethird", "⅓"), ("twothirds", "⅔"),
+          ("oneeighth", "⅛"), ("threeeighths", "⅜"), ("fiveeighths", "⅝"), ("seveneighths", "⅞")]
+FEATURE = [(n, None) for n in OSF + SCAPS] + VULGAR
+NOSHARE = set(n for n, _c in SMALL) | set(n for n, _c in FEATURE)
+if args.feature_data:
+    MORE = FEATURE
+    FIGURE_SIDES = {n: (True, False) for n, _c in VULGAR}
+    ALIASES = {"twothirds": "onethird", "threeeighths": "oneeighth", "fiveeighths": "oneeighth",
+               "seveneighths": "oneeighth", "threequarters": "onequarter"}
+    args.more_data = args.feature_data
+    SMALL = FEATURE  # what --base gains
+FRAC_CLIP = 250.0  # designers tuck a numerator and a denominator well under the slash
+
+
+def learn_fraction_slash(mf, ref2, sys2, fold2, style2, rho2, base):
+    """The fraction slash between a numerator and a denominator ("fraction.frac"): each side's shift
+    (c_style + m·s/50 + r·ρ/50, s its own side as the model sets it) and its kerning share there, learned like a
+    mark's against the numerators and denominators (their own sides as the model sets them). Held out by family,
+    against the model alone and against the slash's conventions learned beside full-size figures ("fraction")."""
+    idx_all = [i for i, fo in enumerate(mf) if fo.get("frac") is not None and fo["frac"]["left"]["dg"].size >= 5
+               and fo["frac"]["right"]["dg"].size >= 5 and np.all(np.isfinite(fo["frac"]["s"]))]
+    if not idx_all:
+        return []
+    S_ = np.full((len(mf), 2), np.nan)
+    for i in idx_all:
+        S_[i] = mf[i]["frac"]["s"]
+
+    def side_data(i, sd):
+        return mf[i]["frac"]["left" if sd == 0 else "right"]
+
+    def value(d, share):
+        return np.maximum(shape(d["raw"], share), d["floor"])
+
+    def fit(idx, K):
+        coef = {}
+        for sd in (0, 1):
+            X, y = [], []
+            for i in idx:
+                d = side_data(i, sd)
+                res = d["dg"] - (d["mg"] + value(d, K[sd])) - mf[i]["off"]
+                if np.isfinite(res).sum() < 5 or not np.isfinite(rho2[i]): continue
+                X.append([float(style2[i] == st_) for st_ in STYLES] + [S_[i, sd] / 50.0, rho2[i] / 50.0])
+                y.append(np.nanmedian(res))
+            if len(y) < MIN_FAMILIES: continue
+            X, y = np.array(X), np.array(y)
+            present = [(X[:, k] > 0).sum() >= 8 for k in range(3)]
+            for k in range(1, 3):
+                if not present[k]:
+                    X[:, 0] += X[:, k]; X[:, k] = 0.0
+            R_ = np.diag([0 if present[0] else 2.0, 0 if present[1] else 1e6, 0 if present[2] else 1e6, 2.0, 2.0])
+            w = np.ones(len(y))
+            for _ in range(3):
+                beta = np.linalg.solve(X.T @ (X * w[:, None]) + R_, X.T @ (w * y))
+                res = y - X @ beta
+                sc = 1.4826 * np.median(np.abs(res)) + 1e-6
+                u = np.abs(res) / (1.345 * sc); w = np.where(u <= 1, 1.0, 1.0 / u)
+            for k in range(1, 3):
+                if not present[k]: beta[k] = beta[0]
+            coef[sd] = beta
+        return coef
+
+    def predict(coef, i, sd):
+        beta = coef.get(sd)
+        if beta is None or not np.isfinite(rho2[i]): return 0.0
+        x = np.array([float(style2[i] == st_) for st_ in STYLES] + [S_[i, sd] / 50.0, rho2[i] / 50.0])
+        return float(np.clip(x @ beta, -FRAC_CLIP, FRAC_CLIP))
+
+    def shares(coef, idx):
+        K = np.full(2, KERN_SCALE)
+        for sd in (0, 1):
+            acc = np.zeros(len(GRID)); cnt = 0
+            for i in idx:
+                d = side_data(i, sd)
+                t = d["dg"] - d["mg"] - predict(coef, i, sd) - mf[i]["off"]
+                acc += np.nansum(np.abs(t[:, None] - np.maximum(shape(d["raw"][:, None], GRID[None, :]), d["floor"][:, None])), 0)
+                cnt += len(t)
+            if cnt >= 300: K[sd] = GRID[np.argmin(acc)]
+        return K
+
+    def learn(idx):
+        K = np.full(2, KERN_SCALE); coef = {}
+        for _ in range(ROUNDS):
+            coef = fit(idx, K); K = shares(coef, idx)
+        return coef, K
+
+    # what the table does today in such a font: the slash's conventions learned beside full-size figures
+    def today(i, sd):
+        c = base["styles"].get(mf[i]["style"], base["styles"]["text"]).get("fraction")
+        if not c or c[sd][0] is None or not np.isfinite(rho2[i]): return 0.0
+        k_, m_, r_ = c[sd]
+        return float(np.clip(k_ + m_ * S_[i, sd] / 50.0 + r_ * rho2[i] / 50.0, -80, 80))
+    k_today = base["kern"].get("fraction", [base.get("kern_scale", KERN_SCALE)] * 2)
+    ref_idx = [i for i in idx_all if ref2[i]]
+    cv = {}
+    for k in range(5):
+        coef, K = learn([i for i in ref_idx if fold2[i] != k])
+        for i in idx_all:
+            if fold2[i] == k and not sys2[i]: cv[i] = (coef, K)
+    full, Kfull = learn(ref_idx)
+    for i in idx_all:
+        if sys2[i]: cv[i] = (full, Kfull)
+    out = []
+    for label, sel in (("reference families", lambda i: ref2[i]), ("other families", lambda i: not ref2[i] and not sys2[i]),
+                       ("macOS fonts", lambda i: sys2[i])):
+        e = np.zeros(3); n_ = 0
+        for i in idx_all:
+            if not sel(i): continue
+            coef, K = cv[i]
+            for sd in (0, 1):
+                d = side_data(i, sd)
+                base_ = d["dg"] - d["mg"] - mf[i]["off"]
+                e[0] += np.nansum(np.abs(base_ - d["vdef"]))
+                e[1] += np.nansum(np.abs(base_ - today(i, sd) - value(d, k_today[sd])))
+                e[2] += np.nansum(np.abs(base_ - predict(coef, i, sd) - value(d, K[sd])))
+                n_ += np.isfinite(base_).sum()
+        if n_:
+            line = (f"fraction slash between a numerator and a denominator, held out, {label} "
+                    f"({sum(1 for i in idx_all if sel(i))} fonts): model {e[0] / n_:.1f} / today's slash {e[1] / n_:.1f} / "
+                    f"its own {e[2] / n_:.1f}")
+            print(line); out.append(line)
+    if full:
+        for si, st_ in enumerate(STYLES):
+            table[st_]["fraction.frac"] = [[round(float(full[sd][si]), 2), round(float(full[sd][3]), 3), round(float(full[sd][4]), 3)]
+                                           if sd in full else [None] * 3 for sd in (0, 1)]
+        kern["fraction.frac"] = [round(float(Kfull[0]), 2), round(float(Kfull[1]), 2)]
+        line = "fraction.frac: " + json.dumps({"text": table["text"]["fraction.frac"], "kern": kern["fraction.frac"]})
+        print(line); out.append(line)
+    return out
+
+
 lines_more, marks, aliases = [], {n: [ord(c)] for n, c in KERNEL_CHARS.items()}, {}
 if args.more_data:
     MN = [n for n, _ in MORE]
@@ -393,10 +531,18 @@ if args.more_data:
             def one_width(group):
                 w = [adv[k] for k, n in enumerate(names) if n in group] if adv else []
                 return len(w) >= 3 and max(w) - min(w) < 0.5
+            # a fraction typed with U+2044: the slash's pairs with the numerator before it and the denominator after
+            frac = None
+            if args.feature_data and "fraction" in names:
+                sl = names.index("fraction")
+                isn = np.array([n.endswith(".numr") for n in names]); isd = np.array([n.endswith(".dnom") for n in names])
+                lp, rp = isn[ga] & (gb == sl), (ga == sl) & isd[gb]
+                frac = dict(s=sb[sl], **{key: dict(dg=P[w, 2], mg=P[w, 3], raw=raw[w], floor=floor[w], vdef=vdef[w])
+                                         for key, w in (("left", lp), ("right", rp))})
             mf.append(dict(slug=r["slug"], cat=cat_, style=STYLE_OF.get(cat_, "text"), tab=bool(m and m.get("tabular")),
-                           stab=one_width(SUP), btab=one_width(SUB),
+                           stab=one_width(SUP), btab=one_width(SUB), otab=one_width(OSF),
                            q=(m["quality"] if m and m["quality"] is not None else np.nan), off=off, row=row, col=col,
-                           rho=np.median(lc) if len(lc) >= 6 else np.nan, Bm=Bm, parts=parts))
+                           rho=np.median(lc) if len(lc) >= 6 else np.nan, Bm=Bm, parts=parts, frac=frac))
     F2 = len(mf)
     style2 = np.array([fo["style"] for fo in mf]); cat2 = np.array([fo["cat"] for fo in mf])
     q2 = np.array([fo["q"] for fo in mf], float); rho2 = np.array([fo["rho"] for fo in mf]); Bm2 = np.stack([fo["Bm"] for fo in mf])
@@ -406,8 +552,9 @@ if args.more_data:
     KIND = np.array([["F" if FIGURE_SIDES.get(n, (False, False))[sd] else "L" for sd in (0, 1)] for n in MN])
     ISFIG = np.array([n in FIG for n in MN])
     # the small forms: no kerning share (the engine kerns figures and letters fully); a set of one width is kept
-    ISSMALL = np.array([n in dict(SMALL) for n in MN])
-    TABKEY = ["tab" if n in FIG else "stab" if n in SUP else "btab" if n in SUB else None for n in MN]
+    ISSMALL = np.array([n in NOSHARE for n in MN])
+    TABKEY = ["tab" if n in FIG else "stab" if n in SUP else "btab" if n in SUB else "otab" if n in OSF else None
+              for n in MN]
     tab2 = np.array([fo["tab"] for fo in mf])
     print(f"\nthe rest of the punctuation: {F2} fonts; reference families with each mark:")
     print("  " + ", ".join(f"{n} {int((have[:, k] & ref2).sum())}" for k, n in enumerate(MN)))
@@ -595,8 +742,12 @@ if args.more_data:
         if MN[j] in aliases or MN[j] in dropped or ISFIG[j] or ISSMALL[j]: continue
         kern[MN[j]] = [round(float(Kx2[j, 0]), 2), round(float(Kx2[j, 1]), 2)]
     for n, c in MORE:
-        marks[n] = [ord(c)]
+        if c is not None:
+            marks[n] = [ord(c)]
     print("aliases:", aliases)
+    if args.feature_data:
+        frac_lines = learn_fraction_slash(mf, ref2, sys2, fold2, style2, rho2, json.load(open(args.base)))
+        lines_more += frac_lines
 out = {"format": "kinetikern2-punctuation/2", "kern_scale": KERN_SCALE,
        "about": "Punctuation by convention: what the designers of well-spaced Google Fonts families do with each punctuation mark, "
                 "on top of Kinetikern2's spacing. Each side moves by c + m·s/50 + r·ρ/50 units per 1000 em, where s is the side's own "
@@ -611,16 +762,23 @@ out["id"] = kernel_id if not args.more_data else (
     today + "-" + hashlib.sha1(json.dumps([table, kern, marks, aliases], sort_keys=True).encode()).hexdigest()[:8])
 # the kernel's 36 marks as in that table: reports checked with it are checked with these (Spacing QA has the kernel only)
 out["kernel_id"] = kernel_id
-if args.small_data:
+if args.small_data or args.feature_data:
     # the finished table, with the small forms added and nothing else changed
     base = json.load(open(args.base))
-    small = [n for n, _c in SMALL]
+    # small caps are measured, not added: the model spaces them about as designers do already (held out, about
+    # half a unit closer with conventions of their own, none at all for j, s, u: 11 October 2026)
+    small = [n for n, _c in SMALL if n not in SCAPS]
+    if args.feature_data and "fraction.frac" in table["text"]:
+        small = small + ["fraction.frac"]
+        base["kern"]["fraction.frac"] = kern["fraction.frac"]
     for s_ in STYLES:
         base["styles"].setdefault(s_, {}).update((n, v) for n, v in table[s_].items() if n in small)
     base["marks"].update((n, marks[n]) for n in small if n in marks)
     base["aliases"].update((n, t) for n, t in aliases.items() if n in small)
-    base["small_forms"] = [n for n in small if n in base["styles"]["text"] or n in base["aliases"]]
-    base["check"] = base["check"] + ["superscripts, subscripts and ordinals (" + today + "):"] + lines_more
+    key, what = (("feature_forms", "old-style figures, small caps and fractions") if args.feature_data else
+                 ("small_forms", "superscripts, subscripts and ordinals"))
+    base[key] = [n for n in small if n in base["styles"]["text"] or n in base["aliases"]]
+    base["check"] = base["check"] + [what + " (" + today + "):"] + lines_more
     # what Spacing QA applies (the kernel's marks, the symbols and the figures) is unchanged: its reports keep
     # their stamp (qa_id) while the table's id follows the whole table
     base["qa_id"] = base.get("qa_id") or base["id"]

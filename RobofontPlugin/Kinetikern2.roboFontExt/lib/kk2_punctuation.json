@@ -1231,6 +1231,186 @@
      -24.781,
      1.032
     ]
+   ],
+   "zero.osf": [
+    [
+     9.76,
+     -12.043,
+     3.496
+    ],
+    [
+     19.26,
+     -14.382,
+     -2.994
+    ]
+   ],
+   "one.osf": [
+    [
+     19.58,
+     -5.002,
+     1.163
+    ],
+    [
+     8.88,
+     -2.903,
+     14.398
+    ]
+   ],
+   "two.osf": [
+    [
+     6.66,
+     -2.4,
+     5.349
+    ],
+    [
+     15.18,
+     -13.898,
+     4.028
+    ]
+   ],
+   "three.osf": [
+    [
+     13.75,
+     -24.058,
+     10.787
+    ],
+    [
+     16.21,
+     -8.086,
+     -4.131
+    ]
+   ],
+   "four.osf": [
+    [
+     -0.77,
+     -22.401,
+     17.319
+    ],
+    [
+     11.01,
+     -17.541,
+     4.272
+    ]
+   ],
+   "five.osf": [
+    [
+     17.95,
+     -17.013,
+     6.627
+    ],
+    [
+     15.92,
+     -10.571,
+     -0.692
+    ]
+   ],
+   "six.osf": [
+    [
+     7.94,
+     -6.28,
+     5.442
+    ],
+    [
+     12.5,
+     -7.85,
+     1.338
+    ]
+   ],
+   "seven.osf": [
+    [
+     8.8,
+     -13.721,
+     8.541
+    ],
+    [
+     4.59,
+     -14.747,
+     9.106
+    ]
+   ],
+   "eight.osf": [
+    [
+     7.51,
+     -8.874,
+     6.372
+    ],
+    [
+     15.73,
+     -9.952,
+     -0.797
+    ]
+   ],
+   "nine.osf": [
+    [
+     5.52,
+     -6.987,
+     5.29
+    ],
+    [
+     17.39,
+     -17.254,
+     1.068
+    ]
+   ],
+   "onehalf": [
+    [
+     19.88,
+     -29.772,
+     18.757
+    ],
+    [
+     18.81,
+     -26.652,
+     11.036
+    ]
+   ],
+   "onequarter": [
+    [
+     21.05,
+     -29.903,
+     18.321
+    ],
+    [
+     21.92,
+     -22.135,
+     -2.135
+    ]
+   ],
+   "onethird": [
+    [
+     25.93,
+     -36.454,
+     14.752
+    ],
+    [
+     25.11,
+     -25.913,
+     2.282
+    ]
+   ],
+   "oneeighth": [
+    [
+     19.95,
+     -31.535,
+     17.44
+    ],
+    [
+     18.21,
+     -27.264,
+     8.644
+    ]
+   ],
+   "fraction.frac": [
+    [
+     -166.77,
+     -4.945,
+     35.481
+    ],
+    [
+     -165.79,
+     -5.958,
+     45.595
+    ]
    ]
   },
   "display": {
@@ -2456,6 +2636,186 @@
      12.9,
      -24.781,
      1.032
+    ]
+   ],
+   "zero.osf": [
+    [
+     12.2,
+     -12.043,
+     3.496
+    ],
+    [
+     18.28,
+     -14.382,
+     -2.994
+    ]
+   ],
+   "one.osf": [
+    [
+     8.97,
+     -5.002,
+     1.163
+    ],
+    [
+     10.73,
+     -2.903,
+     14.398
+    ]
+   ],
+   "two.osf": [
+    [
+     8.25,
+     -2.4,
+     5.349
+    ],
+    [
+     16.9,
+     -13.898,
+     4.028
+    ]
+   ],
+   "three.osf": [
+    [
+     12.79,
+     -24.058,
+     10.787
+    ],
+    [
+     13.65,
+     -8.086,
+     -4.131
+    ]
+   ],
+   "four.osf": [
+    [
+     -2.94,
+     -22.401,
+     17.319
+    ],
+    [
+     12.78,
+     -17.541,
+     4.272
+    ]
+   ],
+   "five.osf": [
+    [
+     11.61,
+     -17.013,
+     6.627
+    ],
+    [
+     15.22,
+     -10.571,
+     -0.692
+    ]
+   ],
+   "six.osf": [
+    [
+     10.32,
+     -6.28,
+     5.442
+    ],
+    [
+     17.39,
+     -7.85,
+     1.338
+    ]
+   ],
+   "seven.osf": [
+    [
+     9.52,
+     -13.721,
+     8.541
+    ],
+    [
+     3.1,
+     -14.747,
+     9.106
+    ]
+   ],
+   "eight.osf": [
+    [
+     10.78,
+     -8.874,
+     6.372
+    ],
+    [
+     17.8,
+     -9.952,
+     -0.797
+    ]
+   ],
+   "nine.osf": [
+    [
+     12.88,
+     -6.987,
+     5.29
+    ],
+    [
+     19.98,
+     -17.254,
+     1.068
+    ]
+   ],
+   "onehalf": [
+    [
+     14.78,
+     -29.772,
+     18.757
+    ],
+    [
+     18.09,
+     -26.652,
+     11.036
+    ]
+   ],
+   "onequarter": [
+    [
+     15.74,
+     -29.903,
+     18.321
+    ],
+    [
+     20.93,
+     -22.135,
+     -2.135
+    ]
+   ],
+   "onethird": [
+    [
+     7.41,
+     -36.454,
+     14.752
+    ],
+    [
+     18.26,
+     -25.913,
+     2.282
+    ]
+   ],
+   "oneeighth": [
+    [
+     1.74,
+     -31.535,
+     17.44
+    ],
+    [
+     11.73,
+     -27.264,
+     8.644
+    ]
+   ],
+   "fraction.frac": [
+    [
+     -167.32,
+     -4.945,
+     35.481
+    ],
+    [
+     -180.66,
+     -5.958,
+     45.595
     ]
    ]
   },
@@ -3683,6 +4043,186 @@
      -24.781,
      1.032
     ]
+   ],
+   "zero.osf": [
+    [
+     9.76,
+     -12.043,
+     3.496
+    ],
+    [
+     19.26,
+     -14.382,
+     -2.994
+    ]
+   ],
+   "one.osf": [
+    [
+     19.58,
+     -5.002,
+     1.163
+    ],
+    [
+     8.88,
+     -2.903,
+     14.398
+    ]
+   ],
+   "two.osf": [
+    [
+     6.66,
+     -2.4,
+     5.349
+    ],
+    [
+     15.18,
+     -13.898,
+     4.028
+    ]
+   ],
+   "three.osf": [
+    [
+     13.75,
+     -24.058,
+     10.787
+    ],
+    [
+     16.21,
+     -8.086,
+     -4.131
+    ]
+   ],
+   "four.osf": [
+    [
+     -0.77,
+     -22.401,
+     17.319
+    ],
+    [
+     11.01,
+     -17.541,
+     4.272
+    ]
+   ],
+   "five.osf": [
+    [
+     17.95,
+     -17.013,
+     6.627
+    ],
+    [
+     15.92,
+     -10.571,
+     -0.692
+    ]
+   ],
+   "six.osf": [
+    [
+     7.94,
+     -6.28,
+     5.442
+    ],
+    [
+     12.5,
+     -7.85,
+     1.338
+    ]
+   ],
+   "seven.osf": [
+    [
+     8.8,
+     -13.721,
+     8.541
+    ],
+    [
+     4.59,
+     -14.747,
+     9.106
+    ]
+   ],
+   "eight.osf": [
+    [
+     7.51,
+     -8.874,
+     6.372
+    ],
+    [
+     15.73,
+     -9.952,
+     -0.797
+    ]
+   ],
+   "nine.osf": [
+    [
+     5.52,
+     -6.987,
+     5.29
+    ],
+    [
+     17.39,
+     -17.254,
+     1.068
+    ]
+   ],
+   "onehalf": [
+    [
+     19.41,
+     -29.772,
+     18.757
+    ],
+    [
+     29.93,
+     -26.652,
+     11.036
+    ]
+   ],
+   "onequarter": [
+    [
+     17.79,
+     -29.903,
+     18.321
+    ],
+    [
+     32.99,
+     -22.135,
+     -2.135
+    ]
+   ],
+   "onethird": [
+    [
+     39.55,
+     -36.454,
+     14.752
+    ],
+    [
+     27.29,
+     -25.913,
+     2.282
+    ]
+   ],
+   "oneeighth": [
+    [
+     31.81,
+     -31.535,
+     17.44
+    ],
+    [
+     17.12,
+     -27.264,
+     8.644
+    ]
+   ],
+   "fraction.frac": [
+    [
+     -106.11,
+     -4.945,
+     35.481
+    ],
+    [
+     -116.11,
+     -5.958,
+     45.595
+    ]
    ]
   }
  },
@@ -3974,6 +4514,10 @@
   "euro": [
    0.2,
    0.25
+  ],
+  "fraction.frac": [
+   0.45,
+   0.5
   ]
  },
  "marks": {
@@ -4333,6 +4877,33 @@
   ],
   "ordmasculine": [
    186
+  ],
+  "onehalf": [
+   189
+  ],
+  "onequarter": [
+   188
+  ],
+  "threequarters": [
+   190
+  ],
+  "onethird": [
+   8531
+  ],
+  "twothirds": [
+   8532
+  ],
+  "oneeighth": [
+   8539
+  ],
+  "threeeighths": [
+   8540
+  ],
+  "fiveeighths": [
+   8541
+  ],
+  "seveneighths": [
+   8542
   ]
  },
  "aliases": {
@@ -4345,7 +4916,12 @@
   "interrobang": "question",
   "asterism": "asterisk",
   "twoinferior": "twosuperior",
-  "nineinferior": "ninesuperior"
+  "nineinferior": "ninesuperior",
+  "threequarters": "onequarter",
+  "twothirds": "onethird",
+  "threeeighths": "oneeighth",
+  "fiveeighths": "oneeighth",
+  "seveneighths": "oneeighth"
  },
  "figures": [
   "zero",
@@ -4480,9 +5056,67 @@
   "sixinferior      its own   20.6, sixsuperior's   21.5, none   21.4 (held out) \u2192 its own",
   "seveninferior    its own   21.2, sevensuperior's   21.4, none   21.9 (held out) \u2192 its own",
   "eightinferior    its own   20.0, eightsuperior's   20.4, none   20.2 (held out) \u2192 its own",
-  "nineinferior     its own   20.3, ninesuperior's   20.1, none   20.2 (held out) \u2192 ninesuperior's"
+  "nineinferior     its own   20.3, ninesuperior's   20.1, none   20.2 (held out) \u2192 ninesuperior's",
+  "old-style figures, small caps and fractions (2026-10-11):",
+  "zero.osf         L   152 families    16.9 /   16.9 /   16.6   system fonts   19.1 /   19.1 /   19.8",
+  "one.osf          L   151 families    26.7 /   26.7 /   23.2   system fonts   24.8 /   24.8 /   24.7",
+  "two.osf          L   151 families    18.9 /   18.9 /   17.7   system fonts   22.1 /   22.1 /   20.4",
+  "three.osf        L   151 families    22.6 /   22.6 /   20.1   system fonts   26.6 /   26.6 /   21.8",
+  "four.osf         L   151 families    22.9 /   22.9 /   21.4   system fonts   26.2 /   26.2 /   23.4",
+  "five.osf         L   151 families    21.9 /   21.9 /   19.3   system fonts   29.9 /   29.9 /   24.5",
+  "six.osf          L   150 families    17.0 /   17.0 /   16.0   system fonts   19.9 /   19.9 /   18.2",
+  "seven.osf        L   151 families    22.2 /   22.2 /   21.0   system fonts   26.8 /   26.8 /   23.2",
+  "eight.osf        L   150 families    16.8 /   16.8 /   16.6   system fonts   14.7 /   14.7 /   14.7",
+  "nine.osf         L   151 families    18.4 /   18.4 /   18.0   system fonts   21.2 /   21.2 /   19.8",
+  "a.sc             L   131 families    23.4 /   23.5 /   21.3   system fonts   21.7 /   21.7 /   19.5",
+  "b.sc             L   128 families    17.4 /   17.4 /   17.1   system fonts   20.3 /   20.3 /   20.2",
+  "c.sc             L   128 families    17.5 /   17.5 /   17.3   system fonts   16.9 /   16.9 /   17.5",
+  "d.sc             L   129 families    18.1 /   18.1 /   17.7   system fonts   21.6 /   21.6 /   20.0",
+  "e.sc             L   130 families    18.0 /   18.0 /   16.8   system fonts   19.4 /   19.4 /   17.1",
+  "f.sc             L   128 families    18.8 /   18.8 /   17.8   system fonts   22.8 /   22.8 /   20.2",
+  "g.sc             L   129 families    18.4 /   18.4 /   17.8   system fonts   21.5 /   21.5 /   20.8",
+  "h.sc             L   130 families    17.3 /   17.3 /   16.8   system fonts   21.0 /   21.0 /   19.9",
+  "i.sc             L   130 families    17.7 /   17.7 /   16.7   system fonts   24.4 /   24.4 /   22.5",
+  "j.sc             L   128 families    19.9 /   19.9 /   19.9   system fonts   25.0 /   25.0 /   22.9",
+  "k.sc             L   129 families    18.3 /   18.3 /   17.3   system fonts   19.5 /   19.5 /   17.3",
+  "l.sc             L   130 families    18.5 /   18.5 /   18.3   system fonts   20.3 /   20.3 /   18.7",
+  "m.sc             L   130 families    17.2 /   17.2 /   16.8   system fonts   19.7 /   19.7 /   19.5",
+  "n.sc             L   130 families    17.4 /   17.4 /   17.2   system fonts   19.2 /   19.2 /   19.0",
+  "o.sc             L   130 families    18.6 /   18.6 /   18.3   system fonts   19.2 /   19.2 /   18.5",
+  "p.sc             L   129 families    18.6 /   18.6 /   18.4   system fonts   22.5 /   22.5 /   21.3",
+  "q.sc             L   129 families    19.7 /   19.7 /   19.2   system fonts   22.1 /   22.1 /   20.9",
+  "r.sc             L   129 families    18.7 /   18.7 /   18.0   system fonts   19.7 /   19.7 /   18.0",
+  "s.sc             L   129 families    17.0 /   17.0 /   17.1   system fonts   20.1 /   20.1 /   20.4",
+  "t.sc             L   129 families    19.8 /   19.8 /   19.7   system fonts   22.5 /   22.5 /   20.7",
+  "u.sc             L   129 families    17.8 /   17.8 /   17.8   system fonts   18.8 /   18.8 /   17.8",
+  "v.sc             L   128 families    21.4 /   21.4 /   20.4   system fonts   19.4 /   19.4 /   19.8",
+  "w.sc             L   128 families    20.5 /   20.5 /   19.6   system fonts   17.4 /   17.4 /   17.1",
+  "x.sc             L   128 families    20.4 /   20.4 /   18.7   system fonts   19.6 /   19.6 /   21.1",
+  "y.sc             L   128 families    21.5 /   21.5 /   20.5   system fonts   18.5 /   18.5 /   18.2",
+  "z.sc             L   129 families    18.4 /   18.4 /   18.1   system fonts   20.6 /   20.6 /   19.8",
+  "onehalf          FL  905 families    29.6 /   29.6 /   24.9   system fonts   27.1 /   27.1 /   25.0",
+  "onequarter       FL  903 families    28.2 /   28.2 /   24.1   system fonts   29.0 /   29.0 /   26.4",
+  "threequarters    FL  903 families    28.0 /   28.0 /   24.7   system fonts   25.1 /   25.1 /   24.3",
+  "onethird         FL  282 families    24.2 /   24.2 /   20.6   system fonts   27.8 /   27.8 /   26.1",
+  "twothirds        FL  272 families    22.1 /   22.1 /   19.3   system fonts   31.9 /   31.9 /   31.3",
+  "oneeighth        FL  314 families    23.2 /   23.2 /   20.3   system fonts   25.2 /   25.2 /   22.5",
+  "threeeighths     FL  312 families    21.9 /   21.9 /   19.6   system fonts   28.3 /   28.3 /   25.6",
+  "fiveeighths      FL  312 families    21.9 /   21.9 /   19.9   system fonts   27.4 /   27.4 /   24.7",
+  "seveneighths     FL  312 families    23.0 /   23.0 /   20.2   system fonts   23.9 /   23.9 /   21.6",
+  "j.sc             its own   19.9, none   19.9 (held out) \u2192 none",
+  "s.sc             its own   17.1, none   17.0 (held out) \u2192 none",
+  "u.sc             its own   17.8, none   17.8 (held out) \u2192 none",
+  "threequarters    its own   24.7, onequarter's   24.4, none   28.0 (held out) \u2192 onequarter's",
+  "twothirds        its own   19.3, onethird's   19.0, none   22.1 (held out) \u2192 onethird's",
+  "threeeighths     its own   19.6, oneeighth's   19.3, none   21.9 (held out) \u2192 oneeighth's",
+  "fiveeighths      its own   19.9, oneeighth's   19.7, none   21.9 (held out) \u2192 oneeighth's",
+  "seveneighths     its own   20.2, oneeighth's   20.0, none   23.0 (held out) \u2192 oneeighth's",
+  "fraction slash between a numerator and a denominator, held out, reference families (318 fonts): model 108.7 / today's slash 66.2 / its own 52.8",
+  "fraction slash between a numerator and a denominator, held out, other families (62 fonts): model 95.1 / today's slash 65.1 / its own 60.2",
+  "fraction slash between a numerator and a denominator, held out, macOS fonts (4 fonts): model 124.3 / today's slash 59.5 / its own 24.9",
+  "fraction.frac: {\"text\": [[-166.77, -4.945, 35.481], [-165.79, -5.958, 45.595]], \"kern\": [0.45, 0.5]}"
  ],
- "id": "2026-10-11-9ce96975",
+ "id": "2026-10-11-ce689f52",
  "kernel_id": "2026-10-11-9f6bcf92",
  "small_forms": [
   "zerosuperior",
@@ -4508,5 +5142,27 @@
   "ordfeminine",
   "ordmasculine"
  ],
- "qa_id": "2026-10-11-f9fe7de3"
+ "qa_id": "2026-10-11-f9fe7de3",
+ "feature_forms": [
+  "zero.osf",
+  "one.osf",
+  "two.osf",
+  "three.osf",
+  "four.osf",
+  "five.osf",
+  "six.osf",
+  "seven.osf",
+  "eight.osf",
+  "nine.osf",
+  "onehalf",
+  "onequarter",
+  "threequarters",
+  "onethird",
+  "twothirds",
+  "oneeighth",
+  "threeeighths",
+  "fiveeighths",
+  "seveneighths",
+  "fraction.frac"
+ ]
 }
