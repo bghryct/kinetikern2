@@ -217,8 +217,13 @@ the figures were learned on.
   Across 1,852 Google Fonts (Regular, not monospaced), the no-break space
   equals the word space in 96 % of 1,740. The punctuation space equals the
   period in 70 % of 299 (76 % within 1 % of the em), and the figure space a
-  tabular figure in 67 % of 208. Kinetikern2 sets the period's sides with
-  the switch on or off, so Apply now keeps a blank punctuation space that is
-  exactly as wide as the period in step with it (11 October 2026, at the
-  user's request; both plugins, revert and read-back included). Blank means
-  no outline, or only a one-point dummy contour as in Arial.
+  tabular figure in 67 % of 208, and in fonts without tabular figures the
+  zero in 42 % (62 of 147). Kinetikern2 sets the period's and the
+  proportional figures' sides with the switches on or off. So Apply now keeps
+  a blank punctuation space that is exactly as wide as the period in step
+  with it, and a blank figure space exactly as wide as the zero in step with
+  the zero where no figure keeps its advance (11 October 2026, at the user's
+  request; both plugins, revert and read-back included). Blank means no
+  outline, or only a one-point dummy contour as in Arial. In the self-tests
+  Alice's spaces move with its period (222 → 226) and zero (585 → 552), and
+  Arial's figure space keeps 1139 with its tabular figures.

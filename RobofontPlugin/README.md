@@ -24,9 +24,10 @@ window, the same controls and the same tools:
   figures keep their widths;
 - after a whole-font run, where the word space sits against what designers
   of the font's kind set for its n (Kinetikern2 does not set it);
-- the punctuation space kept in step with the period: Apply gives a blank
+- the punctuation and figure spaces kept in step: Apply gives a blank
   punctuation space exactly as wide as the period the period's new advance,
-  and Revert puts it back;
+  and a blank figure space as wide as a proportional zero the zero's (with
+  tabular figures it keeps its own); Revert puts them back;
 - the **Conventions** menu (Automatic, text faces, display, handwriting):
   the punctuation's conventions, the harness's punctuation and how far a
   capital reaches over its neighbour; Automatic follows handwriting for a
@@ -204,7 +205,9 @@ angle (the frame, Apply on the slanted ink, an exact Revert: `test_slant`).
 On each font it solves the whole font with and without the designer
 harness, applies, reads back (every glyph where the result puts it, every
 composite only moved as a whole, accents moving with their base, a blank
-punctuation space as wide as the period keeping the period's new advance)
+punctuation space as wide as the period keeping the period's new advance, the
+figure space keeping its own with tabular figures and the zero's with
+proportional ones: `test_figure_space`)
 and reverts (every outline, component, anchor, advance, kerning pair and group
 exactly as before, to the last bit and the number type: a .glif writes 600
 and 600.0 differently: `apply_and_revert`). Then spacing groups (frozen
@@ -225,6 +228,16 @@ meet exactly flush, which the touching rule finds connected
 (`test_flush_joins`); and a hand that joins only in part, whose stem letters
 carry exit strokes, which the test for hands that join in part finds
 connected while letters that touch at the top do not (`test_partly_joins`).
+
+## Verified again (11 October 2026, night)
+
+Apply keeps the punctuation and figure spaces in step. Inside RoboFont, on
+Arial: **PASSED**. Its punctuation space followed the period (569 → 463) and
+went back to 569 on Revert. Its figure space kept 1139: Arial's figures are
+tabular. On Alice (OFL, proportional figures): **PASSED**. The punctuation
+space followed the period (222 → 226) and the figure space the zero
+(585 → 552), with the same numbers as in Glyphs, and Revert put back every
+outline coordinate. The headless suite PASSED, on Arial too.
 
 ## Verified again (11 October 2026, later)
 

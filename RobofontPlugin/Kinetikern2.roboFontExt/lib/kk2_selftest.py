@@ -695,6 +695,7 @@ class SelfTest(object):
         self.before = None
         self.before_shapes = None
         self.spaces_before = {}  # blank space → (its advance, its glyph's) before the whole-font Apply
+        self.spaces_left = {}  # the other blank spaces of SPACES_IN_STEP → their advance before it
         self.phase_times = {}
 
     # --- bookkeeping -------------------------------------------------------
@@ -1321,9 +1322,15 @@ class SelfTest(object):
         t = time.time()
         self.plan = kk2_apply.plan(snap, res, True)
         plan_s = time.time() - t
-        # a blank space that has its glyph's advance keeps it (the punctuation space the period's)
+        # a blank space that has its glyph's advance keeps it (the punctuation space the period's, the figure
+        # space the zero's where the figures are proportional); the other spaces Apply leaves alone
         self.spaces_before = dict((space, (self._width(space), self._width(glyph)))
                                   for space, glyph in getattr(self.plan, "spaces", {}).items())
+        others = [snap.char_map.get(row[0]) for row in getattr(kk2_apply, "SPACES_IN_STEP", ())]
+        self.spaces_left = dict((name, self._width(name)) for name in others
+                                if name is not None and name not in self.spaces_before)
+        self.space_labels = dict((snap.char_map.get(row[0]), row[3].split(" follows ")[0])
+                                 for row in getattr(kk2_apply, "SPACES_IN_STEP", ()) if len(row) > 3)
         self.log("before apply", capture_s=round(capture_s, 3), plan_s=round(plan_s, 3), gc_tracked=len(gc.get_objects()),
                  kerning_entries=count_entries(self.before["kerning"]), plan=getattr(self.plan, "counts", None))
         previous = win.last_apply
@@ -1351,13 +1358,21 @@ class SelfTest(object):
         for space, glyph in getattr(plan, "spaces", {}).items():
             have, want = self._width(space), self._width(glyph)
             before = self.spaces_before.get(space, (None, None))
+            words = getattr(plan, "space_notes", {}).get(space, (None, "%s follows %s" % (space, glyph)))[1]
             self.log("space in step", space=space, glyph=glyph, before=before, after=(have, want))
-            self.note("the punctuation space (%s) keeps the period's advance: %s → %s, the period %s → %s"
-                      % (space, _num(before[0]), _num(have), _num(before[1]), _num(want)))
+            self.note("%s: %s %s → %s, %s %s → %s" % (words, space, _num(before[0]), _num(have), glyph,
+                                                       _num(before[1]), _num(want)))
             if have is None or want is None or abs(have - want) > 1e-6:
                 space_bad.append([space, have, glyph, want])
+        for space, was in getattr(self, "spaces_left", {}).items():
+            have = self._width(space)
+            self.note("%s (%s) keeps its advance: %s (%s)" % (getattr(self, "space_labels", {}).get(space, "a space"),
+                                                                space, _num(have),
+                                                                "unchanged" if have == was else "WAS %s" % _num(was)))
+            if have is None or was is None or abs(have - was) > 1e-9:
+                space_bad.append([space, have, "kept", was])
         if space_bad:
-            self.error("after Apply %d blank spaces do not have their glyph's advance, e.g. %s"
+            self.error("after Apply %d blank spaces do not have the advance they should, e.g. %s"
                        % (len(space_bad), space_bad[:3]))
 
         # every side Apply wrote is within half a unit of the plan, on the ink
@@ -1471,8 +1486,8 @@ class SelfTest(object):
             self.error("after Revert %d blank spaces are not back to their advance, e.g. %s"
                        % (len(space_bad), space_bad[:3]))
         elif self.spaces_before:
-            self.note("Revert: the punctuation space is back to %s" % ", ".join(
-                _num(was[0]) for was in self.spaces_before.values()))
+            self.note("Revert: %s back to %s" % (", ".join(sorted(self.spaces_before)), ", ".join(
+                _num(was[0]) for _name, was in sorted(self.spaces_before.items()))))
         after = self.font_state(snap.names, snap.master_id)
         kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
         glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"]) + diff_components(self.before, after) + \
@@ -1497,6 +1512,7 @@ class SelfTest(object):
                        % (len(glyph_diff), glyph_diff[:5]))
         self.before = None
         self.spaces_before = {}
+        self.spaces_left = {}
         if self.win.harness_available():
             self.later(0.3, self.harness_step)
         else:

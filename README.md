@@ -407,20 +407,28 @@ sits against that, for the n as Kinetikern2 spaces it. On Arial: *word
 space 569: text faces' designers set about 480 for an n this wide (most
 450–532)*. Nothing is written.
 
-**The punctuation space follows the period.** Unicode defines it as the
-width of a period, and designers keep the two equal. Across 1,852 Google
-Fonts, the punctuation space equals the period in 70 % of the 299 fonts that
-have one. (The no-break space equals the word space in 96 %, and the figure
-space a tabular figure in 67 % of 208.) Kinetikern2 moves the period's sides,
-but a space has no outline for it to read. So Apply gives the master's
-punctuation space the period's new advance whenever the space is blank and
-exactly as wide as the period. Blank means no outline at all, or only a
-one-point dummy contour, which older TrueType fonts give their spaces;
-Arial's has one. Apply sets the space after the sidebearings, reads it back,
-and Revert Last Apply puts it back. The confirmation dialog says so. A
-punctuation space of another width is left as it is. The other spaces need
-nothing: the word space and the no-break space are not changed, and tabular
-figures keep their widths.
+**The punctuation space follows the period, the figure space the zero.**
+Unicode defines them as the width of a period and the width of a digit, and
+designers keep them that way. Across 1,852 Google Fonts, the punctuation
+space equals the period in 70 % of the 299 fonts that have one. The figure
+space equals a tabular figure in 67 % of 208. In fonts whose figures are all
+proportional it equals the zero in 42 %. (The no-break space equals the word
+space in 96 %.) Kinetikern2 moves the period's sides and the proportional
+figures' sides, but a space has no outline for it to read. So Apply keeps the
+master's spaces in step:
+- **The punctuation space** gets the period's new advance whenever it is
+  blank and exactly as wide as the period.
+- **The figure space** gets the zero's new advance whenever it is blank and
+  exactly as wide as the zero, and no figure keeps its advance. With tabular
+  figures (default figures that share one width, or `.tf` forms) it stands
+  for them; they keep their widths, and it keeps its own.
+
+Blank means no outline at all, or only a one-point dummy contour, which older
+TrueType fonts give their spaces; Arial's has one. Apply sets the spaces after
+the sidebearings, reads them back, and Revert Last Apply puts them back. The
+confirmation dialog names each space it sets. A space of another width is
+left as it is. The word space and the no-break space need nothing: neither is
+changed.
 
 ### Conventions and Pass 2's pair classes
 
@@ -748,9 +756,10 @@ gave −6.00 (the limit) measured upright and −0.06 along the angle.
   * **Untouched:** right-to-left glyphs, glyphs of joining scripts (Mongolian,
     Devanagari, Bengali, Gurmukhi and a few others) and box-drawing
     characters keep their sidebearings, and none of them is kerned.
-* **The punctuation space:** a blank punctuation space exactly as wide as the
-  period gets the period's new advance (see *The word space*), and Revert puts
-  it back.
+* **The punctuation and figure spaces:** a blank punctuation space exactly as
+  wide as the period gets the period's new advance; a blank figure space as
+  wide as the zero gets the zero's, where the figures are proportional (see
+  *The word space*). Revert puts them back.
 * **Composites stay rigid:** when a base glyph's outline moves, the components
   that draw it move back by the same amount, so an accent never slides off its
   letter.
@@ -1109,13 +1118,14 @@ does:
 * closing and reopening the window.
 
 On small made-up masters it also checks which glyphs punctuation and figures
-by convention reach. Canonical twins take their mark's conventions, and a
+by convention reach, and which blank spaces Apply keeps in step: the figure
+space follows the zero only without tabular figures. Canonical twins take their mark's conventions, and a
 case form follows its base mark. `.lf` and `.pnum` figures take their
 figure's conventions. Old-style and tabular forms are left alone, and so is
 a `.lf` set whose figures share one width. A preview is compared with a
 direct engine solve under the window's conventions.
 
-Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **99
+Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **104
 passed, 0 failed** on 400 glyphs (11 October 2026; 92 on 3,000 glyphs
 before the conventions, `--glyphs 3000 --max-pairs 30000`).
 
@@ -1134,10 +1144,12 @@ in Glyphs' import):
    off its letter. Composites with a scaled or rotated part may be up to one
    grid unit further off in both checks, the precision Glyphs keeps their
    positions to. A blank punctuation space that was as wide as the period
-   must have the period's new advance (Arial's: 569 before).
+   must have the period's new advance (Arial's: 569 before). A figure space
+   as wide as a proportional zero must have the zero's; any other such space
+   must keep its advance (Arial's figure space, with tabular figures: 1139).
 5. Reverts, and compares the master's whole kerning table, groups and
    sidebearings with the state before Apply. Every composite's outline must
-   be back exactly where it was, and the punctuation space back to its
+   be back exactly where it was, and the spaces Apply set back to their
    advance.
 6. Tests the designer harness, when the engine build has it, the way a user
    works with it, with Punctuation on (the harness is learned on top of it):

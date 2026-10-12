@@ -130,8 +130,10 @@ def synthetic_font():
         return g
 
     glyph("space", 0x20, 250, None)
-    # the punctuation space as older TrueType fonts draw it (Arial's): one dummy point, the period's advance
+    # the punctuation space as older TrueType fonts draw it (Arial's): one dummy point, the period's advance;
+    # the figure space blank, with the advance of the figures (tabular here: they keep it)
     glyph("punctuationspace", 0x2008, 260, lambda p: (p.moveTo((0, 0)), p.closePath()))
+    glyph("figurespace", 0x2007, 560, None)
     glyph("H", ord("H"), 700, lambda p: (_box(p, 80, 0, 170, 700), _box(p, 530, 0, 620, 700), _box(p, 170, 320, 530, 400)))
     glyph("O", ord("O"), 760, lambda p: _bowl(p, 380, 350, 320, 360))
     glyph("A", ord("A"), 680, lambda p: (p.moveTo((20, 0)), p.lineTo((300, 700)), p.lineTo((380, 700)),
@@ -563,6 +565,8 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
     plan_ms = (time.perf_counter() - t) * 1000.0
     space, period = snap.char_map.get("\u2008"), snap.char_map.get(".")
     space_was = (f[space].width, f[period].width) if space is not None and period is not None else None
+    fspace, zero = snap.char_map.get("\u2007"), snap.char_map.get("0")
+    figure_was = (f[fspace].width, f[zero].width) if fspace is not None and zero is not None else None
     t = time.perf_counter()
     summary, point = ka.apply(f, snap, p)
     apply_ms = (time.perf_counter() - t) * 1000.0
@@ -571,10 +575,21 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
     # a blank punctuation space that had the period's advance keeps it
     if space_was is not None and period in p.metrics and period not in p.keep_width:
         matched = abs(space_was[0] - space_was[1]) < 0.5 and ka._blank(f.naked().layers.defaultLayer[space])
-        check(p.spaces == ({space: period} if matched else {}) and
+        check(p.spaces.get(space) == (period if matched else None) and
               (not matched or abs(f[space].width - f[period].width) < 1e-6),
               "%s: the punctuation space keeps the period's advance (before %s and %s, after %s and %s)"
               % (label, space_was[0], space_was[1], f[space].width, f[period].width))
+    # the figure space: with tabular figures it keeps its advance; with proportional ones, blank and as wide
+    # as the zero, it keeps the zero's
+    if figure_was is not None:
+        if zero in snap.fixed:
+            check(fspace not in p.spaces and f[fspace].width == figure_was[0],
+                  "%s: the figure space keeps its advance with the tabular figures (%s)" % (label, f[fspace].width))
+        elif zero in p.metrics and abs(figure_was[0] - figure_was[1]) < 0.5 and \
+                ka._blank(f.naked().layers.defaultLayer[fspace]):
+            check(p.spaces.get(fspace) == zero and abs(f[fspace].width - f[zero].width) < 1e-6,
+                  "%s: the figure space keeps the zero's advance (before %s and %s, after %s and %s)"
+                  % (label, figure_was[0], figure_was[1], f[fspace].width, f[zero].width))
     check(summary["ok"] and not summary.get("error"),
           "%s: Apply reads back as planned (%d kerning pairs, %d removed, %d group sides, %d glyphs re-spaced; "
           "examples %s)" % (label, summary["kerning_entries"], summary["entries_removed"], summary["group_sides_set"],
@@ -1235,6 +1250,21 @@ def test_partly_joins(engine):
           "letters that touch only at the top do not join: %s" % (counts,))
 
 
+def test_figure_space(engine):
+    """Proportional figures, no tabular forms, and a blank figure space as
+    wide as the zero: Apply gives it the zero's new advance; Revert puts it
+    back (apply_and_revert checks both)."""
+    f = synthetic_font()
+    for name in [n for n in f.keys() if n.split(".")[0] == "zero" and "." in n]:
+        f.removeGlyph(name)  # no tabular forms
+    for k, name in enumerate(("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")):
+        f[name].width = 520 + 9 * k  # proportional
+    f["figurespace"].width = f["zero"].width
+    snap, _ms = read(f)
+    check("zero" not in snap.fixed, "proportional figures do not keep their advance (%s)" % sorted(snap.fixed)[:5])
+    apply_and_revert(engine, f, "proportional figures")
+
+
 def main():
     engine = load_engine()
     print("engine %s, features %d, %d threads" % (engine.version, engine.features, engine.default_threads))
@@ -1245,6 +1275,7 @@ def main():
         test_slant(engine)
         apply_and_revert(engine, f, "synthetic font")
         apply_and_revert(engine, synthetic_font(), "synthetic font with the designer harness", harness=True)
+        test_figure_space(engine)
         test_groups(engine)
         test_by_category(engine)
         test_conflict(engine)

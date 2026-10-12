@@ -730,8 +730,8 @@ def glyph_properties(codepoint):
 def build_mock_font(path, count):
     """(MockFont, LoadedFont): the first `count` spacing glyphs of the font as
     tools/kk2_fonts.py selects them, in that order, then a space, the
-    punctuation space, a few marks and a non-exporting alternate; two masters
-    with the same outlines."""
+    punctuation and figure spaces, a few marks and a non-exporting alternate;
+    two masters with the same outlines."""
     lf = kf.LoadedFont(path, limit=count)
     tt = lf.font
     glyph_set = tt.getGlyphSet()
@@ -759,8 +759,9 @@ def build_mock_font(path, count):
     rows = [(name, cp, True) for name, cp in zip(names, lf.cps)]
     if cmap.get(0x20):
         rows.append((cmap[0x20], 0x20, True))
-    if cmap.get(0x2008) and cmap[0x2008] not in in_set:
-        rows.append((cmap[0x2008], 0x2008, True))  # the punctuation space (Arial's has the period's advance)
+    for cp in (0x2008, 0x2007):  # the punctuation and figure spaces (Arial's: the period's and the zero's advance)
+        if cmap.get(cp) and cmap[cp] not in in_set:
+            rows.append((cmap[cp], cp, True))
     marks = [cp for cp in range(0x0300, 0x0370) if cp in cmap and cmap[cp] not in in_set][:6]
     rows.extend((cmap[cp], cp, True) for cp in marks)
     for name, cp, export in rows:
@@ -1527,6 +1528,7 @@ class SmokeTest(object):
             self.open_window()
             self.check_snapshot()
             self.check_punctuation_lookups()
+            self.check_spaces_in_step()
             self.change_settings()
             self.apply_sample()
             self.whole_font()
@@ -1773,6 +1775,28 @@ class SmokeTest(object):
         coefs2 = kpu.engine_arg(snap2, "text")[0]
         rep.check(not any(on(coefs2[snap2.index[n + ".lf"]]) for n in figs) and on(coefs2[snap2.index["one.pnum"]]),
                   "punctuation lookups: a .lf set whose figures share one width is tabular, kept")
+
+    def check_spaces_in_step(self):
+        """Which blank spaces Apply keeps in step (kk2_apply._spaces_in_step),
+        on the mock font's first master: the punctuation space with the period;
+        the figure space with the zero only where no figure keeps its advance
+        (tabular figures keep theirs, and the figure space with them)."""
+        import kk2_apply as ka
+        rep, font = self.report, self.font
+        snap = self.win.snapshot
+        mid, cm = snap.master_id, snap.char_map
+        space, period, fspace, zero = cm.get("\u2008"), cm.get("."), cm.get("\u2007"), cm.get("0")
+        if None in (space, period, fspace, zero):
+            rep.info("spaces in step: the mock font lacks a punctuation or figure space, not checked")
+            return
+        metrics = {period: (0, 0), zero: (0, 0)}
+        tab = ka._spaces_in_step(font, mid, cm, metrics, set(), snap.fixed)
+        prop = ka._spaces_in_step(font, mid, cm, metrics, set(), ())
+        kept = ka._spaces_in_step(font, mid, cm, metrics, set([period, zero]), ())
+        rep.check(tab == {space: period} and prop == {space: period, fspace: zero} and kept == {},
+                  "spaces in step: the punctuation space with the period; the figure space with the zero only "
+                  "without tabular figures; neither with a glyph whose advance stays",
+                  "tabular %s, proportional %s, kept %s" % (tab, prop, kept))
 
     def change_settings(self):
         rep, ui, win = self.report, self.ui, self.win
@@ -2118,17 +2142,25 @@ class SmokeTest(object):
         changed = diff_state(before, after, masters=others)
         rep.check(not changed, "the other master is untouched", "%d differences %s" % (len(changed), changed[:3]))
 
-        # a blank punctuation space that had the period's advance keeps it
+        # a blank punctuation space that had the period's advance keeps it; the
+        # figure space stays with Arial's tabular figures, which keep their widths
         space, period = snap.char_map.get("\u2008"), snap.char_map.get(".")
+        fspace, zero = snap.char_map.get("\u2007"), snap.char_map.get("0")
         if space is not None and period in plan.metrics:
             was = before["metrics"].get((space, mid)), before["metrics"].get((period, mid))
             now = font.glyphs[space].layers[mid].width, font.glyphs[period].layers[mid].width
             matched = was[0] is not None and was[1] is not None and abs(was[0][2] - was[1][2]) < 0.5
-            rep.check(getattr(plan, "spaces", {}) == ({space: period} if matched else {}) and
+            rep.check(getattr(plan, "spaces", {}).get(space) == (period if matched else None) and
                       (not matched or abs(now[0] - now[1]) < 1e-6),
                       "the punctuation space keeps the period's advance (%s)" % what,
                       "before %s and %s, after %s and %s; planned %s" % (was[0] and was[0][2], was[1] and was[1][2],
                                                                       now[0], now[1], getattr(plan, "spaces", None)))
+        if fspace is not None and zero is not None and zero in getattr(snap, "fixed", ()):
+            was = before["metrics"].get((fspace, mid))
+            now = font.glyphs[fspace].layers[mid].width
+            rep.check(fspace not in getattr(plan, "spaces", {}) and was is not None and abs(now - was[2]) < 1e-9,
+                      "the figure space keeps its advance with the tabular figures (%s)" % what,
+                      "before %s, after %s; planned %s" % (was and was[2], now, getattr(plan, "spaces", None)))
 
         # sidebearings: as planned, and never on a side Glyphs drives
         mbad = []

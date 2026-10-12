@@ -71,12 +71,23 @@ SAME = 1e-6  # a kerning value read back equals the one written
 SAME_METRIC = 1e-3  # a sidebearing or width is still the one Apply left
 
 _FOLLOW = (kb.RULE_FOLLOW_SAME, kb.RULE_FOLLOW_OPPOSITE)
-# Blank spaces that stand for a glyph's advance: Unicode's punctuation space is
-# "the width of a period". Kinetikern2 re-spaces the period, but a space has no
-# outline for it to read, so Apply keeps one in step with its glyph when it had
-# that glyph's advance, as designers keep them (the punctuation space equals the
-# period in 70 % of the Google Fonts that have one).
-SPACES_IN_STEP = (("\u2008", "."),)
+# Blank spaces that stand for a glyph's advance, by Unicode's definitions: the
+# punctuation space is "the width of a period", the figure space "the width of a
+# digit" (in fonts whose figures share one width). Kinetikern2 re-spaces the
+# period and proportional figures, but a space has no outline for it to read, so
+# Apply keeps one in step with its glyph when it had exactly that glyph's
+# advance, as designers keep them: the punctuation space equals the period in
+# 70 % of the Google Fonts that have one, and in fonts without tabular figures
+# the figure space equals the zero in 42 %. Tabular figures keep their widths,
+# and the figure space with them. (space, glyph, the dialog's line, the status
+# line's words)
+SPACES_IN_STEP = (
+    ("\u2008", ".", "The punctuation space keeps the period's advance, as it has it now.",
+     "the punctuation space follows the period"),
+    ("\u2007", "0", "The figure space keeps the zero's advance, as it has it now (the figures are proportional).",
+     "the figure space follows the zero"),
+)
+FIGURE_CHARS = "0123456789"
 _DECIDE = object()  # a Restorer's work yields this when it needs the caller's decision
 
 
@@ -227,12 +238,18 @@ def _blank(layer):
     return float(r.size.width) == 0.0 and float(r.size.height) == 0.0
 
 
-def _spaces_in_step(font, master_id, char_map, metrics, keep_width):
+def _spaces_in_step(font, master_id, char_map, metrics, keep_width, fixed=()):
     """{space glyph: glyph} of SPACES_IN_STEP on this master: a blank space
     with exactly the advance of a glyph this Apply re-spaces (and whose
-    advance it does not keep)."""
+    advance it does not keep). The figure space only where no figure keeps
+    its advance (`fixed`: the snapshot's): with tabular figures it stands
+    for them, and they keep their widths."""
     out = {}
-    for space_ch, glyph_ch in SPACES_IN_STEP:
+    figures = set(char_map.get(ch) for ch in FIGURE_CHARS) - set([None])
+    tabular = any(name in figures or name.split(".")[0] in figures for name in fixed)
+    for space_ch, glyph_ch, _line, _words in SPACES_IN_STEP:
+        if glyph_ch in FIGURE_CHARS and tabular:
+            continue
         space, target = char_map.get(space_ch), char_map.get(glyph_ch)
         if space is None or target is None or space == target or target not in metrics or target in keep_width:
             continue
@@ -484,7 +501,9 @@ class ApplyPlan(object):
                    targets first; follow {glyph: [targets]}
     removals       [(left key, right key)] existing entries Replace removes
     spaces         {blank space: glyph}: spaces that keep their glyph's
-                   advance (SPACES_IN_STEP), written after the sidebearings
+                   advance (SPACES_IN_STEP), written after the sidebearings;
+                   space_notes {blank space: (the dialog's line, the status
+                   line's words)}
     groups_to_move {glyph: (left group or None, right group or None)}: sides
                    that leave a group they shared with frozen glyphs for a
                    class of their own (spacing groups)
@@ -507,6 +526,7 @@ class ApplyPlan(object):
         self.follow = {}
         self.removals = []
         self.spaces = {}
+        self.space_notes = {}
         self.groups_to_move = {}
         self.frozen = set()
         self.right_class_names = []
@@ -955,7 +975,9 @@ class Planner(_Stepper):
             sync = [name for name in sync if name not in frozen_names]
             follow = dict((k, v) for k, v in follow.items() if k not in frozen_names)
         # 8. blank spaces that keep their glyph's advance
-        spaces = _spaces_in_step(font, mid, getattr(snapshot, "char_map", {}), metrics, keep_width)
+        char_map = getattr(snapshot, "char_map", {})
+        spaces = _spaces_in_step(font, mid, char_map, metrics, keep_width, getattr(snapshot, "fixed", ()))
+        notes = dict((char_map.get(space_ch), (line, words)) for space_ch, _g, line, words in SPACES_IN_STEP)
 
         # big temporaries go a slice at a time (freeing them at once would
         # take as long as building them)
@@ -970,6 +992,7 @@ class Planner(_Stepper):
         p.follow = follow
         p.removals = removals
         p.spaces = spaces
+        p.space_notes = dict((name, notes[name]) for name in spaces if name in notes)
         p.groups_to_move = moves
         p.right_class_names = right_names
         p.left_class_names = left_names
@@ -1533,6 +1556,7 @@ class Applier(_Stepper):
                         "readback_removals": 0}
         self._examples = []
         self._bad = [0, 0]  # metric, kerning mismatches
+        self._spaces_set = []  # the blank spaces Apply set (plan.spaces)
 
     def _begin_slice(self):
         self.font.disableUpdateInterface()
@@ -1780,6 +1804,7 @@ class Applier(_Stepper):
         self._undo.add(glyph)
         layer.width = width
         self._counts["spaces"] += 1
+        self._spaces_set.append(name)
         return True
 
     def _write_metrics(self, name, lsb, rsb, users, written):
@@ -2000,6 +2025,8 @@ class Applier(_Stepper):
             "glyphs_respaced": counts["respaced"],
             "keyed_glyphs_synced": counts["synced"],
             "spaces_in_step": counts["spaces"],
+            "spaces_words": ", ".join(getattr(p, "space_notes", {}).get(name, ("", "a blank space follows its glyph"))[1]
+                                      for name in self._spaces_set),
             "metric_mismatches": metric_bad,
             "kerning_mismatches": kerning_bad,
             "apply_ms": self.busy_ms,
@@ -2058,8 +2085,10 @@ def describe_plan(plan):
                         else "%s masters" % _n(c["other_masters"])))
     lines.append("%s glyphs get new sidebearings; sides driven by metrics keys or aligned components follow "
                  "Glyphs." % _n(c.get("metrics", 0)))
-    if c.get("spaces"):
-        lines.append("The punctuation space keeps the period's advance, as it has it now.")
+    for name in sorted(getattr(plan, "spaces", {})):
+        line = getattr(plan, "space_notes", {}).get(name, (None, None))[0]
+        if line:
+            lines.append(line)
     lines.append("Undo does not cover Apply, and the undo history of the kerning and of the glyphs Apply writes is "
                  "cleared. Revert Last Apply puts back what Apply changed.")
     return "\n".join(lines)
@@ -2093,5 +2122,5 @@ def describe_summary(summary):
     if summary.get("group_conflicts"):
         text += "; %s glyphs kept a group they got after the preview" % _n(summary["group_conflicts"])
     if summary.get("spaces_in_step"):
-        text += "; the punctuation space follows the period"
+        text += "; " + (summary.get("spaces_words") or "blank spaces follow their glyphs")
     return text + "."
