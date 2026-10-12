@@ -60,7 +60,8 @@ SINF_SUFFIXES = ("sinf", "subs", "inferior")
 # Old-style figures under a suffix (one.osf, one.onum, one.oldstyle; the tabular .tosf keeps its widths) and the precomposed
 # fractions (½, by character) go with the figures too: the table's feature_forms, the Figures switch. The fraction
 # slash of a master with numerators and denominators sits between them (HarfBuzz sets a fraction typed with U+2044
-# so): it takes "fraction.frac", designers' slash in a fraction, under the Punctuation switch.
+# so): it takes "fraction.frac", designers' slash in a fraction, under the Punctuation switch; the numerators and
+# denominators themselves (one.numr, one.dnom) take theirs, under the Figures switch.
 OSF_SUFFIXES = ("osf", "onum", "oldstyle")
 NUMR_SUFFIXES = ("numr", "numerator")
 DNOM_SUFFIXES = ("dnom", "denominator")
@@ -150,9 +151,9 @@ def mark_of(snap, i):
     """The table's mark of glyph i: by its code point; .case punctuation by
     its base mark, proportional lining figures (one.lf) by their figure, and
     a figure's superscript or subscript form (one.sups) by the encoded one,
-    an old-style figure (one.osf) by the old-style figures', and the slash
-    of a master with numerators and denominators as the slash in a
-    fraction."""
+    an old-style figure (one.osf), a numerator (one.numr) or a denominator
+    (one.dnom) by its kind, and the slash of a master with numerators and
+    denominators as the slash in a fraction."""
     name = snap.names[i]
     info = snap.infos.get(name)
     if info is None or info.empty:
@@ -173,11 +174,12 @@ def mark_of(snap, i):
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
         if k is not None and resolve(k) in figure_marks():
             return k
-    if len(parts) == 2 and parts[1] in OSF_SUFFIXES:
+    if len(parts) == 2 and (parts[1] in OSF_SUFFIXES or parts[1] in NUMR_SUFFIXES or parts[1] in DNOM_SUFFIXES):
         base = snap.infos.get(parts[0])
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
-        if k in FIGURE_NAMES and k + ".osf" in feature_marks():
-            return k + ".osf"
+        form = "osf" if parts[1] in OSF_SUFFIXES else "numr" if parts[1] in NUMR_SUFFIXES else "dnom"
+        if k in FIGURE_NAMES and k + "." + form in feature_marks():
+            return k + "." + form
     if len(parts) == 2 and (parts[1] in SUPS_SUFFIXES or parts[1] in SINF_SUFFIXES):
         base = snap.infos.get(parts[0])
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
@@ -202,21 +204,22 @@ def _tabular_suffixes(snap, figs):
 
 
 def _one_width_sets(snap):
-    """The glyphs of a superscript, subscript or old-style set that shares one
-    width (at least 3 of them, 5 old-style figures: a tabular design, whose
-    widths stay). The encoded forms are one set, those under each suffix
-    another."""
+    """The glyphs of a superscript, subscript, old-style, numerator or
+    denominator set that shares one width (at least 3 superscripts or
+    subscripts, 5 of the others: a tabular design, whose widths stay). The
+    encoded forms are one set, those under each suffix another."""
     sets = {}
     for i, name in enumerate(snap.names):
         k = mark_of(snap, i)
-        kind = "sup" if k in SUPERIORS else "inf" if k in INFERIORS else "osf" if k and k.endswith(".osf") else None
+        kind = ("sup" if k in SUPERIORS else "inf" if k in INFERIORS else
+                k.rpartition(".")[2] if k and k.rpartition(".")[2] in ("osf", "numr", "dnom") else None)
         if kind is not None:
             info = snap.infos[name]
             key = (kind, None if info.unicode is not None else name.partition(".")[2])
             sets.setdefault(key, []).append((i, int(round(info.width))))
     out = set()
     for (kind, _suffix), members in sets.items():
-        if len(members) >= (5 if kind == "osf" else 3) and len(set(w for _i, w in members)) == 1:
+        if len(members) >= (3 if kind in ("sup", "inf") else 5) and len(set(w for _i, w in members)) == 1:
             out.update(i for i, _w in members)
     return out
 

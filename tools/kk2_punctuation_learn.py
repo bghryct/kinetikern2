@@ -429,6 +429,72 @@ def learn_fraction_slash(mf, ref2, sys2, fold2, style2, rho2, base):
             coef = fit(idx, K); K = shares(coef, idx)
         return coef, K
 
+    # the numerators and denominators themselves: what each side leaves once the slash has its conventions (the
+    # slash takes what a numerator's right side and its own left side share, as learned above; a numerator's left
+    # side is what its pairs with the numerator before it leave, and so on)
+    KINDS = (("numr", "nsb"), ("dnom", "dsb"))
+
+    def fig_targets(i, coef, K):
+        fo = mf[i]["frac"]; off = mf[i]["off"]
+        T = np.full((2, 10, 2), np.nan)
+        L_, R_ = fo["left"], fo["right"]
+        res = L_["dg"] - L_["mg"] - off - value(L_, K[0]) - predict(coef, i, 0)
+        for a in range(10):
+            w = L_["a"] == a
+            if w.any(): T[0, a, 1] = np.nanmedian(res[w])
+        res = R_["dg"] - R_["mg"] - off - value(R_, K[1]) - predict(coef, i, 1)
+        for b in range(10):
+            w = R_["b"] == b
+            if w.any(): T[1, b, 0] = np.nanmedian(res[w])
+        for kk, key, other in ((0, "nn", 0), (1, "dd", 1)):
+            d = fo[key]
+            if not d["dg"].size: continue
+            res = d["dg"] - d["mg"] - off - d["vdef"]
+            if kk == 0:   # a numerator's left side: after numerator a, less a's right side
+                for b in range(10):
+                    w = (d["b"] == b) & np.isfinite(T[0, d["a"], 1])
+                    if w.sum() >= 3: T[0, b, 0] = np.nanmedian(res[w] - T[0, d["a"][w], 1])
+            else:         # a denominator's right side: before denominator b, less b's left side
+                for a in range(10):
+                    w = (d["a"] == a) & np.isfinite(T[1, d["b"], 0])
+                    if w.sum() >= 3: T[1, a, 1] = np.nanmedian(res[w] - T[1, d["b"][w], 0])
+        return T
+
+    def fig_fit(idx, coef, K):
+        out_ = {}
+        Ts = {i: fig_targets(i, coef, K) for i in idx}
+        for kk, (kind, sbkey) in enumerate(KINDS):
+            for dgt in range(10):
+                for sd in (0, 1):
+                    X, y = [], []
+                    for i in idx:
+                        t = Ts[i][kk, dgt, sd]; s_ = mf[i]["frac"][sbkey][dgt, sd]
+                        if not (np.isfinite(t) and np.isfinite(s_) and np.isfinite(rho2[i])): continue
+                        X.append([float(style2[i] == st_) for st_ in STYLES] + [s_ / 50.0, rho2[i] / 50.0]); y.append(t)
+                    if len(y) < MIN_FAMILIES: continue
+                    X, y = np.array(X), np.array(y)
+                    present = [(X[:, k_] > 0).sum() >= 8 for k_ in range(3)]
+                    for k_ in range(1, 3):
+                        if not present[k_]:
+                            X[:, 0] += X[:, k_]; X[:, k_] = 0.0
+                    R_ = np.diag([0 if present[0] else 2.0, 0 if present[1] else 1e6, 0 if present[2] else 1e6, 2.0, 2.0])
+                    w = np.ones(len(y))
+                    for _ in range(3):
+                        beta = np.linalg.solve(X.T @ (X * w[:, None]) + R_, X.T @ (w * y))
+                        r_ = y - X @ beta
+                        sc = 1.4826 * np.median(np.abs(r_)) + 1e-6
+                        u = np.abs(r_) / (1.345 * sc); w = np.where(u <= 1, 1.0, 1.0 / u)
+                    for k_ in range(1, 3):
+                        if not present[k_]: beta[k_] = beta[0]
+                    out_[(kk, dgt, sd)] = beta
+        return out_
+
+    def fig_shift(figc, i, kk, dgt, sd):
+        beta = figc.get((kk, dgt, sd)); s_ = mf[i]["frac"][KINDS[kk][1]][dgt, sd]
+        if beta is None or not (np.isfinite(s_) and np.isfinite(rho2[i])): return 0.0
+        x = np.array([float(style2[i] == st_) for st_ in STYLES] + [s_ / 50.0, rho2[i] / 50.0])
+        return float(np.clip(x @ beta, -80, 80))
+
     # what the table does today in such a font: the slash's conventions learned beside full-size figures
     def today(i, sd):
         c = base["styles"].get(mf[i]["style"], base["styles"]["text"]).get("fraction")
@@ -437,14 +503,17 @@ def learn_fraction_slash(mf, ref2, sys2, fold2, style2, rho2, base):
         return float(np.clip(k_ + m_ * S_[i, sd] / 50.0 + r_ * rho2[i] / 50.0, -80, 80))
     k_today = base["kern"].get("fraction", [base.get("kern_scale", KERN_SCALE)] * 2)
     ref_idx = [i for i in idx_all if ref2[i]]
-    cv = {}
+    cv, cvf = {}, {}
     for k in range(5):
-        coef, K = learn([i for i in ref_idx if fold2[i] != k])
+        train = [i for i in ref_idx if fold2[i] != k]
+        coef, K = learn(train)
+        figc = fig_fit(train, coef, K)
         for i in idx_all:
-            if fold2[i] == k and not sys2[i]: cv[i] = (coef, K)
+            if fold2[i] == k and not sys2[i]: cv[i], cvf[i] = (coef, K), figc
     full, Kfull = learn(ref_idx)
+    figfull = fig_fit(ref_idx, full, Kfull)
     for i in idx_all:
-        if sys2[i]: cv[i] = (full, Kfull)
+        if sys2[i]: cv[i], cvf[i] = (full, Kfull), figfull
     out = []
     for label, sel in (("reference families", lambda i: ref2[i]), ("other families", lambda i: not ref2[i] and not sys2[i]),
                        ("macOS fonts", lambda i: sys2[i])):
@@ -464,6 +533,34 @@ def learn_fraction_slash(mf, ref2, sys2, fold2, style2, rho2, base):
                     f"({sum(1 for i in idx_all if sel(i))} fonts): model {e[0] / n_:.1f} / today's slash {e[1] / n_:.1f} / "
                     f"its own {e[2] / n_:.1f}")
             print(line); out.append(line)
+        # every pair of a fraction (numerator–numerator, numerator–slash, slash–denominator, denominator–denominator)
+        f = np.zeros(3); m_ = 0
+        for i in idx_all:
+            if not sel(i): continue
+            coef, K = cv[i]; figc = cvf[i]; fo = mf[i]["frac"]; off = mf[i]["off"]
+            for key in ("left", "right", "nn", "dd"):
+                d = fo[key]
+                if not d["dg"].size: continue
+                b0 = d["dg"] - d["mg"] - off
+                if key == "left":
+                    k_slash = predict(coef, i, 0) + value(d, K[0])
+                    figs_ = np.array([fig_shift(figc, i, 0, a, 1) for a in d["a"]])
+                elif key == "right":
+                    k_slash = predict(coef, i, 1) + value(d, K[1])
+                    figs_ = np.array([fig_shift(figc, i, 1, b, 0) for b in d["b"]])
+                else:
+                    kk = 0 if key == "nn" else 1
+                    k_slash = d["vdef"]
+                    figs_ = np.array([fig_shift(figc, i, kk, a, 1) + fig_shift(figc, i, kk, b, 0)
+                                      for a, b in zip(d["a"], d["b"])])
+                f[0] += np.nansum(np.abs(b0 - d["vdef"]))
+                f[1] += np.nansum(np.abs(b0 - k_slash))
+                f[2] += np.nansum(np.abs(b0 - k_slash - figs_))
+                m_ += np.isfinite(b0).sum()
+        if m_:
+            line = (f"every pair of a fraction, held out, {label}: model {f[0] / m_:.1f} / the slash's conventions "
+                    f"{f[1] / m_:.1f} / and the numerators' and denominators' {f[2] / m_:.1f}")
+            print(line); out.append(line)
     if full:
         for si, st_ in enumerate(STYLES):
             table[st_]["fraction.frac"] = [[round(float(full[sd][si]), 2), round(float(full[sd][3]), 3), round(float(full[sd][4]), 3)]
@@ -471,7 +568,19 @@ def learn_fraction_slash(mf, ref2, sys2, fold2, style2, rho2, base):
         kern["fraction.frac"] = [round(float(Kfull[0]), 2), round(float(Kfull[1]), 2)]
         line = "fraction.frac: " + json.dumps({"text": table["text"]["fraction.frac"], "kern": kern["fraction.frac"]})
         print(line); out.append(line)
+        for kk, (kind, _sbkey) in enumerate(KINDS):
+            for dgt in range(10):
+                if not any((kk, dgt, sd) in figfull for sd in (0, 1)): continue
+                name = FIG[dgt] + "." + kind
+                for si, st_ in enumerate(STYLES):
+                    table[st_][name] = [[round(float(figfull[(kk, dgt, sd)][si]), 2), round(float(figfull[(kk, dgt, sd)][3]), 3),
+                                         round(float(figfull[(kk, dgt, sd)][4]), 3)] if (kk, dgt, sd) in figfull else [None] * 3
+                                        for sd in (0, 1)]
+                FRACTION_FIGURES.append(name)
     return out
+
+
+FRACTION_FIGURES = []  # the numerators and denominators learn_fraction_slash added to the table
 
 
 lines_more, marks, aliases = [], {n: [ord(c)] for n, c in KERNEL_CHARS.items()}, {}
@@ -535,10 +644,22 @@ if args.more_data:
             frac = None
             if args.feature_data and "fraction" in names:
                 sl = names.index("fraction")
-                isn = np.array([n.endswith(".numr") for n in names]); isd = np.array([n.endswith(".dnom") for n in names])
+                numr_of = np.array([FIG.index(n[:-5]) if n.endswith(".numr") and n[:-5] in FIG else -1 for n in names])
+                dnom_of = np.array([FIG.index(n[:-5]) if n.endswith(".dnom") and n[:-5] in FIG else -1 for n in names])
+                isn, isd = numr_of >= 0, dnom_of >= 0
                 lp, rp = isn[ga] & (gb == sl), (ga == sl) & isd[gb]
-                frac = dict(s=sb[sl], **{key: dict(dg=P[w, 2], mg=P[w, 3], raw=raw[w], floor=floor[w], vdef=vdef[w])
-                                         for key, w in (("left", lp), ("right", rp))})
+                nn, dd = isn[ga] & isn[gb], isd[ga] & isd[gb]
+                frac = dict(s=sb[sl], **{key: dict(dg=P[w, 2], mg=P[w, 3], raw=raw[w], floor=floor[w], vdef=vdef[w],
+                                                   a=np.where(of_a[ga[w]] >= 0, of_a[ga[w]], -1),
+                                                   b=np.where(of_b[gb[w]] >= 0, of_b[gb[w]], -1))
+                                         for key, w, of_a, of_b in (("left", lp, numr_of, dnom_of),
+                                                                    ("right", rp, numr_of, dnom_of),
+                                                                    ("nn", nn, numr_of, numr_of),
+                                                                    ("dd", dd, dnom_of, dnom_of))})
+                # the model's sides of each numerator and denominator (NaN: the font has none)
+                frac["nsb"] = np.full((10, 2), np.nan); frac["dsb"] = np.full((10, 2), np.nan)
+                for k_ in np.where(isn)[0]: frac["nsb"][numr_of[k_]] = sb[k_]
+                for k_ in np.where(isd)[0]: frac["dsb"][dnom_of[k_]] = sb[k_]
             mf.append(dict(slug=r["slug"], cat=cat_, style=STYLE_OF.get(cat_, "text"), tab=bool(m and m.get("tabular")),
                            stab=one_width(SUP), btab=one_width(SUB), otab=one_width(OSF),
                            q=(m["quality"] if m and m["quality"] is not None else np.nan), off=off, row=row, col=col,
@@ -769,7 +890,7 @@ if args.small_data or args.feature_data:
     # half a unit closer with conventions of their own, none at all for j, s, u: 11 October 2026)
     small = [n for n, _c in SMALL if n not in SCAPS]
     if args.feature_data and "fraction.frac" in table["text"]:
-        small = small + ["fraction.frac"]
+        small = small + ["fraction.frac"] + FRACTION_FIGURES
         base["kern"]["fraction.frac"] = kern["fraction.frac"]
     for s_ in STYLES:
         base["styles"].setdefault(s_, {}).update((n, v) for n, v in table[s_].items() if n in small)

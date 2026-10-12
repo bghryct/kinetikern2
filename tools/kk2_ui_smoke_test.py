@@ -1839,6 +1839,21 @@ class SmokeTest(object):
         rep.check(kpu.mark_of(snap7, snap7.index["one.oldstyle"]) == "one.osf" and
                   kpu.mark_of(snap7, snap7.index["fraction"]) == "fraction.frac",
                   "punctuation lookups: .oldstyle, .numerator and .denominator names count as .osf, .numr and .dnom")
+        if "one.numr" not in kpu.feature_marks():
+            return
+        # numerators and denominators: their figure's kind of convention, under the Figures switch; one width kept
+        snap8 = Snap([(n, 0x30 + k, 556) for k, n in enumerate(figs)] + [("fraction", 0x2044, 167)] +
+                     [(n + ".numr", None, 300 + 7 * k) for k, n in enumerate(figs)] +
+                     [(n + ".denominator", None, 300 + 5 * k) for k, n in enumerate(figs)], 8)
+        c8 = kpu.engine_arg(snap8, "text", punctuation=True, figures=True)[0]
+        c8p = kpu.engine_arg(snap8, "text", punctuation=True, figures=False)[0]
+        row8 = lambda c, n: tuple(c[snap8.index[n]])
+        rep.check(kpu.mark_of(snap8, snap8.index["one.denominator"]) == "one.dnom" and
+                  all(on(row8(c8, n + ".numr")) and on(row8(c8, n + ".denominator")) for n in figs) and
+                  not any(on(row8(c8p, n + ".numr")) for n in figs) and row8(c8, "one.numr") != row8(c8, "one.denominator"),
+                  "punctuation lookups: numerators and denominators take their own conventions, under the Figures switch")
+        rep.check(not any(on(c5[snap5.index[n + ".numr"]]) or on(c5[snap5.index[n + ".dnom"]]) for n in figs),
+                  "punctuation lookups: numerators or denominators that share one width are tabular, kept")
 
     def check_spaces_in_step(self):
         """Which blank spaces Apply keeps in step (kk2_apply._spaces_in_step),

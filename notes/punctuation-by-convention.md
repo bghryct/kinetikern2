@@ -217,7 +217,9 @@ the figures were learned on.
   families) is used in masters with numerators and denominators. Small caps
   are left out: the model is about as close to their designers as to the
   lowercase (17–21), and conventions gain about half a unit. Numerators and
-  denominators themselves keep the model's spacing.
+  denominators (12 October 2026, at the user's request, from the same data)
+  take conventions of their own on top of the slash's: over every pair of a
+  fraction, held out, 36.3 (model) → 31.2 (the slash's) → 25.0.
 - `.case` forms follow their base mark. Proportional lining figures under a
   suffix (`.lf`, `.pnum`, `.plf`) take their figure's conventions, old-style
   ones (`.osf`, `.onum`, `.oldstyle`) the old-style figures'. Small caps

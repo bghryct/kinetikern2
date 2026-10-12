@@ -399,10 +399,11 @@ class KK2Window(object):
             "designers do (the 1 most, then 2, 3, 5 and 7). Learned from the Google Fonts families with "
             "proportional figures. Tabular figures (.tf, .tosf too) keep their widths either way. The switch "
             "also covers what goes with figures: old-style figures (.osf, .onum), "
-            "precomposed fractions (½ ¼ ¾ ⅓ ⅛…), superscripts and subscripts (¹ ² ³, ₁ ₂, and .sups / .sinf "
+            "fractions (½ ¼ ¾ ⅓ ⅛…, and the numerators and denominators of 1⁄2), superscripts and subscripts "
+            "(¹ ² ³, ₁ ₂, and .sups / .sinf "
             "forms), which designers space more openly than the model, and the ordinals ª º, which they set "
-            "closer to the figure before them. A set of old-style figures, superscripts or subscripts that "
-            "shares one width keeps it.")
+            "closer to the figure before them. A set of old-style figures, numerators, denominators, "
+            "superscripts or subscripts that shares one width keeps it.")
         self.styles = kh.style_choices()
         w.conventions = vanilla.PopUpButton((x + 98, 28, 106, 20), [label for _k, label in self.styles],
                                             callback=self.conventionsChanged, sizeStyle="mini")
