@@ -9,7 +9,10 @@ the underscore), the designer's gap minus the bare model's — Kinetikern2
 without the harness — at the font's best-fit Looseness, with the font's
 overall offset removed (units per 1000 em; + = the designer is looser).
 Reports store the bare model beside the harness (Spacing QA's `bare`); a
-report checked without the harness gives its residuals as they are. Glyphs
+report checked without the harness gives its residuals as they are. The bare
+model has punctuation by convention on (kk2_punctuation.json, as the plugins
+by default), so the harness corrects what is left on top of it: only reports
+checked with the plugins' current punctuation table are used. Glyphs
 are matched by name: a font without some of them adds to the pairs it has. Observations are the reference fonts at Regular (the library scan)
 and, for variable families, at other weights (`spacingqa check --weight W
 --json`). Reference fonts: text faces (Sans Serif, Serif), upright,
@@ -58,6 +61,9 @@ STEM_REF = 85.0
 # of the observations on its side of zero
 PAIR_MIN = 8.0
 PAIR_AGREE = 0.6
+# the punctuation conventions the bare model has (the plugins' table)
+PUNCT_TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plugin", "Kinetikern2.glyphsPlugin",
+                           "Contents", "Resources", "kk2_punctuation.json")
 PUNCT = ["period", "comma", "colon", "semicolon", "exclam", "question", "hyphen", "quotesingle", "quotedbl",
          "parenleft", "parenright", "slash", "ampersand", "quoteright",
          # the rest of the kernel's scored punctuation and symbols
@@ -253,6 +259,13 @@ def main():
     names = None
     obs = []  # (family, residual matrix, L, stem, label): text faces
     cat_obs = defaultdict(list)  # category → the same, at Regular
+    # the harness is learned on top of punctuation by convention: reports made with its current table only
+    pt = json.load(open(PUNCT_TABLE))
+    punct_id = pt.get("id", "")
+    # Spacing QA checks the kernel's glyphs only: a report checked with an earlier table whose kernel marks this one
+    # keeps unchanged (kernel_id) has the same bare model
+    punct_ids = {punct_id, pt.get("kernel_id", punct_id)}
+    skipped = defaultdict(int)
     # a weight checked on its own (`spacingqa check`) knows no catalog: its
     # family's library report gives the category, primary script and name
     catalog = {}
@@ -266,6 +279,9 @@ def main():
                 return
             f = dict(f, category=known[0], primary_script=known[1], family=known[2])
         if not s or not d or not d.get("residuals") or f.get("italic") or f.get("monospaced"):
+            return
+        if not r.get("punctuation") or (r.get("punctuation_table") or "").split("+")[0] not in punct_ids:
+            skipped["another punctuation table"] += 1
             return
         cat = f.get("category")
         text = cat in ("Sans Serif", "Serif")
@@ -297,6 +313,8 @@ def main():
             except (ValueError, KeyError):
                 continue
     fams = sorted({o[0] for o in obs})
+    if skipped:
+        print("skipped:", dict(skipped), "(punctuation table", punct_id + ")")
     print(f"{len(obs)} observations: {n_regular} at Regular, {len(obs) - n_regular} at other weights; {len(fams)} families")
     stems = np.array([o[3] for o in obs])
     Ls = np.array([o[2] for o in obs])
@@ -487,7 +505,9 @@ def main():
                      "than the model. A side's correction is a + b*L + c*w + d*L*w, L the Looseness, "
                      "w = ln(stem / %g), stem = the ink width of I (else l) at half its height, per 1000 em. "
                      "Pairs are corrected after the sides. `categories` adds, for display and handwriting faces, "
-                     "corrections of their punctuation on top of these." % STEM_REF,
+                     "corrections of their punctuation on top of these. Learned on top of punctuation by "
+                     "convention (punctuation_table); with it off the plugins leave punctuation alone." % STEM_REF,
+            "punctuation_table": punct_id,
             "stem_ref": STEM_REF,
             "looseness_range": [round(float(np.percentile(Ls, 2)), 2), round(float(np.percentile(Ls, 98)), 2)],
             "stem_range": [round(float(np.percentile(stems, 2)), 1), round(float(np.percentile(stems, 98)), 1)],

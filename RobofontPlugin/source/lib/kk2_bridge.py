@@ -47,6 +47,14 @@ PARAM_CLASSES = 2
 PARAM_WINDOW = 4
 PARAM_SCOPE_SCRIPTS = 8
 PARAM_FIT_FROZEN = 16
+# v1's Pass-2 response: every pair class alike, the crevice floor for every pair
+# (the equivalence tool's setting; FEATURE_PUNCTUATION engines)
+PARAM_V1_PASS2 = 32
+# Pass 2's conventions of display faces (a capital reaches over its neighbour
+# further) and of handwriting (further still); text faces without either
+# (FEATURE_PUNCTUATION engines)
+PARAM_STYLE_DISPLAY = 64
+PARAM_STYLE_HANDWRITING = 128
 
 GLYPHOPT_FROZEN = 1
 
@@ -73,6 +81,9 @@ FEATURE_FIT_OFFSET = 512
 # the slant a design's stems show, and when to measure along it: Spacing QA's
 # detector and rule (kk2_stem_glyphs, kk2_stem_slant, kk2_lean_wins)
 FEATURE_STEM_SLANT = 1024
+# punctuation by convention and Pass 2's pair classes (kk2_solve_start4,
+# KK2Punctuation, PARAM_V1_PASS2)
+FEATURE_PUNCTUATION = 2048
 
 # kk2_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
@@ -167,6 +178,16 @@ class KK2Harness(Structure):
                 ("pair_count", c_uint32), ("reserved", c_uint32)]
 
 
+class KK2Punctuation(Structure):
+    """Punctuation by convention: 6 coefficients per glyph (c, m, r of the left
+    side's shift, then of the right side's; NaN c = none), the kerning share
+    of every mark side without its own, 2 shares per glyph (its left and
+    right side's; NaN = that default), and per glyph the glyph whose sides
+    it takes (NONE = its own: a mark's case form follows its base mark)."""
+    _fields_ = [("struct_size", c_uint32), ("glyph_count", c_uint32), ("coefs", c_void_p), ("kern_scale", c_double),
+                ("kern", c_void_p), ("follow", c_void_p)]
+
+
 class KK2HarnessPair(Structure):
     _fields_ = [("left", c_uint32), ("right", c_uint32), ("value", c_double)]
 
@@ -218,7 +239,7 @@ class KK2MeasureStats(Structure):
 _SIZES = {KK2Point: 24, KK2Glyph: 104, KK2Params: 152, KK2Progress: 40, KK2Metrics: 64, KK2Entry: 24,
           KK2Stats: 352, KK2Result: 464, KK2Ray: 24, KK2GlyphOpt: 24, KK2KernIn: 16, KK2PairOut: 24,
           KK2MeasureStats: 40, KK2Harness: 32, KK2HarnessPair: 16, KK2Joins: 32, KK2JoinStats: 64,
-          KK2JoinSide: 24, KK2JoinPair: 64}
+          KK2JoinSide: 24, KK2JoinPair: 64, KK2Punctuation: 40}
 _POINT = struct.Struct("<ddII")
 _ENTRY = struct.Struct("<IIffII")
 
@@ -368,12 +389,17 @@ def pack_joins(joins, n):
 
 
 def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=True, scope_scripts=True,
-                threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False, **tuning):
+                threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False,
+                v1_pass2=False, style=None, **tuning):
+    """`style`: Pass 2's conventions, "display" or "handwriting" (None or
+    "text": text faces')."""
     p = KK2Params()
     p.struct_size = sizeof(KK2Params)
     p.flags = ((PARAM_CLASSES if classes else 0) | (PARAM_WINDOW if window else 0) |
                (PARAM_SCOPE_SCRIPTS if scope_scripts else 0) | (PARAM_SKIP_PASS2 if skip_pass2 else 0) |
-               (PARAM_FIT_FROZEN if fit_frozen else 0))
+               (PARAM_FIT_FROZEN if fit_frozen else 0) | (PARAM_V1_PASS2 if v1_pass2 else 0) |
+               (PARAM_STYLE_DISPLAY if style == "display" else 0) |
+               (PARAM_STYLE_HANDWRITING if style == "handwriting" else 0))
     p.spring, p.repulsion, p.coupling = float(spring), float(repulsion), float(coupling)
     for name in ("white_credit", "depth_ratio", "rhythm_weight", "width_coupling", "min_clearance",
                  "crevice_pressure", "max_negative_kern", "max_positive_kern", "min_kern", "field_cap",
@@ -453,6 +479,8 @@ class Engine(object):
             "kk2_stem_glyphs": ([], c_char_p),
             "kk2_stem_slant": ([c_void_p, c_uint32, c_double, c_double], c_double),
             "kk2_lean_wins": ([c_double, c_double, c_double, c_double], c_uint32),
+            "kk2_solve_start4": ([c_void_p, POINTER(KK2Params), c_void_p, c_uint32, c_void_p, c_uint32,
+                                  POINTER(KK2Harness), POINTER(KK2Punctuation)], c_void_p),
         }
         self.features = 0
         for name, (args, res) in optional.items():
@@ -615,8 +643,9 @@ class Engine(object):
         measured along the slant its stems show, from (shape error, best-fit
         Looseness) upright and along the slant: where that leaves at most 80 %
         of the shape error upright, or where upright the fit stops at the
-        limit of the Looseness range and along the slant it does not — Spacing
-        QA's rule (kinetikern2::slant). False with an older engine."""
+        limit of the Looseness range or lies beyond ±2.5 (outside what fonts
+        use) and along the slant it does not — Spacing QA's rule
+        (kinetikern2::slant). False with an older engine."""
         if not self.features & FEATURE_STEM_SLANT or getattr(self.lib, "kk2_lean_wins", None) is None:
             return False
         return bool(self.lib.kk2_lean_wins(float(upright[0]), float(upright[1]), float(lean[0]), float(lean[1])))
@@ -702,18 +731,71 @@ class Engine(object):
             raise EngineError(self.last_error())
         return list(out[:n])
 
-    def solve(self, context, params, kern_mask=None, glyph_opts=None, harness=None):
+    def solve(self, context, params, kern_mask=None, glyph_opts=None, harness=None, punctuation=None):
         """Starts Phases 2–3. `kern_mask`: bytes (one per glyph) or None.
         `glyph_opts`: one (frozen, looseness offset, intensity multiplier)
         per glyph (spacing groups), or None. `harness`: (sides, pairs) of the
-        designer harness (kk2_harness.Plan.engine_arg), or None."""
+        designer harness (kk2_harness.Plan.engine_arg), or None.
+        `punctuation`: (coefficients, shares, kern scale, follow) of
+        punctuation by convention (kk2_punctuation.engine_arg; 6 coefficients,
+        2 shares and the glyph to follow per glyph), or None."""
         if context.ptr is None:
             raise EngineError("context is closed")
         mask_ptr, mask_len, keep = None, 0, None
         if kern_mask is not None:
             keep = (c_uint8 * len(kern_mask)).from_buffer_copy(bytes(kern_mask))
             mask_ptr, mask_len = ctypes.addressof(keep), len(kern_mask)
-        if harness is not None:
+        if punctuation is not None and self.features & FEATURE_PUNCTUATION:
+            coefs, shares, kern_scale = punctuation[:3]
+            follow = punctuation[3] if len(punctuation) > 3 else None
+            coef_arr = (c_double * max(6 * len(coefs), 1))()
+            for k, row in enumerate(coefs):
+                for j in range(6):
+                    coef_arr[6 * k + j] = float(row[j])
+            share_arr = None
+            if shares is not None:
+                if len(shares) != len(coefs):
+                    raise EngineError("punctuation: %d shares for %d glyphs" % (len(shares), len(coefs)))
+                share_arr = (c_double * max(2 * len(shares), 1))()
+                for k, (sl, sr) in enumerate(shares):
+                    share_arr[2 * k] = float(sl)
+                    share_arr[2 * k + 1] = float(sr)
+            pc = KK2Punctuation()
+            pc.struct_size = sizeof(KK2Punctuation)
+            pc.glyph_count = len(coefs)
+            pc.coefs = ctypes.addressof(coef_arr) if coefs else None
+            pc.kern_scale = float(kern_scale)
+            pc.kern = ctypes.addressof(share_arr) if share_arr is not None and coefs else None
+            follow_arr = None
+            if follow is not None and coefs:
+                if len(follow) != len(coefs):
+                    raise EngineError("punctuation: %d follow entries for %d glyphs" % (len(follow), len(coefs)))
+                follow_arr = (c_uint32 * len(follow))(*[int(f) for f in follow])
+                pc.follow = ctypes.addressof(follow_arr)
+            side_arr = pair_arr = None
+            h = None
+            if harness is not None and self.features & FEATURE_HARNESS:
+                sides, pairs = harness
+                side_arr = (c_double * max(2 * len(sides), 1))()
+                for k, (dl, dr) in enumerate(sides):
+                    side_arr[2 * k] = float(dl)
+                    side_arr[2 * k + 1] = float(dr)
+                pair_arr = (KK2HarnessPair * max(len(pairs), 1))()
+                for k, (a, b, v) in enumerate(pairs):
+                    pair_arr[k].left, pair_arr[k].right, pair_arr[k].value = int(a), int(b), float(v)
+                h = KK2Harness()
+                h.struct_size = sizeof(KK2Harness)
+                h.glyph_count = len(sides)
+                h.sides = ctypes.addressof(side_arr) if sides else None
+                h.pairs = ctypes.addressof(pair_arr) if pairs else None
+                h.pair_count = len(pairs)
+            opts = pack_glyph_opts(glyph_opts) if glyph_opts is not None else None
+            ptr = self.lib.kk2_solve_start4(context.ptr, byref(params), mask_ptr, mask_len,
+                                            ctypes.addressof(opts) if opts is not None else None,
+                                            len(glyph_opts) if glyph_opts is not None else 0,
+                                            byref(h) if h is not None else None, byref(pc))
+            del coef_arr, share_arr, follow_arr, side_arr, pair_arr, opts  # the engine copied them
+        elif harness is not None:
             if not self.features & FEATURE_HARNESS:
                 raise EngineError("this engine build has no designer harness (kk2_solve_start3)")
             sides, pairs = harness

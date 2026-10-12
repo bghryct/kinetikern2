@@ -19,7 +19,8 @@ pub use crate::classes::{EXISTING, GLYPH_KEYED};
 pub use crate::engine::{
     physics_for_looseness, GlyphInput, GlyphOpt, SideRule, SolveOptions, COUPLING_CALIBRATION, GLYPH_FIGURE, GLYPH_FIXED_ADVANCE,
     GLYPH_KERN, GLYPH_RTL, GROUP_LOWERCASE, GROUP_OTHER, GROUP_UPPERCASE, LOOSENESS_GAIN, LOOSENESS_RATIO, MAX_GROUPS,
-    NONE,
+    NONE, pair_class, style_response, Conventions, PairResponse, Style, PAIR_CAP_CAP, PAIR_CAP_LOWER, PAIR_CLASSES, PAIR_LOWER_CAP, PAIR_LOWER_LOWER, PAIR_OTHER,
+    PAIR_PUNCT,
 };
 pub use crate::geometry::{Vec2, NODE_CURVE, NODE_LINE, NODE_OFFCURVE, NODE_QCURVE};
 pub use crate::checker::{
@@ -92,6 +93,14 @@ pub struct Settings {
     pub harness: Option<Harness>,
     /// Skip Pass 2 (sidebearings only).
     pub skip_kerning: bool,
+    /// Pass 2's crevice floor ignores crevice disks wider than this (units
+    /// per 1000 em; infinite: all count). See `SolveOptions::crevice_max_radius`.
+    pub crevice_max_radius_per_1000: f64,
+    /// Pass 2's response per pair class (`PAIR_PUNCT`, `PAIR_CAP_LOWER`, …),
+    /// tail knees in units per 1000 em. See `SolveOptions::response`.
+    pub response: [PairResponse; PAIR_CLASSES],
+    /// Punctuation by convention (the plugins' Punctuation switch).
+    pub punctuation: Option<Conventions>,
 }
 
 impl Settings {
@@ -112,6 +121,9 @@ impl Settings {
             fit_frozen: false,
             harness: None,
             skip_kerning: false,
+            crevice_max_radius_per_1000: f64::INFINITY,
+            response: SolveOptions::defaults(1000.0).response,
+            punctuation: None,
         }
     }
 
@@ -122,6 +134,8 @@ impl Settings {
         o.spring = spring;
         o.repulsion = repulsion;
         o.coupling = if self.skip_kerning { 0.0 } else { (self.intensity / 100.0).max(0.0) };
+        o.crevice_max_radius = self.crevice_max_radius_per_1000 * upm / 1000.0;
+        o.response = self.response.map(|r| PairResponse { tail_knee: r.tail_knee * upm / 1000.0, ..r });
         o
     }
 }
@@ -309,6 +323,7 @@ impl Engine {
             looseness: s.looseness,
             harness: s.harness.clone().map(Arc::new),
             keep_bare,
+            conventions: s.punctuation.clone().map(Arc::new),
         };
         let mask: Option<Vec<u8>> = s.kern_mask.as_ref().map(|m| m.iter().map(|&b| b as u8).collect());
         let progress = Progress::new();
@@ -356,6 +371,64 @@ impl Engine {
         Ok((with, bare))
     }
 
+    /// The crevice and tip micro-disks of a glyph side (centre x, y and radius,
+    /// font units, the glyph's own coordinates): what Pass 2's crevice floor
+    /// keeps a neighbour out of. For diagnosis.
+    pub fn facing_disks(&self, glyph: usize, right: bool) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+        let Some(g) = self.ctx.glyphs.get(glyph) else { return (Vec::new(), Vec::new()) };
+        let conv = |d: &[crate::dmat::Disk]| d.iter().map(|k| [k.c.x, k.c.y, k.r]).collect::<Vec<_>>();
+        if right {
+            (conv(&g.right_crevices), conv(&g.right_tips))
+        } else {
+            (conv(&g.left_crevices), conv(&g.left_tips))
+        }
+    }
+
+    /// Pass 2 for some glyph pairs at a solution's sidebearings, with what
+    /// decided each: the interaction contrast, the value before the floors and
+    /// after them, and the flags (`PAIR_CLEARANCE`, `PAIR_CREVICE`, …). For
+    /// diagnosis and tests; a solve does not need it.
+    pub fn pair_details(&self, s: &Settings, solution: &Solution, pairs: &[(usize, usize)]) -> Vec<PairDetail> {
+        let ctx = &self.ctx;
+        let o = s.options(ctx.upm);
+        let fields = crate::pass2::Fields::new(ctx, &o);
+        let knobs = crate::pass2::Knobs::new(&o, ctx.upm, (s.threshold_per_1000 * ctx.upm / 1000.0).max(0.5));
+        let mut needed = vec![false; ctx.glyphs.len()];
+        for &(a, b) in pairs {
+            if a < needed.len() && b < needed.len() {
+                needed[a] = true;
+                needed[b] = true;
+            }
+        }
+        let Ok((probes, windows)) = run::probes_for(ctx, &fields, &needed, &Progress::new(), 1) else {
+            return Vec::new();
+        };
+        let scales = s.punctuation.as_ref().map(|c| c.side_scales(&ctx.glyphs));
+        let kernel = crate::pass2::Kernel {
+            ctx,
+            fields: &fields,
+            probes: &probes,
+            windows: &windows,
+            lsb: &solution.lsb,
+            rsb: &solution.rsb,
+            knobs,
+            solver: s.solver,
+            force: None,
+            side_scale: scales.as_deref(),
+        };
+        let mut sc = crate::pass2::Scratch::default();
+        pairs
+            .iter()
+            .map(|&(a, b)| {
+                if a >= needed.len() || b >= needed.len() || !ctx.glyphs[a].valid || !ctx.glyphs[b].valid {
+                    return PairDetail { raw: f64::NAN, pre: f64::NAN, value: f64::NAN, flags: 0 };
+                }
+                let r = kernel.solve(a, b, &mut sc);
+                PairDetail { raw: r.raw, pre: r.pre, value: r.value, flags: r.flags }
+            })
+            .collect()
+    }
+
     /// The font's spacing as it is (each glyph's current sidebearings, from
     /// `GlyphInput::cur_lsb` / `cur_rsb`, plus `current` kerning) against a
     /// solution, over the glyphs flagged in `mask`. See `measure`.
@@ -371,6 +444,21 @@ impl Engine {
         crate::measure::measure(&self.ctx, &solution.lsb, &solution.rsb, &model, current, mask, scope_scripts, cap)
     }
 }
+
+/// Pass 2's view of one pair (`Engine::pair_details`).
+#[derive(Clone, Copy, Debug)]
+pub struct PairDetail {
+    /// Interaction contrast (font units).
+    pub raw: f64,
+    /// After the dead zone and the saturating response, before the floors.
+    pub pre: f64,
+    /// The kerning: the floors applied.
+    pub value: f64,
+    /// `PAIR_*` flags.
+    pub flags: u32,
+}
+
+pub use crate::pass2::{PAIR_CLEARANCE, PAIR_CREVICE, PAIR_DISJOINT, PAIR_JOIN, PAIR_SATURATED};
 
 /// One kerning entry of a solution (see the C ABI's `KK2Entry`).
 #[derive(Clone, Copy, Debug)]
@@ -549,6 +637,68 @@ mod tests {
             // without a harness both are the plain solve
             let (x, y) = e.solve_with_bare(&base).unwrap();
             assert_eq!((x.lsb.clone(), y.lsb.clone()), (plain.lsb.clone(), plain.lsb.clone()));
+        }
+    }
+
+    #[test]
+    fn punctuation_kerns_each_side_with_its_own_share() {
+        // the period keeps 0.7 of the coupling on its left side and 0.4 on its
+        // right; a pair of two marks takes the product; letters kern fully
+        let e = font();
+        let none = [f64::NAN; 2];
+        let conv = Conventions { kern: vec![none, none, none, [0.7, 0.4]], kern_scale: 0.3, ..Conventions::default() };
+        for mode in [Mode::Pairs, Mode::Classes] {
+            let base = Settings { mode, ..Settings::new() };
+            let plain = e.solve(&base).unwrap();
+            let with = e.solve(&Settings { punctuation: Some(conv.clone()), ..base.clone() }).unwrap();
+            let at = |scale: f64| {
+                let mut r = base.response;
+                r[PAIR_PUNCT].scale = scale;
+                e.solve(&Settings { response: r, ..base.clone() }).unwrap()
+            };
+            let (left, right, both) = (at(0.7), at(0.4), at(0.7 * 0.4));
+            assert!(plain.kerning(1, 3) < -1.0, "{mode:?} V period is kerned: {}", plain.kerning(1, 3));
+            assert!(with.kerning(1, 3) > plain.kerning(1, 3), "{mode:?} V period kerned less");
+            assert!((with.kerning(1, 3) - left.kerning(1, 3)).abs() < 1e-9, "{mode:?} V period");
+            assert!((with.kerning(3, 0) - right.kerning(3, 0)).abs() < 1e-9, "{mode:?} period H");
+            assert!((with.kerning(3, 3) - both.kerning(3, 3)).abs() < 1e-9, "{mode:?} period period");
+            for a in 0..3 {
+                for b in 0..3 {
+                    assert_eq!(with.kerning(a, b), plain.kerning(a, b), "{mode:?} letters {a} {b}");
+                }
+            }
+            // without shares of their own, every mark side keeps kern_scale
+            let flat = e.solve(&Settings { punctuation: Some(Conventions { kern: Vec::new(), ..conv.clone() }), ..base.clone() }).unwrap();
+            assert!((flat.kerning(1, 3) - at(0.3).kerning(1, 3)).abs() < 1e-9, "{mode:?} V period at kern_scale");
+            // and pair_details sees the same shares
+            let d = e.pair_details(&Settings { punctuation: Some(conv.clone()), ..base.clone() }, &with, &[(1, 3)]);
+            assert!((d[0].value - with.kerning(1, 3)).abs() < 0.5 + 1e-9, "{mode:?} details {} vs {}", d[0].value, with.kerning(1, 3));
+        }
+    }
+
+    #[test]
+    fn a_case_form_takes_its_base_marks_sides() {
+        // H, o, n, a period, and a case form drawn otherwise (a raised diamond,
+        // whose margins hold white the model would read): it takes the period's sides
+        let h = GlyphInput::simple(
+            vec![rect(60.0, 0.0, 140.0, 700.0), rect(460.0, 0.0, 540.0, 700.0), rect(140.0, 320.0, 460.0, 390.0)],
+            600.0,
+            GROUP_UPPERCASE,
+        );
+        let o = GlyphInput::simple(vec![rect(80.0, 0.0, 520.0, 700.0), rect(160.0, 80.0, 440.0, 620.0)], 600.0, GROUP_LOWERCASE);
+        let n = GlyphInput::simple(vec![rect(60.0, 0.0, 140.0, 500.0), rect(360.0, 0.0, 440.0, 500.0)], 500.0, GROUP_LOWERCASE);
+        let dot = GlyphInput::simple(vec![rect(60.0, 0.0, 150.0, 90.0)], 210.0, GROUP_OTHER);
+        let diamond = GlyphInput::simple(vec![poly(&[(230.0, 260.0), (400.0, 380.0), (230.0, 500.0), (60.0, 380.0)])], 460.0, GROUP_OTHER);
+        let e = Engine::prepare(vec![h, o, n, dot, diamond], 1000.0, 1).unwrap();
+        let plain = e.solve(&Settings::new()).unwrap();
+        let mut follow = vec![NONE; 5];
+        follow[4] = 3;
+        let conv = Conventions { follow, ..Conventions::default() };
+        let with = e.solve(&Settings { punctuation: Some(conv), ..Settings::new() }).unwrap();
+        assert!((plain.lsb[4] - plain.lsb[3]).abs() > 1.0 || (plain.rsb[4] - plain.rsb[3]).abs() > 1.0, "the model reads them apart");
+        assert_eq!((with.lsb[4], with.rsb[4]), (with.lsb[3], with.rsb[3]), "the case form takes the period's sides");
+        for i in 0..4 {
+            assert_eq!((with.lsb[i], with.rsb[i]), (plain.lsb[i], plain.rsb[i]), "glyph {i} as it was");
         }
     }
 

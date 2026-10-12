@@ -68,8 +68,10 @@ def _fire():
     if _dismiss_alert():
         _schedule(1.0)  # once the alert is gone
         return
-    _run_unattended()
+    # the watch first: an alert the test's own start raises (opening the font,
+    # the window) would otherwise hold it before the watch begins
     _schedule(1.0, _watch)
+    _run_unattended()
 
 
 def _watch():

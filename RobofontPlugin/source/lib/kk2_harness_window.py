@@ -74,7 +74,7 @@ class HarnessWindow(object):
                                           callback=self.whichChanged, sizeStyle="small")
         w.which.set(0)
         # the conventions: text faces, or a category's punctuation as well
-        self.styles = kh.available_styles()
+        self.styles = kh.style_choices()
         w.styleLabel = vanilla.TextBox((12, 43, 80, 17), "Conventions", sizeStyle="small")
         w.style = vanilla.PopUpButton((90, 40, 130, 22), [label for _k, label in self.styles],
                                       callback=self.styleChanged, sizeStyle="small")
@@ -82,7 +82,9 @@ class HarnessWindow(object):
         w.style.set(keys.index(self.main.harness_style) if self.main.harness_style in keys else 0)
         w.style.getNSPopUpButton().setToolTip_(
             "Text faces: what the designers of well-spaced text faces do. Display, Handwriting: their punctuation "
-            "as well, which they space more openly.")
+            "as well, which they space more openly, and their capitals, which reach further over the next letter. "
+            "Automatic: handwriting for a connected script or a hand whose stems lean without an italic angle, "
+            "else text faces. The same menu as the main window's.")
         w.status = vanilla.TextBox((230, 40, -12, 32), "", sizeStyle="small")
         w.list = vanilla.List((12, 76, 520, -40), [], columnDescriptions=[
             dict(title="#", key="rank", width=26),

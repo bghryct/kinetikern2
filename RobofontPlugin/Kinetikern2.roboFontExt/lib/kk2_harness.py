@@ -75,6 +75,17 @@ def available_styles():
     return [(k, label) for k, label, cat in STYLES if cat is None or cat in cats]
 
 
+# the Conventions menus' first choice: handwriting for a connected script or a
+# hand whose stems lean without an italic angle, else text faces (the window's
+# _style)
+AUTO = "auto"
+
+
+def style_choices():
+    """[(key, label)] of the Conventions menus: Automatic, then the table's."""
+    return [(AUTO, "Automatic")] + available_styles()
+
+
 def _style_table(style):
     for k, _label, cat in STYLES:
         if k == style and cat is not None:
@@ -146,10 +157,14 @@ class Plan(object):
     glyph indices the solve keeps as they are (the engine does not touch
     them, and neither does the plan). `kept`: (left sides, right sides), the
     glyph indices whose side a connected script keeps as drawn (Keep joins):
-    those sides do not move, and a pair of two kept sides keeps its kerning."""
+    those sides do not move, and a pair of two kept sides keeps its kerning.
+    `punctuation`: Punctuation by convention is on. The harness is learned
+    on top of it, so with it off the harness leaves punctuation alone (its
+    sides and every pair with a punctuation mark), as the switch promises."""
 
-    def __init__(self, snap, looseness, strength, frozen=None, style="text", kept=None):
+    def __init__(self, snap, looseness, strength, frozen=None, style="text", kept=None, punctuation=True):
         t = table()
+        self.punctuation = bool(punctuation)
         extra = _style_table(style)
         self.style = style if extra is not None else "text"
         self.style_label = dict((k, label) for k, label, _c in STYLES)[self.style]
@@ -201,7 +216,7 @@ class Plan(object):
         x_left, x_right = (extra or {}).get("left", {}), (extra or {}).get("right", {})
         own = [[0.0, 0.0] for _ in range(n)]
         for i, k in enumerate(self.key):
-            if k is not None:
+            if k is not None and (self.punctuation or k not in PUNCTUATION):
                 own[i] = [(corr(left_c[k]) if k in left_c else 0.0) + (corr(x_left[k]) if k in x_left else 0.0),
                           (corr(right_c[k]) if k in right_c else 0.0) + (corr(x_right[k]) if k in x_right else 0.0)]
 
@@ -250,6 +265,8 @@ class Plan(object):
         for name, v in pairs_t.items():
             a, b = name.split(" ")
             if a not in by_key or b not in by_key:
+                continue
+            if not self.punctuation and (a in PUNCTUATION or b in PUNCTUATION):
                 continue
             value = unit * v
             for i in by_key[a]:
@@ -311,6 +328,7 @@ class Plan(object):
         if self.strength <= 0:
             return "off"
         stem = ("stem %.0f" % self.stem_measured) if self.stem_measured else "stem not measured (no I or l)"
-        style = "" if self.style == "text" else " · %s punctuation" % self.style_label
+        style = ("" if self.style == "text" else " · %s punctuation" % self.style_label) if self.punctuation else \
+            " · letters only (Punctuation off)"
         return "%d %%%s · %s · Looseness %+.2f · %d glyph sides, %d pairs corrected" % (
             round(100 * self.strength), style, stem, self.looseness, self.changed_sides, len(self.pairs))

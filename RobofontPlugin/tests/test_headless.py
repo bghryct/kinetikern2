@@ -130,6 +130,8 @@ def synthetic_font():
         return g
 
     glyph("space", 0x20, 250, None)
+    # the punctuation space as older TrueType fonts draw it (Arial's): one dummy point, the period's advance
+    glyph("punctuationspace", 0x2008, 260, lambda p: (p.moveTo((0, 0)), p.closePath()))
     glyph("H", ord("H"), 700, lambda p: (_box(p, 80, 0, 170, 700), _box(p, 530, 0, 620, 700), _box(p, 170, 320, 530, 400)))
     glyph("O", ord("O"), 760, lambda p: _bowl(p, 380, 350, 320, 360))
     glyph("A", ord("A"), 680, lambda p: (p.moveTo((20, 0)), p.lineTo((300, 700)), p.lineTo((380, 700)),
@@ -559,11 +561,20 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
     t = time.perf_counter()
     p = ka.plan(snap, result, True, frozen=frozen)
     plan_ms = (time.perf_counter() - t) * 1000.0
+    space, period = snap.char_map.get("\u2008"), snap.char_map.get(".")
+    space_was = (f[space].width, f[period].width) if space is not None and period is not None else None
     t = time.perf_counter()
     summary, point = ka.apply(f, snap, p)
     apply_ms = (time.perf_counter() - t) * 1000.0
     print("      %d glyphs read in %.0f ms, solved in %.0f ms (%d entries), planned in %.0f ms, applied in %.0f ms"
           % (len(snap.names), read_ms, solve_ms, result.entry_count, plan_ms, apply_ms))
+    # a blank punctuation space that had the period's advance keeps it
+    if space_was is not None and period in p.metrics and period not in p.keep_width:
+        matched = abs(space_was[0] - space_was[1]) < 0.5 and ka._blank(f.naked().layers.defaultLayer[space])
+        check(p.spaces == ({space: period} if matched else {}) and
+              (not matched or abs(f[space].width - f[period].width) < 1e-6),
+              "%s: the punctuation space keeps the period's advance (before %s and %s, after %s and %s)"
+              % (label, space_was[0], space_was[1], f[space].width, f[period].width))
     check(summary["ok"] and not summary.get("error"),
           "%s: Apply reads back as planned (%d kerning pairs, %d removed, %d group sides, %d glyphs re-spaced; "
           "examples %s)" % (label, summary["kerning_entries"], summary["entries_removed"], summary["group_sides_set"],

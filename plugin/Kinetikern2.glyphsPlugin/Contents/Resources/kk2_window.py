@@ -55,6 +55,7 @@ import kk2_args
 import kk2_bridge as kb
 import kk2_groups as kg
 import kk2_harness as kh
+import kk2_punctuation as kpu
 import kk2_proof as kp
 import kk2_snapshot as ks
 
@@ -285,10 +286,11 @@ class KK2Window(object):
         self.pairs_window = None
         # the designer harness: its window, the plan of the running job and of the result shown
         self.harness_window = None
-        # the conventions it follows: text faces, display or handwriting punctuation
-        self.harness_style = self._setting("harnessStyle", "text", str)
-        if self.harness_style not in [k for k, _label, _cat in kh.STYLES]:
-            self.harness_style = "text"
+        # the conventions it follows (the Conventions menu: punctuation, the
+        # harness, Pass 2): Automatic (_style), text faces, display or handwriting
+        self.harness_style = self._setting("harnessStyle", kh.AUTO, str)
+        if self.harness_style not in [k for k, _label in kh.style_choices()]:
+            self.harness_style = kh.AUTO
         self._harness_cache = None
         self._job_harness = None
         self._result_harness = None
@@ -378,8 +380,41 @@ class KK2Window(object):
             "matter.")
 
         x = 886
-        w.harness = vanilla.CheckBox((x, 9, 180, 18), "Designer harness", sizeStyle="small",
+        w.harness = vanilla.CheckBox((x, 9, 118, 18), "Designer harness", sizeStyle="small",
                                      value=self._setting("harness", False, bool), callback=self.harnessChanged)
+        w.punctuation = vanilla.CheckBox((x + 120, 9, 92, 18), "Punctuation", sizeStyle="small",
+                                         value=self._setting("punctuation", True, bool),
+                                         callback=self.punctuationChanged)
+        w.punctuation.getNSButton().setToolTip_(
+            "Punctuation by convention (on by default): spaces each punctuation mark the way the designers of "
+            "well-spaced fonts do — its sides from the model's own reading of the mark and the font's letter "
+            "rhythm — and kerns each mark as designers do: a period or comma tucked well under T, V or Y, "
+            "a hyphen, dash or quote hardly at all, two marks side by side hardly at all. Learned from 1,594 "
+            "Google Fonts families for text, display and handwriting faces (Conventions). Off: punctuation is "
+            "spaced and kerned like the letters, from its shape alone, and the designer harness (learned on top "
+            "of these conventions) leaves it alone too. It covers every mark Latin text uses — guillemets, low "
+            "quotes, ¡ ¿, § ¶ † ‡ … — and the symbols that sit with figures ($ € £ # ‰ + × ÷ < >), whose sides "
+            "are learned against the figures; a mark's case form takes its base mark's sides.")
+        w.figures = vanilla.CheckBox((x + 214, 9, 70, 18), "Figures", sizeStyle="small",
+                                     value=self._setting("figures", True, bool), callback=self.figuresChanged)
+        w.figures.getNSButton().setToolTip_(
+            "Figures by convention (on by default): proportional figures (the default ones, or .lf / .pnum "
+            "forms when the default figures are tabular) spaced the way the designers of well-spaced fonts "
+            "space them. From their shapes alone the model sets every figure 6–26 units per side tighter than "
+            "designers do (the 1 most, then 2, 3, 5 and 7). Learned from the Google Fonts families with "
+            "proportional figures. Tabular figures keep their widths either way; old-style forms (.osf) are "
+            "left as the model spaces them.")
+        self.styles = kh.style_choices()
+        w.conventions = vanilla.PopUpButton((x + 98, 28, 106, 20), [label for _k, label in self.styles],
+                                            callback=self.conventionsChanged, sizeStyle="mini")
+        keys = [k for k, _label in self.styles]
+        w.conventions.set(keys.index(self.harness_style) if self.harness_style in keys else 0)
+        w.conventions.getNSPopUpButton().setToolTip_(
+            "Whose conventions the spacing follows: text faces, display faces or handwriting. Display and "
+            "handwriting faces space their punctuation more openly, and kern a capital deeper over the next "
+            "letter (Ha, To, Wa): a display face's capitals reach further than a text face's, handwriting's "
+            "further still. Automatic: handwriting for a connected script or a hand whose stems lean without "
+            "an italic angle, else text faces. The punctuation switch and the harness follow it too.")
         w.harness.getNSButton().setToolTip_(
             "Nudges the result toward what the designers of well-spaced fonts do where Kinetikern2 consistently "
             "differs: more space in parentheses and around / ? ! &, less around quotes, period, comma and "
@@ -594,7 +629,7 @@ class KK2Window(object):
         fit = (bool(opts) and self.groups.match_frozen and any(o[0] for o in opts)) or self._keeps_joins()
         return kb.make_params(spring=spring, repulsion=repulsion, coupling=coupling, classes=True, window=True,
                               scope_scripts=True, threshold=self._threshold() * self._upm() / 1000.0,
-                              budget=budget, threads=self._threads(), fit_frozen=fit)
+                              budget=budget, threads=self._threads(), fit_frozen=fit, style=self._style())
 
     def _solve_key(self, whole):
         """What a result depends on, to tell whether it can be reused (the
@@ -602,7 +637,8 @@ class KK2Window(object):
         spring, repulsion, coupling = self._physics()
         return (self._generation, round(spring, 9), round(repulsion, 9), round(coupling, 9),
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
-                self.join_count, self._join_mode(), self.harness_style, round(self._harness_strength(), 4))
+                self.join_count, self._join_mode(), self._figures_on(), self._punctuation_on(), self._style(),
+                round(self._harness_strength(), 4))
 
     def _update_labels(self):
         if self.w is None:
@@ -642,14 +678,38 @@ class KK2Window(object):
         if self.w is None or getattr(self.w, "harness", None) is None:
             return
         if not self.harness_available():
-            text = ("unavailable: rebuild the plugin (build.sh)" if not self.engine.features & kb.FEATURE_HARNESS
-                    else "unavailable: kk2_harness.json is missing")
+            text = ("harness unavailable: rebuild the plugin (build.sh)" if not self.engine.features & kb.FEATURE_HARNESS
+                    else "harness unavailable: kk2_harness.json is missing")
         elif not self.w.harness.get():
-            text = "off · Harness… shows what it would change"
+            text = "harness off"
         else:
             plan = self._harness_plan()
-            text = plan.summary() if plan is not None else "on · waiting for the font to be read"
-        self.w.harnessValue.set(text)
+            text = plan.summary() if plan is not None else "harness on · waiting for the font to be read"
+        # one short line (the harness's summary first); the tooltip says it all
+        figures = self.punctuation_available() and kpu.has_figures()
+        p_on, f_on = bool(self.w.punctuation.get()), figures and bool(self.w.figures.get())
+        if not self.punctuation_available():
+            punct = "punctuation: rebuild the plugin (build.sh)"
+        elif p_on or f_on:
+            what = "punctuation and figures" if p_on and f_on else "punctuation" if p_on else "figures"
+            punct = "%s for %s" % (kpu.STYLE_PHRASES.get(kpu.style_of(self._style()), "text faces' conventions"), what)
+            if p_on and not f_on and figures:
+                punct += ", figures as the shapes say"
+            elif f_on and not p_on:
+                punct += ", punctuation as the shapes say"
+        else:
+            punct = "punctuation and figures as the shapes say" if figures else "punctuation as the shapes say"
+        self.w.harnessValue.set("%s · %s" % (text, punct))
+        tip = ["Designer harness: " + text]
+        if self.punctuation_available():
+            tip.append("Punctuation: " + (kpu.describe(self._style()) if p_on else "spaced and kerned from its shapes alone"))
+        if figures:
+            tip.append("Figures: " + ("proportional figures by %s; tabular figures keep their widths"
+                                      % kpu.STYLE_PHRASES.get(kpu.style_of(self._style()), "text faces' conventions")
+                                      if f_on else "spaced from their shapes alone"))
+        self.w.harnessValue.getNSTextField().setToolTip_("\n".join(tip))
+        self.w.punctuation.enable(self.punctuation_available())
+        self.w.figures.enable(self.punctuation_available() and kpu.has_figures())
         self.w.harnessStrength.enable(bool(self.w.harness.get()) and self.harness_available())
 
     def _update_max_pairs_note(self):
@@ -1122,8 +1182,9 @@ class KK2Window(object):
                    "p, as Spacing QA reads it). Measured along that slant, Kinetikern2 sees the outlines sheared "
                    "upright about half the x-height, as for an italic. Spacing QA's rule decides the default: along "
                    "the slant where that leaves at most 80 %% of the shape error upright, or where upright the model "
-                   "cannot follow the font (its fit stops at the limit of the Looseness range) and along the slant "
-                   "it can. %s" % ("%g" % round(abs(degrees), 1), self._verdict_text(snap)))
+                   "cannot follow the font (its fit stops at the limit of the Looseness range, or lies beyond ±2.5, "
+                   "outside what fonts use) and along the slant it can. %s"
+                   % ("%g" % round(abs(degrees), 1), self._verdict_text(snap)))
         box.getNSButton().setToolTip_(tip)
 
     def _verdict_text(self, snap=None):
@@ -1138,9 +1199,13 @@ class KK2Window(object):
             return "The check both ways could not be made: measured upright, as drawn."
         lean, ((se_up, fit_up), (se_lean, fit_lean)) = verdict
         limit = lambda f: abs(f) >= 6.0 - 1e-6
+        far = lambda f: abs(f) >= 2.5
         if lean and limit(fit_up) and not limit(fit_lean):
             why = ("upright, the model cannot follow this master: its fit stops at the limit (%+.2f); along the "
                    "slant it fits at %+.2f" % (fit_up, fit_lean))
+        elif lean and se_lean > 0.8 * se_up and far(fit_up) and not far(fit_lean):
+            why = ("upright, the model follows this master only far outside what fonts use (Looseness %+.2f); "
+                   "along the slant it fits at %+.2f" % (fit_up, fit_lean))
         elif lean:
             why = "it fits clearly better along the slant (shape error %.1f, against %.1f upright)" % (se_lean, se_up)
         else:
@@ -1167,11 +1232,21 @@ class KK2Window(object):
             if self._keeps_joins() and self.joins is not None:
                 joins = (dict((snap.names[i], b) for i, b in enumerate(self.joins) if i < len(snap.names)),
                          dict((snap.names[i], int(k)) for i, k in enumerate(self.join_kinds or ()) if i < len(snap.names)))
-            style = self.harness_style
+            # the conventions as they are now, for every solve of the probe
+            style = self._style()
+            punct = self._punctuation_on()
+            figs = self._figures_on()
 
             def harness(sub, looseness, kept):
                 try:
-                    return kh.Plan(sub, looseness, 1.0, style=style, kept=kept).engine_arg()
+                    return kh.Plan(sub, looseness, 1.0, style=style, kept=kept, punctuation=punct).engine_arg()
+                except Exception:
+                    print(traceback.format_exc())
+                    return None
+
+            def punctuation(sub):
+                try:
+                    return kpu.engine_arg(sub, style, punctuation=punct, figures=figs)
                 except Exception:
                     print(traceback.format_exc())
                     return None
@@ -1181,7 +1256,8 @@ class KK2Window(object):
                 physics=lambda looseness: physics_from_sliders(looseness, 100.0), joins=joins,
                 current_steps=lambda sub: current_kerning_steps(sub, table, READ_SLICE),
                 harness=harness if self.engine.features & kb.FEATURE_HARNESS else None,
-                threads=self._threads(), budget_s=READ_SLICE)
+                threads=self._threads(), budget_s=READ_SLICE,
+                punctuation=punctuation if punct or figs else None, style=style)
         except Exception:
             print(traceback.format_exc())
             self._slant_probe = None
@@ -1341,7 +1417,8 @@ class KK2Window(object):
             plan = self._harness_plan()
             self._job = self.engine.solve(self.context, self._params(budget=0), bytes(mask),
                                           glyph_opts=self._glyph_opts(),
-                                          harness=plan.engine_arg() if plan is not None else None)
+                                          harness=plan.engine_arg() if plan is not None else None,
+                                          punctuation=self._punctuation_arg())
             self._job_harness = plan
         except Exception as e:
             self._fail("The preview could not start: %s" % e, traceback.format_exc())
@@ -1461,6 +1538,21 @@ class KK2Window(object):
             print(traceback.format_exc())
             self.join_check = None
 
+    def _word_space_note(self):
+        """The master's word space against what designers of its kind set for
+        its n as the result spaces it (kk2_punctuation.word_space_note), or
+        None."""
+        try:
+            snap, res = self.snapshot, self.result
+            i = snap.index.get("n") if snap is not None else None
+            glyph = self.font.glyphs["space"] if self.font is not None else None
+            if i is None or res is None or glyph is None:
+                return None
+            layer = glyph.layers[snap.master_id]
+            return kpu.word_space_note(float(layer.width), float(res.metrics[i].advance), self._style())
+        except Exception:
+            return None
+
     def _result_status(self):
         res, snap = self.result, self.snapshot
         st = res.stats
@@ -1472,11 +1564,13 @@ class KK2Window(object):
         extra = res.entry_count - st["class_entries"] - st["exception_entries"]
         more = ", %s for kept joins and the harness" % _count(extra) if extra > 0 else ""
         if self._result_kind == "whole":
+            space = self._word_space_note()
             return ("Whole font (%s): %s glyphs kerned · %s pairs in scope · %s class pairs solved · %s entries "
-                    "(%s class pairs, %s exceptions%s)%s · %.1f s on %d threads"
+                    "(%s class pairs, %s exceptions%s)%s · %.1f s on %d threads%s"
                     % (snap.master_name, _count(st["kern_glyphs"]), _count(st["pairs_in_scope"]),
                        _count(st["class_pairs"]), _count(res.entry_count), _count(st["class_entries"]),
-                       _count(st["exception_entries"]), more, dropped, self._job_elapsed, st["threads"]))
+                       _count(st["exception_entries"]), more, dropped, self._job_elapsed, st["threads"],
+                       " · " + space if space else ""))
         prep = self.context.prep_ms if self.context is not None else 0.0
         joined = ""
         if self.joins is not None:
@@ -1508,7 +1602,8 @@ class KK2Window(object):
             plan = self._harness_plan()
             self._job = self.engine.solve(self.context, self._params(budget=budget), None,
                                           glyph_opts=self._glyph_opts(),
-                                          harness=plan.engine_arg() if plan is not None else None)
+                                          harness=plan.engine_arg() if plan is not None else None,
+                                          punctuation=self._punctuation_arg())
             self._job_harness = plan
         except Exception as e:
             self._fail("The whole-font run could not start: %s" % e, traceback.format_exc())
@@ -1910,12 +2005,14 @@ class KK2Window(object):
         opts = self._glyph_opts()
         frozen = frozenset(i for i, o in enumerate(opts or ()) if o[0])
         kept = self._kept_sides()
-        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key(), self.harness_style,
+        style = self._style()
+        punct = self._punctuation_on()
+        key = (id(snap), self._generation, round(looseness, 4), round(s, 4), self.groups.key(), style, punct,
                id(self.context) if kept else None)
         if self._harness_cache is not None and self._harness_cache[0] == key:
             return self._harness_cache[1]
         try:
-            plan = kh.Plan(snap, looseness, s, frozen=frozen, style=self.harness_style, kept=kept)
+            plan = kh.Plan(snap, looseness, s, frozen=frozen, style=style, kept=kept, punctuation=punct)
         except Exception:
             print(traceback.format_exc())
             plan = None
@@ -1940,6 +2037,59 @@ class KK2Window(object):
         return ((ma.lsb - sa[0], ma.rsb - sa[1], ma.advance - sa[0] - sa[1]),
                 (mb.lsb - sb[0], mb.rsb - sb[1], mb.advance - sb[0] - sb[1]), k)
 
+    def punctuation_available(self):
+        return bool(self.engine.features & kb.FEATURE_PUNCTUATION) and kpu.available()
+
+    def _punctuation_on(self):
+        return bool(self.w is not None and self.w.punctuation.get() and self.punctuation_available())
+
+    def _style(self):
+        """The conventions the solves follow — the punctuation's, the
+        harness's and Pass 2's (how far a capital reaches over its neighbour):
+        the Conventions menu's, or for Automatic handwriting's when the master
+        is a connected script (its letters join; a line drawn through every
+        glyph does not count) or its stems lean without an italic angle, else
+        text faces'."""
+        if self.harness_style != kh.AUTO:
+            return self.harness_style
+        script = self.joins is not None and not self.join_decorated
+        try:
+            leans = self.font is not None and self._leans_undeclared()
+        except Exception:
+            leans = False
+        return "handwriting" if script or leans else "text"
+
+    def _figures_on(self):
+        return bool(self.w is not None and getattr(self.w, "figures", None) is not None and self.w.figures.get()
+                    and self.punctuation_available() and kpu.has_figures())
+
+    def _punctuation_arg(self, snap=None):
+        """Punctuation and figures by convention for the solves (kk2_punctuation.engine_arg), or None when both
+        are off."""
+        snap = self.snapshot if snap is None else snap
+        if not (self._punctuation_on() or self._figures_on()) or snap is None:
+            return None
+        try:
+            return kpu.engine_arg(snap, self._style(), punctuation=self._punctuation_on(), figures=self._figures_on())
+        except Exception:
+            print(traceback.format_exc())
+            return None
+
+    def punctuationChanged(self, sender):
+        self._save("punctuation", bool(self.w.punctuation.get()))
+        self._update_labels()
+        self._request_preview()
+        if self.harness_window is not None:
+            self.harness_window.settings_changed()
+
+    def figuresChanged(self, sender):
+        self._save("figures", bool(self.w.figures.get()))
+        self._update_labels()
+        self._request_preview()
+
+    def conventionsChanged(self, sender):
+        self.set_harness_style(self.styles[max(0, self.w.conventions.get())][0])
+
     def harnessChanged(self, sender):
         self._save("harness", bool(self.w.harness.get()))
         self._save("harnessStrength", float(self.w.harnessStrength.get()))
@@ -1949,12 +2099,15 @@ class KK2Window(object):
             self.harness_window.settings_changed()
 
     def set_harness_style(self, style):
-        """Follow the conventions of `style` ("text", "display",
-        "handwriting"): the punctuation of that category."""
-        if style == self.harness_style or style not in [k for k, _label in kh.available_styles()]:
+        """Follow the conventions of `style` ("auto", "text", "display",
+        "handwriting"): the spacing of that category (_style)."""
+        if style == self.harness_style or style not in [k for k, _label in kh.style_choices()]:
             return
         self.harness_style = style
         self._save("harnessStyle", style)
+        keys = [k for k, _label in self.styles]
+        if self.w is not None and style in keys:
+            self.w.conventions.set(keys.index(style))
         self._update_labels()
         self._request_preview()
         if self.harness_window is not None:

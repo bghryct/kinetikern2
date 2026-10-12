@@ -142,9 +142,10 @@ else
 fi
 
 # --------------------------------------------------------------- the extension
-# lib: the extension's modules and the harness table (the library stays)
+# lib: the extension's modules and their tables, the harness's and the
+# punctuation conventions' (the library stays)
 find "$LIB" -maxdepth 1 \( -name '*.py' -o -name '*.json' \) -delete
-cp "$SOURCE"/*.py "$SOURCE"/kk2_harness.json "$LIB/"
+cp "$SOURCE"/*.py "$SOURCE"/kk2_harness.json "$SOURCE"/kk2_punctuation.json "$LIB/"
 rm -rf "$LIB/__pycache__"
 [ -f "$ROOT/../LICENSE" ] && cp "$ROOT/../LICENSE" "$BUNDLE/license"
 "$PY" - "$BUNDLE/info.plist" "$VERSION" <<'EOF'

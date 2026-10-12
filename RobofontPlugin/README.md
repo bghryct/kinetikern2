@@ -10,8 +10,29 @@ window, the same controls and the same tools:
   ignore-threshold sliders, Threads, Max pairs, Replace existing kerning;
 - Apply to the glyphs of the sample text or to the whole font, with
   progress and Cancel, never stalling RoboFont, and Revert Last Apply;
-- the designer harness and its window, with its Conventions (text faces,
-  display, handwriting);
+- **Punctuation** by convention (on by default): each punctuation mark's
+  sides set the way designers of well-spaced fonts set them, and each mark
+  kerned with its own share of what its shape suggests (a period tucked
+  well under T, V or Y, a hyphen or a quote hardly kerned): every mark Latin
+  text uses (guillemets, low quotes, ¡ ¿, § ¶ † ‡…) and the symbols that sit
+  with figures ($ € £ # + × …); a mark's case form takes its base mark's
+  sides, the Greek question mark and ano teleia the semicolon's and the
+  middle dot's;
+- **Figures** by convention (on by default): proportional figures (the
+  default ones, or `.lf` / `.pnum` forms) spaced as designers space them
+  (the model alone sets them 6–26 units per side too tight); tabular
+  figures keep their widths;
+- after a whole-font run, where the word space sits against what designers
+  of the font's kind set for its n (Kinetikern2 does not set it);
+- the punctuation space kept in step with the period: Apply gives a blank
+  punctuation space exactly as wide as the period the period's new advance,
+  and Revert puts it back;
+- the **Conventions** menu (Automatic, text faces, display, handwriting):
+  the punctuation's conventions, the harness's punctuation and how far a
+  capital reaches over its neighbour; Automatic follows handwriting for a
+  connected script or a hand that leans without an italic angle;
+- the designer harness and its window (learned on top of the punctuation
+  conventions; with Punctuation off it leaves punctuation alone);
 - Connected script (joins learned from the font's own spacing: letters
   that overlap, or that touch without overlapping), on by default, with
   **Keep joins** (every joining side keeps its sidebearing, a glyph with a
@@ -146,7 +167,8 @@ button, and the checkbox is disabled; spacing groups are not applied.
 
 The modules that know nothing of the app are the Glyphs plugin's, nearly
 unchanged: `kk2_bridge` (the engine), `kk2_harness` (and its table,
-`kk2_harness.json`), `kk2_groups`, `kk2_proof` (the proof panes) and the
+`kk2_harness.json`), `kk2_punctuation` (and its table,
+`kk2_punctuation.json`), `kk2_groups`, `kk2_proof` (the proof panes) and the
 Pairs, Harness and Spacing Groups windows. `kk2_joins_window` (the Joins
 window) is the same file in both: a host object opens its proofs, the Space
 Center here and an Edit tab in Glyphs. What is RoboFont's:
@@ -181,8 +203,9 @@ points) and on every glyph of the fonts given; an italic measured along its
 angle (the frame, Apply on the slanted ink, an exact Revert: `test_slant`).
 On each font it solves the whole font with and without the designer
 harness, applies, reads back (every glyph where the result puts it, every
-composite only moved as a whole, accents moving with their base) and
-reverts (every outline, component, anchor, advance, kerning pair and group
+composite only moved as a whole, accents moving with their base, a blank
+punctuation space as wide as the period keeping the period's new advance)
+and reverts (every outline, component, anchor, advance, kerning pair and group
 exactly as before, to the last bit and the number type: a .glif writes 600
 and 600.0 differently: `apply_and_revert`). Then spacing groups (frozen
 glyphs keep everything: `test_groups`), groups by category (each script but
@@ -202,6 +225,52 @@ meet exactly flush, which the touching rule finds connected
 (`test_flush_joins`); and a hand that joins only in part, whose stem letters
 carry exit strokes, which the test for hands that join in part finds
 connected while letters that touch at the top do not (`test_partly_joins`).
+
+## Verified again (11 October 2026, later)
+
+Every punctuation mark and the symbols that sit with figures (97 marks
+known by their characters, from the table), figures by convention with
+their own switch, and case forms that take their base mark's sides. Inside
+RoboFont, on Arial: **PASSED**, with the same numbers as in Glyphs:
+137 punctuation and symbol sides moved exactly as their conventions say
+(+ by +34 and +36, ¿ by +7 and +47, « by +9 and +11); Arial's default
+figures are tabular and kept their widths with Figures on and off; the
+Punctuation, Figures and Conventions controls get a click; longest
+main-thread stall 313 ms (limit 500 ms). The headless suite PASSED.
+
+## Verified again (11 October 2026)
+
+Punctuation by convention, the Conventions menu and Pass 2's pair classes,
+with the self-test's new punctuation stage. Inside RoboFont, on Arial:
+**PASSED**.
+
+- Punctuation off and on again: every letter and every letter pair stays
+  as it was, and each mark's sides move exactly as their convention says.
+  Each mark is kerned with its own share: T. −72 → −58, V. −77 → −63, while
+  n. and o, stay unkerned.
+- Handwriting picked in the main window: 97 pairs with a capital first
+  kerned deeper (L Y −76 → −142, T d −75 → −135), every lowercase pair and
+  every letter's sidebearings exactly as they were. Automatic follows text
+  faces on Arial.
+- The designer harness tested with Punctuation on: every side and pair
+  exactly as planned, the Display conventions against the preview at
+  Display without the harness. Then the whole font in 28.4 s, Apply
+  5.41 s, Revert 7.71 s exact. The longest main-thread stall was 346 ms
+  (limit 500 ms).
+
+The test found two faults in the extension, both fixed:
+
+- `build.sh` did not copy `kk2_punctuation.json` into the extension, so the
+  switch would have said *rebuild the extension*.
+- The extension's `kk2_bridge` lacked the conventions' engine flags, so
+  Handwriting changed nothing. The two plugins' bridges are the same file
+  again.
+
+The startup now begins dismissing alerts before the test opens its font.
+RoboFont's own *Opening Large Fonts* alert (more than 2,000 glyphs) had
+held an earlier run for its ten minutes. The test reports each dismissed
+alert: Mechanic's update check, that one, and RoboFont's note that followed
+it.
 
 ## Verified again (10 October 2026)
 

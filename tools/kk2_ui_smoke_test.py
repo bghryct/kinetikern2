@@ -729,8 +729,9 @@ def glyph_properties(codepoint):
 
 def build_mock_font(path, count):
     """(MockFont, LoadedFont): the first `count` spacing glyphs of the font as
-    tools/kk2_fonts.py selects them, in that order, then a space, a few marks
-    and a non-exporting alternate; two masters with the same outlines."""
+    tools/kk2_fonts.py selects them, in that order, then a space, the
+    punctuation space, a few marks and a non-exporting alternate; two masters
+    with the same outlines."""
     lf = kf.LoadedFont(path, limit=count)
     tt = lf.font
     glyph_set = tt.getGlyphSet()
@@ -758,6 +759,8 @@ def build_mock_font(path, count):
     rows = [(name, cp, True) for name, cp in zip(names, lf.cps)]
     if cmap.get(0x20):
         rows.append((cmap[0x20], 0x20, True))
+    if cmap.get(0x2008) and cmap[0x2008] not in in_set:
+        rows.append((cmap[0x2008], 0x2008, True))  # the punctuation space (Arial's has the period's advance)
     marks = [cp for cp in range(0x0300, 0x0370) if cp in cmap and cmap[cp] not in in_set][:6]
     rows.extend((cmap[cp], cp, True) for cp in marks)
     for name, cp, export in rows:
@@ -1523,6 +1526,7 @@ class SmokeTest(object):
         try:
             self.open_window()
             self.check_snapshot()
+            self.check_punctuation_lookups()
             self.change_settings()
             self.apply_sample()
             self.whole_font()
@@ -1712,6 +1716,64 @@ class SmokeTest(object):
                   "%d fixed: %s" % (len(snap.fixed), " ".join(sorted(snap.fixed)[:10])))
 
     # 3. settings while a slow preview runs
+    def check_punctuation_lookups(self):
+        """Which glyphs punctuation and figures by convention reach
+        (kk2_punctuation.engine_arg), on small made-up masters: marks by their
+        characters (canonical twins too), case forms following their base mark,
+        proportional lining figures under a suffix by their figure, old-style and
+        tabular forms left alone, and a suffix set whose figures share one width
+        kept whatever its name."""
+        import kk2_punctuation as kpu
+        rep = self.report
+        if not kpu.available():
+            rep.check(False, "punctuation lookups: kk2_punctuation.json is in the plugin")
+            return
+
+        class Info(object):
+            def __init__(self, cp, width):
+                self.unicode, self.width, self.empty = cp, float(width), False
+
+        class Snap(object):
+            def __init__(self, glyphs, generation):
+                self.names = [g[0] for g in glyphs]
+                self.infos = dict((n, Info(cp, w)) for n, cp, w in glyphs)
+                self.index = dict((n, i) for i, n in enumerate(self.names))
+                self.generation = generation
+
+        figs = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+        def master(lf_widths, generation):
+            glyphs = [(n, 0x30 + k, 556) for k, n in enumerate(figs)]  # tabular default figures
+            glyphs += [(n + ".lf", None, w) for n, w in zip(figs, lf_widths)]
+            glyphs += [("one.pnum", None, 400), ("one.osf", None, 420), ("one.tf", None, 556),
+                       ("semicolon", 0x3B, 278), ("questiongreek", 0x37E, 278), ("periodcentered", 0xB7, 278),
+                       ("anoteleia", 0x387, 278), ("parenleft", 0x28, 333), ("parenleft.case", None, 333),
+                       ("a", 0x61, 556), ("a.lf", None, 556)]
+            return Snap(glyphs, generation)
+
+        def on(row):
+            return any(v == v and v != 0 for v in row)
+
+        snap = master((560, 400, 540, 545, 550, 540, 548, 500, 552, 548), 1)
+        coefs, _shares, _scale, follow = kpu.engine_arg(snap, "text")
+        row = lambda n: tuple(coefs[snap.index[n]])
+        rep.check(row("questiongreek") == row("semicolon") and row("anoteleia") == row("periodcentered")
+                  and on(row("semicolon")), "punctuation lookups: the Greek question mark and ano teleia take the "
+                  "semicolon's and the middle dot's conventions")
+        rep.check(follow[snap.index["parenleft.case"]] == snap.index["parenleft"],
+                  "punctuation lookups: a case form follows its base mark")
+        rep.check(all(row(n + ".lf") == row(n) and on(row(n)) for n in figs) and row("one.pnum") == row("one"),
+                  "punctuation lookups: proportional lining forms (.lf, .pnum) take their figure's conventions")
+        rep.check(not on(row("one.osf")) and not on(row("one.tf")) and not on(row("a.lf")),
+                  "punctuation lookups: old-style, tabular and non-figure forms are left alone")
+        off = kpu.engine_arg(snap, "text", punctuation=True, figures=False)[0]
+        rep.check(not any(on(off[snap.index[n + ".lf"]]) for n in figs) and on(off[snap.index["semicolon"]]),
+                  "punctuation lookups: Figures off leaves the lining forms alone, punctuation on")
+        snap2 = master((556,) * 10, 2)
+        coefs2 = kpu.engine_arg(snap2, "text")[0]
+        rep.check(not any(on(coefs2[snap2.index[n + ".lf"]]) for n in figs) and on(coefs2[snap2.index["one.pnum"]]),
+                  "punctuation lookups: a .lf set whose figures share one width is tabular, kept")
+
     def change_settings(self):
         rep, ui, win = self.report, self.ui, self.win
         snap = win.snapshot
@@ -1782,11 +1844,12 @@ class SmokeTest(object):
         t = float(ui.tightness().doubleValue())
         coupling = float(ui.intensity().doubleValue()) / 100.0
         threshold = float(ui.threshold().doubleValue()) * snap.upm / 1000.0
+        # the conventions the Conventions menu, Punctuation and Figures show (the window's own reading of them)
         params = kb.make_params(spring=math.exp(-0.55 * t), repulsion=3.86 * math.exp(0.55 * t), coupling=coupling,
                                 classes=True, window=True, scope_scripts=True, threshold=threshold, budget=budget,
-                                threads=0)
+                                threads=0, style=self.win._style())
         self.heartbeat.stage("test")
-        job = self.engines.raw_solve(ctx.engine, ctx, params, mask)
+        job = self.engines.raw_solve(ctx.engine, ctx, params, mask, punctuation=self.win._punctuation_arg(snap))
         job.kk2_test = True
         state = job.wait(600.0)
         if state != kb.STATE_DONE:
@@ -1810,10 +1873,12 @@ class SmokeTest(object):
             self.report.check(same_mask and res.entry_count == ref.entry_count and worst < 1e-3 and not nan
                               and metrics < 1e-3,
                               "%s equals a direct engine solve with the settings the controls show" % what,
-                              "tightness %.2f, intensity %.0f %%, threshold %.2f units, budget %d: %d vs %d entries, "
-                              "%d pairs, largest difference %.4f, sidebearings %.4f"
-                              % (t, 100 * coupling, threshold, budget, res.entry_count, ref.entry_count, len(va),
-                                 worst, metrics))
+                              "tightness %.2f, intensity %.0f %%, threshold %.2f units, budget %d, %s conventions, "
+                              "punctuation %s, figures %s: %d vs %d entries, %d pairs, largest difference %.4f, "
+                              "sidebearings %.4f"
+                              % (t, 100 * coupling, threshold, budget, self.win._style(),
+                                 "on" if self.win._punctuation_on() else "off", "on" if self.win._figures_on() else "off",
+                                 res.entry_count, ref.entry_count, len(va), worst, metrics))
         finally:
             ref.close()
 
@@ -2052,6 +2117,18 @@ class SmokeTest(object):
         others = set(m.id for m in font.masters if m.id != mid)
         changed = diff_state(before, after, masters=others)
         rep.check(not changed, "the other master is untouched", "%d differences %s" % (len(changed), changed[:3]))
+
+        # a blank punctuation space that had the period's advance keeps it
+        space, period = snap.char_map.get("\u2008"), snap.char_map.get(".")
+        if space is not None and period in plan.metrics:
+            was = before["metrics"].get((space, mid)), before["metrics"].get((period, mid))
+            now = font.glyphs[space].layers[mid].width, font.glyphs[period].layers[mid].width
+            matched = was[0] is not None and was[1] is not None and abs(was[0][2] - was[1][2]) < 0.5
+            rep.check(getattr(plan, "spaces", {}) == ({space: period} if matched else {}) and
+                      (not matched or abs(now[0] - now[1]) < 1e-6),
+                      "the punctuation space keeps the period's advance (%s)" % what,
+                      "before %s and %s, after %s and %s; planned %s" % (was[0] and was[0][2], was[1] and was[1][2],
+                                                                      now[0], now[1], getattr(plan, "spaces", None)))
 
         # sidebearings: as planned, and never on a side Glyphs drives
         mbad = []

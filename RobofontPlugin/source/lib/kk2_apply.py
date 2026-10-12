@@ -70,6 +70,12 @@ SAME = 1e-6  # a kerning value read back equals the one written
 SAME_METRIC = 1e-3  # a sidebearing or width is still the one Apply left
 
 _FOLLOW = (kb.RULE_FOLLOW_SAME, kb.RULE_FOLLOW_OPPOSITE)
+# Blank spaces that stand for a glyph's advance: Unicode's punctuation space is
+# "the width of a period". Kinetikern2 re-spaces the period, but a space has no
+# outline for it to read, so Apply keeps one in step with its glyph when it had
+# that glyph's advance, as designers keep them (the punctuation space equals the
+# period in 70 % of the Google Fonts that have one).
+SPACES_IN_STEP = (("\u2008", "."),)
 _DECIDE = object()  # a Restorer's work yields this when it needs the caller's decision
 _PAUSE = object()  # the work yields this to end the slice early (a batch of notifications is due)
 
@@ -130,6 +136,31 @@ def _layer(dfont, layer_name=None):
 
 def _glyph(layer, name):
     return layer[name] if name in layer else None
+
+
+def _blank(glyph):
+    """Nothing drawn: no outline, or only a dummy contour of one point (as
+    older TrueType fonts give their spaces; Arial's punctuation space has
+    one)."""
+    b = glyph.bounds
+    return b is None or (b[2] - b[0] == 0 and b[3] - b[1] == 0)
+
+
+def _spaces_in_step(layer, char_map, metrics, keep_width):
+    """{space glyph: glyph} of SPACES_IN_STEP: a blank space with exactly the
+    advance of a glyph this Apply re-spaces (and whose advance it does not
+    keep)."""
+    out = {}
+    for space_ch, glyph_ch in SPACES_IN_STEP:
+        space, target = char_map.get(space_ch), char_map.get(glyph_ch)
+        if space is None or target is None or space == target or target not in metrics or target in keep_width:
+            continue
+        s_glyph, t_glyph = _glyph(layer, space), _glyph(layer, target)
+        if s_glyph is None or t_glyph is None or not _blank(s_glyph):
+            continue
+        if abs(float(s_glyph.width) - float(t_glyph.width)) < 0.5:
+            out[space] = target
+    return out
 
 
 def _move_glyph(glyph, dx):
@@ -537,6 +568,8 @@ class ApplyPlan(object):
                    moves, the width is put back
     followers      glyphs re-spaced because a side follows a re-spaced glyph
     removals       [(left key, right key)] existing pairs Replace removes
+    spaces         {blank space: glyph}: spaces that keep their glyph's
+                   advance (SPACES_IN_STEP), written after the sidebearings
     groups_to_move {glyph: (left group or None, right group or None)}: sides
                    that leave a group they shared with frozen glyphs for a
                    class of their own (spacing groups)
@@ -558,6 +591,7 @@ class ApplyPlan(object):
         self.sync = []  # the Glyphs plugin's name for what follows; RoboFont writes followers directly
         self.follow = {}
         self.removals = []
+        self.spaces = {}
         self.groups_to_move = {}
         self.frozen = set()
         self.right_class_names = []
@@ -956,6 +990,10 @@ class Planner(_Stepper):
             if _moved(lsb, cur_l) is not None or _moved(rsb, cur_r) is not None:
                 changing += 1
 
+        # blank spaces that keep their glyph's advance
+        spaces = _spaces_in_step(_layer(dfont, snapshot.master_id), getattr(snapshot, "char_map", {}), metrics,
+                                 keep_width)
+
         # big temporaries go a slice at a time (freeing them at once would
         # take as long as building them)
         for _ in _release(existing, existing_set, written):
@@ -967,6 +1005,7 @@ class Planner(_Stepper):
         p.keep_width = keep_width
         p.followers = followers
         p.removals = removals
+        p.spaces = spaces
         p.groups_to_move = moves
         p.right_class_names = right_names
         p.left_class_names = left_names
@@ -983,6 +1022,7 @@ class Planner(_Stepper):
             "frozen": len(p.frozen),
             "group_moves": len(moves),
             "followers": len(followers),
+            "spaces": len(spaces),
         }
         p.details = {
             "kerning": len(kerning), "class_pairs": cc, "glyph_class": gc, "class_glyph": cg, "glyph_glyph": gg,
@@ -1039,11 +1079,13 @@ class RevertPoint(object):
         self.composed = {}  # composite name → its component glyph names
         self.components = []  # (composite, index, x, y)
         self.created_groups = set()  # full names of groups the Apply created
+        self.spaces = {}  # blank space → its advance before Apply, as the font had it (plan.spaces)
         # as the Apply left them; None until it finished (then a revert
         # restores everything captured, unconditionally)
         self.applied_kerning = None  # (left, right) → value, None: removed
         self.applied_glyphs = None  # name → (left group, right group, LSB, width)
         self.applied_components = None  # (composite, index) → (x, y)
+        self.applied_spaces = None  # blank space → its advance
         self.capture_ms = 0.0
         self._index = None
 
@@ -1071,6 +1113,17 @@ class RevertPoint(object):
         self.metrics[name] = ink_metrics(glyph, self._layer())
         self.outlines[name] = _xs_of(glyph)
         self.widths[name] = glyph.width
+
+    def space_width(self, name):
+        """A blank space's advance now (as the font has it), or None."""
+        glyph = _glyph(self._layer(), name)
+        return glyph.width if glyph is not None else None
+
+    def capture_space(self, name):
+        if name not in self.spaces:
+            width = self.space_width(name)
+            if width is not None:
+                self.spaces[name] = width
 
     def capture_component(self, name, k):
         comp = self._component(name, k)
@@ -1164,6 +1217,12 @@ class RevertPoint(object):
                 count += 1
                 if len(found) < limit:
                     found.append(("created group", full))
+        for name, width in self.spaces.items():
+            now = self.space_width(name)
+            if now is None or not _same_metric(float(now), float(width)):
+                count += 1
+                if len(found) < limit:
+                    found.append(("space", name, now, width))
         return count, found
 
 
@@ -1232,7 +1291,7 @@ class Restorer(_Stepper):
         kerning = dfont.kerning
         layer = point._layer()
         counts = {"kerning_set": 0, "kerning_removed": 0, "groups": 0, "metrics": 0, "components": 0,
-                  "groups_deleted": 0, "kept_kerning": 0, "kept_glyphs": 0, "kept_components": 0}
+                  "groups_deleted": 0, "spaces": 0, "kept_kerning": 0, "kept_glyphs": 0, "kept_components": 0}
         keys = list(point.kerning)
         names = list(point.metrics) + [n for n in point.groups if n not in point.metrics]
         total = max(1, len(keys) + 2 * len(names) + len(point.components))
@@ -1241,7 +1300,7 @@ class Restorer(_Stepper):
         # 1. what is still as the Apply left it (all of it without a record)
         self.phase = "check"
         now_kerning = {}
-        changed_keys, changed_glyphs, changed_comps = set(), set(), set()
+        changed_keys, changed_glyphs, changed_comps, changed_spaces = set(), set(), set(), set()
         checked = point.applied_kerning is not None
         for k, key in enumerate(keys):
             now = pair_value(kerning, key)
@@ -1270,13 +1329,19 @@ class Restorer(_Stepper):
                     if name not in changed_glyphs:
                         self._conflict("components", name, k)
                 yield
+        if checked and point.applied_spaces is not None:
+            for name in point.spaces:
+                now, applied = point.space_width(name), point.applied_spaces.get(name)
+                if now is None or applied is None or not _same_metric(float(now), float(applied)):
+                    changed_spaces.add(name)
+                    self._conflict("glyphs", name)
         if self.conflict_count and not self.overwrite:
             self.text = "Changed since Apply: %d" % self.conflict_count
             yield _DECIDE
         if self.overwrite:
-            changed_keys, changed_glyphs, changed_comps = set(), set(), set()
+            changed_keys, changed_glyphs, changed_comps, changed_spaces = set(), set(), set(), set()
         counts["kept_kerning"] = len(changed_keys)
-        counts["kept_glyphs"] = len(changed_glyphs)
+        counts["kept_glyphs"] = len(changed_glyphs) + len(changed_spaces)
         counts["kept_components"] = len(changed_comps)
         self.text = "Reverting"
         done = len(keys)
@@ -1304,6 +1369,15 @@ class Restorer(_Stepper):
                 yield self._edited()
             else:
                 yield
+        # blank spaces kept in step with their glyph: their advance goes back, as the font had it
+        for name, width in point.spaces.items():
+            glyph = _glyph(layer, name)
+            if name in changed_spaces or glyph is None:
+                continue
+            if glyph.width != width or type(glyph.width) is not type(width):
+                self._held.hold(glyph)
+                glyph.width = width
+                counts["spaces"] += 1
         self._held.release()
 
         # 3. groups (one update), and the groups the Apply created, if empty now
@@ -1426,7 +1500,7 @@ class Applier(_Stepper):
         self.error = None
         self.text = "Applying"
         self._held = _Held(self.dfont)
-        self._counts = {"kerning": 0, "removed": 0, "groups": 0, "respaced": 0, "followers": 0}
+        self._counts = {"kerning": 0, "removed": 0, "groups": 0, "respaced": 0, "followers": 0, "spaces": 0}
         self._detail = {"group_conflicts": 0, "missing_glyphs": 0, "metric_sides": 0, "composites": 0,
                         "components_held": 0, "readback_metrics": 0, "readback_kerning": 0,
                         "readback_removals": 0}
@@ -1516,6 +1590,8 @@ class Applier(_Stepper):
             revert.capture_kerning(kerning, lk, rk)
             if not k & 255:
                 yield
+        for name in getattr(p, "spaces", {}):
+            revert.capture_space(name)
         revert.capture_ms = self.ms.get("revert_point", 0.0)
         self.revert = revert  # from here on the font changes
 
@@ -1531,6 +1607,9 @@ class Applier(_Stepper):
             self.fraction = done / total
             yield self._edited() if moved else None
         counts["followers"] = sum(1 for name in getattr(p, "followers", ()) if name in p.metrics)
+        # blank spaces that keep their glyph's advance (the glyph's is final now)
+        for name, target in getattr(p, "spaces", {}).items():
+            self._space_in_step(layer, name, target, revert)
         self._held.release()
 
         # 4. groups: sides without a group join theirs, frozen-group leavers
@@ -1599,6 +1678,7 @@ class Applier(_Stepper):
             if not n & 15:
                 yield
         revert.applied_kerning, revert.applied_glyphs, revert.applied_components = applied, glyphs, comps
+        revert.applied_spaces = dict((name, revert.space_width(name)) for name in revert.spaces)
 
         # 7. read-back
         self.phase = "read_back"
@@ -1630,6 +1710,28 @@ class Applier(_Stepper):
                 self._bad[1] += 1
                 if len(self._examples) < EXAMPLES:
                     self._examples.append(("removal", lk, rk, None, have))
+        for name, target in getattr(p, "spaces", {}).items():
+            have, t_glyph = revert.space_width(name), _glyph(layer, target)
+            want = t_glyph.width if t_glyph is not None else None
+            detail["readback_metrics"] += 1
+            if have is None or want is None or abs(float(have) - float(want)) > 1e-6:
+                self._bad[0] += 1
+                if len(self._examples) < EXAMPLES:
+                    self._examples.append(("space", name, "width", want, have))
+
+    def _space_in_step(self, layer, name, target, revert):
+        """Gives a blank space its glyph's advance, as the font has it (an
+        int stays an int; plan.spaces). True if it changed."""
+        glyph, t_glyph = _glyph(layer, name), _glyph(layer, target)
+        if glyph is None or t_glyph is None or name not in revert.spaces:
+            return False
+        width = t_glyph.width
+        if glyph.width == width and type(glyph.width) is type(width):
+            return False
+        self._held.hold(glyph)
+        glyph.width = width
+        self._counts["spaces"] += 1
+        return True
 
     def _write_metrics(self, layer, name, lsb, rsb, users, written):
         """Moves the free sides to the plan's targets in whole units, worked
@@ -1708,6 +1810,7 @@ class Applier(_Stepper):
             "group_sides_set": counts["groups"],
             "glyphs_respaced": counts["respaced"],
             "followers_respaced": counts["followers"],
+            "spaces_in_step": counts["spaces"],
             "metric_mismatches": metric_bad,
             "kerning_mismatches": kerning_bad,
             "apply_ms": self.busy_ms,
@@ -1765,6 +1868,8 @@ def describe_plan(plan):
         line += ", %s of them because a side follows a glyph that moves (metrics keys, aligned composites)" % _n(
             c["followers"])
     lines.append(line + ".")
+    if c.get("spaces"):
+        lines.append("The punctuation space keeps the period's advance, as it has it now.")
     lines.append("Only this font is changed: the other masters of a family are separate fonts, with their own "
                  "groups.")
     lines.append("Undo does not cover Apply. Revert Last Apply puts back what Apply changed.")
@@ -1800,4 +1905,6 @@ def describe_summary(summary):
         text += "; %s values read back differently" % _n(bad)
     if summary.get("group_conflicts"):
         text += "; %s glyphs kept a group they got after the preview" % _n(summary["group_conflicts"])
+    if summary.get("spaces_in_step"):
+        text += "; the punctuation space follows the period"
     return text + "."

@@ -57,8 +57,10 @@ def reference(args):
             ctx1 = e1.context(geo, lf.upm)
             r1 = ctx1.solve(1.0, 3.86, 1.0)
             t1 = time.time() - t
+            # v1's Pass 2 (every pair class alike, the crevice floor everywhere): bit for bit
             ctx2, r2, prep2, solve2 = v2_solve(e2, lf, kb.make_params(classes=False, window=False,
-                                                                       scope_scripts=False, threshold=0.5))
+                                                                       scope_scripts=False, threshold=0.5,
+                                                                       v1_pass2=True))
             # sidebearings
             mism_m = 0
             for i, name in enumerate(lf.names):

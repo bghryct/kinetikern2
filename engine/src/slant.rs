@@ -28,6 +28,12 @@ pub const LEAN_GAIN: f64 = 0.8;
 /// (looser) than anything the model makes, measured that way.
 pub const FIT_LIMIT: f64 = 6.0;
 
+/// A best-fit Looseness this far from 0 lies outside what the fonts of the
+/// Google Fonts library use (their 1st to 99th percentiles fall within about
+/// ±1.5): the model follows the font measured that way only by being far
+/// tighter (looser) than any font sets its letters.
+pub const FIT_FAR: f64 = 2.5;
+
 /// An outline flattened to polygons (the pen writes a quadratic as one
 /// off-curve point and its end, a cubic as two and its end).
 pub fn polygons(contours: &[Vec<(Vec2, u32)>]) -> Vec<Vec<(f64, f64)>> {
@@ -158,15 +164,17 @@ pub fn stem_slant(stems: &[&[Vec<(Vec2, u32)>]], x_height: f64, units_per_em: f6
 /// along the slant its stems show, from (shape error, best-fit Looseness) of
 /// a check upright and along the slant: where that leaves at most
 /// `LEAN_GAIN` of the shape error upright, or where upright the fit stops at
-/// the limit of the Looseness range and along the slant it does not. A fit at
-/// the limit says the model cannot follow the font measured that way (it is
-/// tighter, or looser, than anything the model makes), so its shape error is
-/// no measure to compare with: a hand that leans hard can look crammed
-/// upright where along its slant it is set tight but in range (Carattere:
-/// −6.00 upright, −1.50 along its 22.5°).
+/// the limit of the Looseness range, or lies far outside what fonts use
+/// (`FIT_FAR`), and along the slant it does not. Such a fit says the model
+/// can follow the font measured that way only by being tighter (looser) than
+/// any font is set, so its shape error is no measure to compare with: a hand
+/// that leans hard can look crammed upright where along its slant it is set
+/// tight but in range (Carattere: −6.00 upright, −1.50 along its 22.5°;
+/// Tangerine: −2.92 upright, −0.57 along its 13.8°).
 pub fn lean_wins(upright: (f64, f64), lean: (f64, f64)) -> bool {
     let at_limit = |t: f64| t.abs() >= FIT_LIMIT - 1e-6;
-    lean.0 <= LEAN_GAIN * upright.0 || (at_limit(upright.1) && !at_limit(lean.1))
+    let far = |t: f64| t.abs() >= FIT_FAR;
+    lean.0 <= LEAN_GAIN * upright.0 || (at_limit(upright.1) && !at_limit(lean.1)) || (far(upright.1) && !far(lean.1))
 }
 
 #[cfg(test)]
@@ -214,5 +222,10 @@ mod tests {
         assert!(!lean_wins((50.0, -1.8), (60.0, -6.0)));
         // the loose end of the range too
         assert!(lean_wins((40.0, 6.0), (45.0, 2.0)));
+        // upright, a fit far outside what fonts use, along the slant in range (Tangerine)
+        assert!(lean_wins((41.3, -2.92), (33.4, -0.57)));
+        // short of FIT_FAR upright, or far both ways: the shape errors decide
+        assert!(!lean_wins((56.1, -2.34), (53.6, -1.04)));
+        assert!(!lean_wins((60.0, -3.0), (70.0, -2.6)));
     }
 }

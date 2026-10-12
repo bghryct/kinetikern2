@@ -556,13 +556,13 @@ pub type FacingSide<'a> = (&'a [Disk], &'a [Disk], &'a [(Vec2, Vec2)], f64);
 /// glyph's crevices is pressed beyond the pressure threshold `tau` by the other
 /// glyph's contour or tip micro-disks. Pressure is the intrusion depth as a
 /// fraction of the crevice disk's radius.
-pub fn crevice_floor(a: FacingSide, b: FacingSide, tau: f64) -> Option<f64> {
+pub fn crevice_floor(a: FacingSide, b: FacingSide, tau: f64, rmax: f64) -> Option<f64> {
     let (a_crev, a_tips, a_pieces, a_extreme) = a;
     let (b_crev, b_tips, b_pieces, b_extreme) = b;
     let keep = 1.0 - tau.clamp(0.0, 1.0);
     let mut best = None;
-    // A's crevices against B's contour (B moves)
-    for d in a_crev {
+    // A's crevices against B's contour (B moves); wider disks are an open cove's mouth
+    for d in a_crev.iter().filter(|d| d.r <= rmax) {
         let rho = d.r * keep;
         if rho <= 0.0 {
             continue;
@@ -581,7 +581,7 @@ pub fn crevice_floor(a: FacingSide, b: FacingSide, tau: f64) -> Option<f64> {
         }
     }
     // B's crevices against A's contour
-    for d in b_crev {
+    for d in b_crev.iter().filter(|d| d.r <= rmax) {
         let rho = d.r * keep;
         if rho <= 0.0 {
             continue;

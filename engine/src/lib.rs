@@ -57,11 +57,11 @@ use std::collections::HashMap;
 use std::ffi::{c_char, CString};
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::ptr::null_mut;
+use std::ptr::{null, null_mut};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
-use engine::{Context, GlyphInput, GlyphOpt, SideRule, SolveOptions, MAX_GROUPS, NONE};
+use engine::{Context, Conventions, GlyphInput, GlyphOpt, PairResponse, SideRule, SolveOptions, MAX_GROUPS, NONE, PAIR_CLASSES};
 use geometry::{Vec2, NODE_LINE, NODE_QCURVE};
 use job::{Job, JobError, STATE_FAILED};
 use pass2::Solver;
@@ -134,6 +134,15 @@ pub const PARAM_SCOPE_SCRIPTS: u32 = 8;
 /// already there; the solve's Looseness (the one `spring` stands for,
 /// `physics_for_looseness`) is then an offset from it.
 pub const PARAM_FIT_FROZEN: u32 = 16;
+/// v1's Pass-2 response: every pair class kerned alike, the crevice floor for
+/// every pair (the equivalence tool's setting; by default letters may nest
+/// in each other's hollows and a capital's overhang reaches over lowercase).
+pub const PARAM_V1_PASS2: u32 = 32;
+/// The conventions of display faces (`Style::Display`): a capital reaches over
+/// its neighbour as far as their designers kern it.
+pub const PARAM_STYLE_DISPLAY: u32 = 64;
+/// The conventions of handwriting (`Style::Handwriting`).
+pub const PARAM_STYLE_HANDWRITING: u32 = 128;
 
 /// `KK2GlyphOpt.flags`: keep the glyph's sidebearings, and never kern a pair
 /// of two frozen glyphs.
@@ -166,6 +175,28 @@ pub struct KK2Harness {
     pub pairs: *const KK2HarnessPair,
     pub pair_count: u32,
     pub reserved: u32,
+}
+
+/// Punctuation by convention (`kk2_solve_start4`): per glyph, the
+/// coefficients (c, m, r) of its left side's shift and then its right side's
+/// (6 values per glyph, units per 1000 em; see `Conventions`), NaN c for a
+/// glyph without one; and how much Pass 2 kerns each side of a mark.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct KK2Punctuation {
+    pub struct_size: u32,
+    /// Glyphs in `coefs` and `kern` (6 and 2 values each; 0 with both NULL).
+    pub glyph_count: u32,
+    pub coefs: *const f64,
+    /// The share of Pass 2's coupling that the marks and symbols without
+    /// their own keep, on each side (1 = as letters).
+    pub kern_scale: f64,
+    /// Per glyph, the share of its left and right sides (2 values each; NaN:
+    /// `kern_scale`; NULL: `kern_scale` for every mark). Letters ignore it.
+    pub kern: *const f64,
+    /// Per glyph, the glyph whose sidebearings it takes (`NONE` or NULL:
+    /// its own): a mark's case-sensitive form follows its base mark.
+    pub follow: *const u32,
 }
 
 /// A pair correction of the harness: added to the kerning of glyph pair
@@ -488,6 +519,7 @@ const _: () = {
     assert!(size_of::<KK2Ray>() == 24);
     assert!(size_of::<KK2GlyphOpt>() == 24);
     assert!(size_of::<KK2Harness>() == 32);
+    assert!(size_of::<KK2Punctuation>() == 40);
     assert!(size_of::<KK2HarnessPair>() == 16);
     assert!(size_of::<KK2KernIn>() == 16);
     assert!(size_of::<KK2Joins>() == 32);
@@ -677,6 +709,14 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
     if c.flags & PARAM_SKIP_PASS2 != 0 {
         o.coupling = 0.0;
     }
+    if c.flags & PARAM_STYLE_HANDWRITING != 0 {
+        o.response = engine::style_response(engine::Style::Handwriting, upm);
+    } else if c.flags & PARAM_STYLE_DISPLAY != 0 {
+        o.response = engine::style_response(engine::Style::Display, upm);
+    }
+    if c.flags & PARAM_V1_PASS2 != 0 {
+        o.response = [PairResponse::BASE; PAIR_CLASSES];
+    }
     let looseness = looseness_of(o.spring);
     Ok(Params {
         options: o,
@@ -692,6 +732,7 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
         looseness,
         harness: None,
         keep_bare: false,
+        conventions: None,
     })
 }
 
@@ -1244,6 +1285,23 @@ pub unsafe extern "C" fn kk2_solve_start3(
     opt_count: u32,
     harness: *const KK2Harness,
 ) -> *mut KK2Job {
+    kk2_solve_start4(ctx, params, kern_mask, mask_len, opts, opt_count, harness, null())
+}
+
+/// `kk2_solve_start3` with punctuation by convention (`punct`, NULL = none):
+/// each punctuation mark's sides moved toward what designers do, in Pass 1,
+/// and each side kerned with its own share in Pass 2.
+#[no_mangle]
+pub unsafe extern "C" fn kk2_solve_start4(
+    ctx: *const KK2Context,
+    params: *const KK2Params,
+    kern_mask: *const u8,
+    mask_len: u32,
+    opts: *const KK2GlyphOpt,
+    opt_count: u32,
+    harness: *const KK2Harness,
+    punct: *const KK2Punctuation,
+) -> *mut KK2Job {
     guard(null_mut(), || {
         if ctx.is_null() {
             return Err("context is NULL".into());
@@ -1277,6 +1335,29 @@ pub unsafe extern "C" fn kk2_solve_start3(
                 slice(h.pairs, h.pair_count).iter().map(|q| (q.left, q.right, q.value)).collect()
             };
             p.harness = Some(Arc::new(run::Harness { sides, pairs }));
+        }
+        if !punct.is_null() {
+            let c = &*punct;
+            if (c.struct_size as usize) < size_of::<KK2Punctuation>() {
+                return Err(format!("KK2Punctuation.struct_size {} < {}", c.struct_size, size_of::<KK2Punctuation>()));
+            }
+            let sides: Vec<[[f64; 3]; 2]> = if c.coefs.is_null() || c.glyph_count == 0 {
+                Vec::new()
+            } else {
+                slice(c.coefs, c.glyph_count * 6).chunks(6).map(|v| [[v[0], v[1], v[2]], [v[3], v[4], v[5]]]).collect()
+            };
+            let kern: Vec<[f64; 2]> = if c.kern.is_null() || c.glyph_count == 0 {
+                Vec::new()
+            } else {
+                slice(c.kern, c.glyph_count * 2).chunks(2).map(|v| [v[0], v[1]]).collect()
+            };
+            let follow: Vec<u32> = if c.follow.is_null() || c.glyph_count == 0 {
+                Vec::new()
+            } else {
+                slice(c.follow, c.glyph_count).to_vec()
+            };
+            let kern_scale = if c.kern_scale.is_finite() && c.kern_scale >= 0.0 { c.kern_scale } else { 1.0 };
+            p.conventions = Some(Arc::new(Conventions { sides, kern, kern_scale, follow }));
         }
         let mask: Option<Vec<u8>> = if kern_mask.is_null() { None } else { Some(slice(kern_mask, mask_len).to_vec()) };
         let job = Job::spawn("kinetikern2-solve", move |progress| {
@@ -1419,10 +1500,12 @@ pub unsafe extern "C" fn kk2_measure(
 /// from the one fitted with `PARAM_FIT_FROZEN` (`kk2_result_fitted_looseness`
 /// is the fitted Looseness itself), 1024 the slant a design's stems show and
 /// when to measure along it (`kk2_stem_glyphs`, `kk2_stem_slant`,
-/// `kk2_lean_wins`).
+/// `kk2_lean_wins`), 2048 punctuation by convention and Pass 2's pair
+/// classes (`kk2_solve_start4`, `KK2Punctuation`, `PARAM_V1_PASS2`,
+/// `PARAM_STYLE_DISPLAY`, `PARAM_STYLE_HANDWRITING`).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    2047
+    4095
 }
 
 /// The glyphs `kk2_stem_slant` reads, by name, space separated and in its

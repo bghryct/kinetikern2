@@ -56,6 +56,176 @@ pub const GLYPH_FIGURE: u32 = 64;
 /// "No index" for optional glyph and group references.
 pub const NONE: u32 = u32::MAX;
 
+/// Pair classes of Pass 2's response, by the two glyphs' rhythm groups
+/// (`pair_class`). Designers kern each kind differently: a capital reaching
+/// over the next letter far more than a lowercase reaching back under a
+/// capital's arm, a punctuation mark by its own share (`Conventions`).
+pub const PAIR_OTHER: usize = 0;
+/// A punctuation mark or symbol on either side (`GROUP_OTHER`).
+pub const PAIR_PUNCT: usize = 1;
+pub const PAIR_CAP_LOWER: usize = 2;
+pub const PAIR_CAP_CAP: usize = 3;
+pub const PAIR_LOWER_LOWER: usize = 4;
+pub const PAIR_LOWER_CAP: usize = 5;
+pub const PAIR_CLASSES: usize = 6;
+
+/// The class of pair (left, right) from their rhythm group ids.
+pub fn pair_class(left: u32, right: u32) -> usize {
+    match (left, right) {
+        (GROUP_OTHER, _) | (_, GROUP_OTHER) => PAIR_PUNCT,
+        (GROUP_UPPERCASE, GROUP_LOWERCASE) => PAIR_CAP_LOWER,
+        (GROUP_UPPERCASE, GROUP_UPPERCASE) => PAIR_CAP_CAP,
+        (GROUP_LOWERCASE, GROUP_LOWERCASE) => PAIR_LOWER_LOWER,
+        (GROUP_LOWERCASE, GROUP_UPPERCASE) => PAIR_LOWER_CAP,
+        _ => PAIR_OTHER,
+    }
+}
+
+/// Punctuation by convention (the plugins' Punctuation switch): what the
+/// designers of well-spaced fonts do with each punctuation mark's sides, as a
+/// blend of the model's own reading of the mark and the font's letter rhythm.
+/// Per glyph and side (left, right), coefficients (c, m, r) of a shift in
+/// units per 1000 em: c + m · s / 50 + r · ρ / 50, where s is the side's own
+/// Pass-1 sidebearing and ρ the font's letter rhythm (the median Pass-1
+/// sidebearing of its lowercase, else of all its letters), both per 1000 em.
+/// A NaN c leaves the side as the model sets it. Applied before the per-side
+/// rules, so metrics keys, composites and frozen glyphs keep theirs.
+///
+/// Pass 2 kerns a mark's side with its own share of what the shapes suggest
+/// (`kern`, per glyph: left side, right side): designers tuck a period well
+/// under a T, V or Y (about 0.7) but hardly kern a hyphen or a quote (about
+/// 0.3–0.4). A pair takes the product of its two facing sides, so two marks
+/// side by side are barely kerned, as designers do. Every other mark or
+/// symbol (`GROUP_OTHER`) kerns `kern_scale` on each side; letters, figures
+/// and the rest kern fully.
+#[derive(Clone, Debug)]
+pub struct Conventions {
+    pub sides: Vec<[[f64; 3]; 2]>,
+    /// Per glyph, the share of Pass 2's coupling its left and right sides
+    /// keep (NaN or missing: `kern_scale`).
+    pub kern: Vec<[f64; 2]>,
+    /// The share of the marks and symbols without their own.
+    pub kern_scale: f64,
+    /// Per glyph, the glyph whose sidebearings it takes (`NONE`: its own): a
+    /// mark's case-sensitive form (`parenleft.case`), which designers raise
+    /// for capitals but do not space again.
+    pub follow: Vec<u32>,
+}
+
+impl Default for Conventions {
+    fn default() -> Self {
+        Conventions { sides: Vec::new(), kern: Vec::new(), kern_scale: 1.0, follow: Vec::new() }
+    }
+}
+
+impl Conventions {
+    /// Pass 2's coupling scale of every glyph's sides (left, right): a mark
+    /// or symbol (`GROUP_OTHER`) keeps its share, every other glyph all of
+    /// it. Pair (a, b) is scaled by a's right side times b's left side.
+    pub fn side_scales(&self, glyphs: &[PreparedGlyph]) -> Vec<[f64; 2]> {
+        let fallback = if self.kern_scale.is_finite() { self.kern_scale.max(0.0) } else { 1.0 };
+        let pick = |x: f64| if x.is_finite() && x >= 0.0 { x } else { fallback };
+        glyphs
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                if g.group_id != GROUP_OTHER {
+                    return [1.0, 1.0];
+                }
+                let k = self.kern.get(i).copied().unwrap_or([f64::NAN; 2]);
+                [pick(k[0]), pick(k[1])]
+            })
+            .collect()
+    }
+
+    /// The shift of one side (per 1000 em; 0 for a side without a convention).
+    pub fn shift(&self, glyph: usize, side: usize, sb: f64, rhythm: f64) -> f64 {
+        match self.sides.get(glyph) {
+            Some(c) if c[side][0].is_finite() && sb.is_finite() && rhythm.is_finite() => {
+                let [k, m, r] = c[side];
+                k + m * sb / 50.0 + r * rhythm / 50.0
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+/// Pass 2's response for one pair class.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PairResponse {
+    /// Multiplies the coupling (the kerning intensity).
+    pub scale: f64,
+    /// Strong interactions (an overhang the next letter tucks under) beyond
+    /// this drive (font units, after the dead zone) keep growing at
+    /// `tail_slope` instead of saturating at `max_negative_kern`. Infinite or
+    /// a zero slope: the saturation.
+    pub tail_knee: f64,
+    pub tail_slope: f64,
+    /// The crevice floor applies (no neighbour pressed into a pocket).
+    pub crevice: bool,
+}
+
+impl PairResponse {
+    pub const BASE: PairResponse = PairResponse { scale: 1.0, tail_knee: f64::INFINITY, tail_slope: 0.0, crevice: true };
+}
+
+/// Whose conventions a font follows (the plugins' Conventions menu, Spacing
+/// QA's family category): Pass 2 lets a capital reach over its neighbour as
+/// far as the designers of that kind of face do, and the punctuation follows
+/// theirs (`Conventions`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    Text,
+    Display,
+    Handwriting,
+}
+
+/// Pass 2's response per pair class for a style, as measured against the
+/// designers of 1,594 Google Fonts families (the GF Latin Kernel's letters,
+/// each pair's kerning on the model's sidebearings against the model's
+/// drive):
+///
+/// * lowercase nests in the hollows of a capital or of another lowercase
+///   (the o under an f's hook, the a under a swash crossbar): the crevice
+///   floor no longer keeps it out. It still keeps punctuation out of
+///   letters' pockets, and capitals out of each other's, as designers do;
+/// * a lowercase before a capital (aT, nT) is kerned more gently in the
+///   middle of the range (past 20 units per 1000 em the response grows at
+///   0.5): designers seldom kern these as deep as the shapes allow;
+/// * display and handwriting faces let a capital reach over the next letter
+///   (Ha, Ta, To, a swash crossbar or hook): past 20 units the kerning keeps
+///   following the shapes (at 0.85 into lowercase in display faces, 1.0
+///   otherwise) instead of saturating near 100. Their designers kern these
+///   pairs far deeper than v1 did (handwriting: −110 to −220 where v1 gave
+///   −65 to −90); text faces, sans serif above all, do not, and keep v1's.
+///
+/// Every other class, punctuation included, keeps v1's response
+/// (`PairResponse::BASE`; `PARAM_V1_PASS2` restores v1 everywhere).
+pub fn style_response(style: Style, upm: f64) -> [PairResponse; PAIR_CLASSES] {
+    let mut r = [PairResponse::BASE; PAIR_CLASSES];
+    let knee = 0.02 * upm;
+    r[PAIR_CAP_LOWER] = PairResponse { crevice: false, ..PairResponse::BASE };
+    r[PAIR_LOWER_LOWER] = PairResponse { crevice: false, ..PairResponse::BASE };
+    r[PAIR_LOWER_CAP] = PairResponse { tail_knee: knee, tail_slope: 0.5, ..PairResponse::BASE };
+    match style {
+        Style::Text => {}
+        Style::Display => {
+            r[PAIR_CAP_LOWER] = PairResponse { scale: 1.0, tail_knee: knee, tail_slope: 0.85, crevice: false };
+            r[PAIR_CAP_CAP] = PairResponse { tail_knee: knee, tail_slope: 1.0, ..PairResponse::BASE };
+        }
+        Style::Handwriting => {
+            r[PAIR_CAP_LOWER] = PairResponse { scale: 1.0, tail_knee: knee, tail_slope: 1.0, crevice: false };
+            r[PAIR_CAP_CAP] = PairResponse { tail_knee: knee, tail_slope: 1.0, ..PairResponse::BASE };
+        }
+    }
+    r
+}
+
+/// The default response: text faces' (`style_response`).
+pub fn default_response(upm: f64) -> [PairResponse; PAIR_CLASSES] {
+    style_response(Style::Text, upm)
+}
+
 /// The contour-field coupling the kerning intensity scales: 100 % (β = 1) is
 /// 0.8 of the raw field, the value that matched designers best on the Google
 /// Fonts benchmark (v1 tools/benchmark.py).
@@ -289,6 +459,15 @@ pub struct SolveOptions {
     pub max_positive_kern: f64,
     /// Dead zone of Pass 2: interactions are shrunk toward zero by this much.
     pub min_kern: f64,
+    /// The crevice floor keeps neighbours out of narrow pockets only: crevice
+    /// disks wider than this (font units) are the mouth of an open cove, such
+    /// as the white under an f's hook or a swash stroke, where the next letter
+    /// belongs. Infinite: every crevice disk counts (v1).
+    pub crevice_max_radius: f64,
+    /// Pass 2's response per pair class (`pair_class`): how strongly each
+    /// kind of pair is kerned, how far an overhang may reach, whether the
+    /// crevice floor applies. `PairResponse::BASE` everywhere is v1's.
+    pub response: [PairResponse; PAIR_CLASSES],
     /// Contour field shape, relative to the pair's rest gap.
     pub field_cap: f64,
     pub field_decay: f64,
@@ -322,6 +501,8 @@ impl SolveOptions {
             max_negative_kern: 0.10 * upm,
             max_positive_kern: 0.06 * upm,
             min_kern: 0.015 * upm,
+            crevice_max_radius: f64::INFINITY,
+            response: default_response(upm),
             field_cap: 4.0,
             field_decay: 0.2,
             field_core: 0.3,
@@ -606,6 +787,11 @@ impl Context {
     /// rest of the font by half of it); frozen glyphs keep the sidebearings
     /// they have.
     pub fn pass1_with(&self, o: &SolveOptions, opts: Option<&[GlyphOpt]>) -> Pass1 {
+        self.pass1_conv(o, opts, None)
+    }
+
+    /// Pass 1 with per-glyph options and the punctuation conventions.
+    pub fn pass1_conv(&self, o: &SolveOptions, opts: Option<&[GlyphOpt]>, conv: Option<&Conventions>) -> Pass1 {
         let t1 = Instant::now();
         let spring = o.spring.max(1e-9);
         let repulsion = o.repulsion.max(0.0);
@@ -630,6 +816,44 @@ impl Context {
                             - rest_gap(lam, spring, repulsion));
                     lsb[i] += d;
                     rsb[i] += d;
+                }
+            }
+        }
+        if let Some(c) = conv {
+            let per = 1000.0 / self.upm;
+            // the font's letter rhythm: its lowercase's median sidebearing (else its letters')
+            let sides_of = |pick: &dyn Fn(u32) -> bool| -> Vec<f64> {
+                self.glyphs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| g.valid && pick(g.group_id))
+                    .flat_map(|(i, _)| [lsb[i], rsb[i]])
+                    .filter(|v| v.is_finite())
+                    .map(|v| v * per)
+                    .collect()
+            };
+            let mut v = sides_of(&|id| id == GROUP_LOWERCASE);
+            if v.len() < 6 {
+                v = sides_of(&|id| id == GROUP_LOWERCASE || id == GROUP_UPPERCASE);
+            }
+            if let Some(rhythm) = median(v) {
+                for (i, _) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid && !g.fixed_advance) {
+                    let dl = c.shift(i, 0, lsb[i] * per, rhythm);
+                    let dr = c.shift(i, 1, rsb[i] * per, rhythm);
+                    lsb[i] += dl / per;
+                    rsb[i] += dr / per;
+                }
+            }
+            // a case-sensitive form takes its base mark's sides, before the per-side rules (a metrics key, an
+            // aligned composite or a frozen glyph keeps its own)
+            for (i, g) in self.glyphs.iter().enumerate() {
+                let f = c.follow.get(i).copied().unwrap_or(NONE);
+                if f == NONE || f as usize >= self.glyphs.len() || f as usize == i || !g.valid || g.fixed_advance {
+                    continue;
+                }
+                if self.glyphs[f as usize].valid {
+                    lsb[i] = lsb[f as usize];
+                    rsb[i] = rsb[f as usize];
                 }
             }
         }

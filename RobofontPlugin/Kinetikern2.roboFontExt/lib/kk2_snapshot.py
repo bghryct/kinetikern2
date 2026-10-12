@@ -1464,7 +1464,8 @@ class SlantProbe(object):
     with the designer harness when there is one, and measured against the
     font's spacing. The slant wins where that leaves at most 80 % of the
     shape error upright, or where upright the fit stops at the limit of the
-    Looseness range and along the slant it does not.
+    Looseness range or lies beyond ±2.5 (outside what fonts use) and along
+    the slant it does not.
 
     Call step() from a timer until it returns True: `lean` is then the
     verdict (None: it could not tell, `error` says why) and `numbers` what
@@ -1472,7 +1473,7 @@ class SlantProbe(object):
     slant), shape errors in units per 1000 em."""
 
     def __init__(self, engine, font, key, slant, snapshot, physics, joins=None, current_steps=None,
-                 harness=None, threads=0, budget_s=0.008):
+                 harness=None, threads=0, budget_s=0.008, punctuation=None, style=None):
         """`key`: the window's key for the font (its master_id here);
         `snapshot`: the font as read (its glyph names and characters);
         `physics`: Looseness → (spring, repulsion, coupling) at 100 %
@@ -1481,7 +1482,9 @@ class SlantProbe(object):
         `current_steps`: snapshot → a generator returning the font's
         kerning as engine input (kk2_pairs_window.current_kerning_steps);
         `harness`: (snapshot, Looseness, kept sides) → the solve's harness
-        argument, or None."""
+        argument, or None; `punctuation`: snapshot → the solve's punctuation
+        argument (kk2_punctuation.engine_arg), or None; `style`: Pass 2's
+        conventions (kk2_bridge.make_params), as the window's solves."""
         self.engine = engine
         self.master_id = key
         self.slant = float(slant)
@@ -1494,6 +1497,8 @@ class SlantProbe(object):
         self._joins = joins
         self._current_steps = current_steps
         self._harness = harness
+        self._punctuation = punctuation
+        self._style = style
         self._threads = int(threads)
         self._budget = float(budget_s)
         chars = KERNEL_FIT + KERNEL_SCORED
@@ -1601,7 +1606,7 @@ class SlantProbe(object):
         spring, repulsion, coupling = self._physics(looseness)
         return kb.make_params(spring=spring, repulsion=repulsion, coupling=coupling, classes=False, window=True,
                               scope_scripts=True, threshold=0.0, budget=0, threads=self._threads,
-                              fit_frozen=fit_frozen, skip_pass2=skip_pass2)
+                              fit_frozen=fit_frozen, skip_pass2=skip_pass2, style=self._style)
 
     def _fit_and_solve(self, snap, ctx):
         """The Looseness fitted to the font's spacing, and the solve there."""
@@ -1622,5 +1627,7 @@ class SlantProbe(object):
             fit = self.engine.fit_looseness(ctx, self._params(0.0), which)
         fit = 0.0 if fit is None else float(fit)
         harness = self._harness(snap, fit, kept) if self._harness is not None else None
-        result = yield from self._wait(self.engine.solve(ctx, self._params(fit), harness=harness))
+        punctuation = self._punctuation(snap) if self._punctuation is not None else None
+        result = yield from self._wait(self.engine.solve(ctx, self._params(fit), harness=harness,
+                                                         punctuation=punctuation))
         return fit, result

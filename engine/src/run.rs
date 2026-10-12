@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 use crate::classes::{Classes, PART_FROZEN};
-use crate::engine::{Context, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, GLYPH_ZONE, NONE};
+use crate::engine::{Context, Conventions, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, GLYPH_ZONE, NONE};
 use crate::job::{pool, Cancelled, JobError, Progress};
 use crate::pass2::{
     Fields, Kernel, Knobs, PairOut, Probes, Scratch, Solver, Verify, Windows, PAIR_BOUNDED, PAIR_CLEARANCE, PAIR_CREVICE,
@@ -65,6 +65,8 @@ pub struct Params {
     pub harness: Option<Arc<Harness>>,
     /// Keep the solve as it was before the harness (`Outcome::bare`).
     pub keep_bare: bool,
+    /// Punctuation by convention (its sides in Pass 1, its pairs' response in Pass 2).
+    pub conventions: Option<Arc<Conventions>>,
 }
 
 /// The designer harness: where the model consistently spaces differently from
@@ -247,7 +249,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     } else {
         p
     };
-    let mut pass1 = ctx.pass1_with(&p.options, opts);
+    let mut pass1 = ctx.pass1_conv(&p.options, opts, p.conventions.as_deref());
     // partitions: frozen glyphs, and the kerning force of each painted group
     let mut forces: Vec<f64> = Vec::new();
     let part: Vec<u32> = (0..n)
@@ -508,7 +510,7 @@ fn apply_harness(
 
 /// Probes and window extremes for every glyph in `needed`, against every
 /// rhythm group among them.
-fn probes_for(
+pub(crate) fn probes_for(
     ctx: &Context,
     fields: &Fields,
     needed: &[bool],
@@ -553,6 +555,7 @@ fn run_pairs(
     let probe_work = 40 * k.len() as u64;
     progress.begin(2, 3, probe_work + k.len() as u64 * (right_sum + left_sum) / 2 + 1);
     let (probes, windows) = probes_for(ctx, fields, kern, progress, 40)?;
+    let scales = p.conventions.as_ref().map(|c| c.side_scales(&ctx.glyphs));
     let kernel = Kernel {
         ctx,
         fields,
@@ -563,6 +566,7 @@ fn run_pairs(
         knobs,
         solver: p.solver,
         force,
+        side_scale: scales.as_deref(),
     };
     let upm = ctx.upm;
     let rows: Vec<Option<(Vec<Entry>, RunStats)>> = k
@@ -734,6 +738,7 @@ fn run_classes(
     let probe_work = PROBE_WORK * stats.probe_glyphs;
     progress.begin(2, 3, probe_work + REP_WORK * pairs.len() as u64 + member_count + 1);
     let (probes, windows) = probes_for(ctx, fields, &needed, progress, PROBE_WORK)?;
+    let scales = p.conventions.as_ref().map(|c| c.side_scales(&ctx.glyphs));
     let kernel = Kernel {
         ctx,
         fields,
@@ -744,6 +749,7 @@ fn run_classes(
         knobs,
         solver: p.solver,
         force,
+        side_scale: scales.as_deref(),
     };
 
     // Statistics go to per-split accumulators, not to every item: a class

@@ -27,7 +27,7 @@
 //! arithmetic exactly (same operations in the same order on the rays that
 //! contribute), which the equivalence tool checks bit for bit.
 
-use crate::engine::{Context, PreparedGlyph, SolveOptions, COUPLING_CALIBRATION};
+use crate::engine::{pair_class, Context, PairResponse, PreparedGlyph, SolveOptions, COUPLING_CALIBRATION, PAIR_CLASSES};
 use crate::geometry::Vec2;
 use crate::job::{Cancelled, Progress};
 use crate::physics::{clearance_floor, crevice_floor, equilibrium_gap, rest_gap, soft_clip, ContourField};
@@ -67,6 +67,15 @@ pub struct Knobs {
     pub clearance: f64,
     pub tau: f64,
     pub dead_zone: f64,
+    /// Crevice disks wider than this do not count for the crevice floor.
+    pub crevice_rmax: f64,
+    /// The crevice floor applies (per pair class).
+    pub crevice: bool,
+    /// Per pair class: coupling scale, tail, crevice floor (`knobs_for`).
+    pub response: [PairResponse; PAIR_CLASSES],
+    /// The negative tail: beyond a drive of −`tail_knee` the value grows at `tail_slope`.
+    pub tail_knee: f64,
+    pub tail_slope: f64,
     pub tol: f64,
     /// Results with |value| below this are zero (at least v1's 0.5 rounding).
     pub threshold: f64,
@@ -83,17 +92,27 @@ impl Knobs {
             clearance: o.min_clearance,
             tau: o.crevice_pressure,
             dead_zone: o.min_kern.max(0.0),
+            crevice_rmax: if o.crevice_max_radius > 0.0 { o.crevice_max_radius } else { f64::INFINITY },
+            crevice: true,
+            response: o.response,
+            tail_knee: f64::INFINITY,
+            tail_slope: 0.0,
             tol: 0.2 * upm / 1000.0,
             threshold: if threshold.is_finite() { threshold.max(0.5) } else { 0.5 },
         }
     }
 
-    /// Interaction contrast → pre-floor value (dead zone, saturating response).
+    /// Interaction contrast → pre-floor value (dead zone, saturating response,
+    /// and past `tail_knee` the overhang tail).
     #[inline]
     pub fn shape(&self, raw: f64) -> (f64, bool) {
         let driven = self.coupling * raw;
         let shrunk = driven.signum() * (driven.abs() - self.dead_zone).max(0.0);
         let saturated = shrunk < -self.neg || shrunk > self.pos;
+        if shrunk < -self.tail_knee {
+            let at = soft_clip(-self.tail_knee, self.neg, self.pos);
+            return (at + self.tail_slope * (shrunk + self.tail_knee), saturated);
+        }
         (soft_clip(shrunk, self.neg, self.pos), saturated)
     }
 
@@ -101,9 +120,12 @@ impl Knobs {
     /// (the pipeline is monotone; its dead zone maps a whole interval to 0).
     pub fn raw_window(&self, lo: f64, hi: f64) -> (f64, f64) {
         let c = self.coupling.max(1e-12);
-        // inverse of soft_clip on (-neg, pos)
+        // inverse of soft_clip on (-neg, pos), and of the tail below its knee
+        let knee_value = if self.tail_knee.is_finite() { soft_clip(-self.tail_knee, self.neg, self.pos) } else { f64::NEG_INFINITY };
         let inv = |p: f64| -> f64 {
-            if p <= -self.neg {
+            if p < knee_value {
+                -self.tail_knee + (p - knee_value) / self.tail_slope.max(1e-12)
+            } else if p <= -self.neg {
                 f64::NEG_INFINITY
             } else if p >= self.pos {
                 f64::INFINITY
@@ -375,6 +397,9 @@ pub struct Kernel<'a> {
     pub solver: Solver,
     /// Per-glyph kerning force (multiple of the coupling); None = all 1.
     pub force: Option<&'a [f64]>,
+    /// Per glyph, the coupling share of its left and right sides
+    /// (`Conventions::side_scales`); None = all 1.
+    pub side_scale: Option<&'a [[f64; 2]]>,
 }
 
 /// Vertical distance from every band height to the nearest height where the
@@ -1022,19 +1047,31 @@ impl<'a> Kernel<'a> {
     }
 
     /// The value pipeline of pair (ia, ib): the coupling scaled by the mean
-    /// kerning force of its two glyphs' spacing groups.
+    /// kerning force of its two glyphs' spacing groups and by the shares of
+    /// its two facing sides (punctuation by convention).
     #[inline]
     pub fn knobs_for(&self, ia: usize, ib: usize) -> Knobs {
-        match self.force {
-            Some(f) => {
-                let m = 0.5 * (f[ia] + f[ib]);
-                if (m - 1.0).abs() < 1e-12 {
-                    self.knobs
-                } else {
-                    Knobs { coupling: self.knobs.coupling * m.max(0.0), ..self.knobs }
-                }
-            }
-            None => self.knobs,
+        let mut m = self.force.map_or(1.0, |f| 0.5 * (f[ia] + f[ib]));
+        if let Some(s) = self.side_scale {
+            m *= s[ia][1] * s[ib][0];
+        }
+        let base = if (m - 1.0).abs() < 1e-12 {
+            self.knobs
+        } else {
+            Knobs { coupling: self.knobs.coupling * m.max(0.0), ..self.knobs }
+        };
+        let (a, b) = (&self.ctx.glyphs[ia], &self.ctx.glyphs[ib]);
+        let r = base.response[pair_class(a.group_id, b.group_id)];
+        if r == PairResponse::BASE {
+            return base;
+        }
+        let tail = r.tail_slope > 0.0 && r.tail_knee.is_finite();
+        Knobs {
+            coupling: base.coupling * r.scale.max(0.0),
+            tail_knee: if tail { r.tail_knee.max(0.0) } else { f64::INFINITY },
+            tail_slope: if tail { r.tail_slope } else { 0.0 },
+            crevice: r.crevice,
+            ..base
         }
     }
 
@@ -1134,7 +1171,7 @@ impl<'a> Kernel<'a> {
         } else {
             out.flags |= PAIR_DISJOINT;
         }
-        let (value, fl) = self.floors(a, b, macro_gap, out.pre);
+        let (value, fl) = self.floors(k, a, b, macro_gap, out.pre);
         out.flags |= fl;
         out.value = if value.abs() < 0.5 || !value.is_finite() { 0.0 } else { value };
         if out.value != 0.0 && !sc.band.is_empty() {
@@ -1226,8 +1263,7 @@ impl<'a> Kernel<'a> {
 
     /// Clearance and crevice floors for a pre-floor value, skipped when exact
     /// bounds show they cannot bind.
-    pub fn floors(&self, a: &PreparedGlyph, b: &PreparedGlyph, macro_gap: f64, pre: f64) -> (f64, u32) {
-        let k = &self.knobs;
+    pub fn floors(&self, k: &Knobs, a: &PreparedGlyph, b: &PreparedGlyph, macro_gap: f64, pre: f64) -> (f64, u32) {
         let mut value = pre;
         let mut flags = 0;
         // At a bbox gap of δ every point of B is ≥ δ right of every point of A,
@@ -1246,11 +1282,12 @@ impl<'a> Kernel<'a> {
         // Crevice disks lie inside their own bbox; only tip disks can reach
         // past it, so the floor never asks for more than the larger protrusion.
         let reach = a.tip_right.max(b.tip_left).max(0.0);
-        if macro_gap + value < reach + margin {
+        if k.crevice && macro_gap + value < reach + margin {
             if let Some(gap) = crevice_floor(
                 (&a.right_crevices, &a.right_tips, &a.right_pieces, a.right.extreme),
                 (&b.left_crevices, &b.left_tips, &b.left_pieces, b.left.extreme),
                 k.tau,
+                k.crevice_rmax,
             ) {
                 if gap - macro_gap > value {
                     value = gap - macro_gap;
@@ -1270,7 +1307,7 @@ impl<'a> Kernel<'a> {
         if a.joins(b) {
             return (0.0, PAIR_JOIN);
         }
-        let (v, fl) = self.floors(a, b, self.macro_gap(ia, ib), pre);
+        let (v, fl) = self.floors(&self.knobs_for(ia, ib), a, b, self.macro_gap(ia, ib), pre);
         (if v.abs() < 0.5 || !v.is_finite() { 0.0 } else { v }, fl)
     }
 
@@ -1358,6 +1395,23 @@ mod tests {
             let (lo, hi) = repulsion_between(&f, d, table);
             assert!(lo <= r && r <= hi, "d {d}: {lo} {r} {hi}");
             assert!(d > 59.0 * f.lambda || hi - lo <= 2e-4 * r, "d {d}: {lo} {r} {hi}");
+        }
+    }
+
+    #[test]
+    fn raw_window_inverts_the_tail() {
+        let o = SolveOptions::defaults(1000.0);
+        let k = Knobs { tail_knee: 120.0, tail_slope: 0.7, ..Knobs::new(&o, 1000.0, 5.0) };
+        // below the knee the value keeps growing, monotone, and the window inverts it
+        let (v1, _) = k.shape(-400.0);
+        let (v2, _) = k.shape(-500.0);
+        assert!(v2 < v1 && v1 < -100.0, "{v1} {v2}");
+        let (a, b) = k.raw_window(-180.0, -150.0);
+        assert!((k.shape(a).0 + 180.0).abs() < 1e-6 && (k.shape(b).0 + 150.0).abs() < 1e-6, "{a} {b}");
+        // above the knee nothing changes
+        let base = Knobs::new(&SolveOptions::defaults(1000.0), 1000.0, 5.0);
+        for r in [-150.0, -100.0, -20.0, 0.0, 30.0] {
+            assert_eq!(k.shape(r).0, base.shape(r).0);
         }
     }
 

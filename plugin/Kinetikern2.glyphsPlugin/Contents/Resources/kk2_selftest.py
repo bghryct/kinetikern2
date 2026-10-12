@@ -47,8 +47,12 @@ come to the front, not a second one).
                      revert and check that the font is as before
 
 After the Revert the designer-harness stage runs whenever the engine has the
-harness (its window, the conventions, Apply and Revert); the connected-script and groups stages
-follow when asked for, in that order. Then it saves window.png (and the
+harness (its window, the conventions, Apply and Revert), then the punctuation
+stage (the Punctuation switch off and on: letters untouched, each mark's sides
+as its convention says; then the Conventions menu: Handwriting kerns capitals
+deeper and leaves lowercase pairs and letters' sidebearings alone, Automatic
+is text faces' for a font that neither joins nor leans); the connected-script
+and groups stages follow when asked for, in that order. Then it saves window.png (and the
 harness, harness-letters, connected, pairs and groups images of the stages
 that ran) and selftest.json into selfTestOut, closes the window and the font
 without saving and, with selfTestQuit, quits Glyphs.
@@ -135,9 +139,10 @@ APPLY, REVERT, CLOSE = "apply", "revert", "close"
 GROUPS = "spacing groups"
 GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not judged
 HARNESS = "designer harness"
+PUNCTUATION = "punctuation"
 CONNECTED = "connected script"
 SLIDERS = "sliders"
-JUDGED = (PREVIEW, SLIDERS, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, CONNECTED)
+JUDGED = (PREVIEW, SLIDERS, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, PUNCTUATION, CONNECTED)
 BUSY_STATES = ("reading", "preparing", "previewing", "solving", "applying")
 
 PHASE_TEXT = re.compile(r"Phase\s*(\d+)\s*/\s*(\d+).*?\[\s*(\d+(?:\.\d+)?)\s*%\s*\]")
@@ -181,6 +186,13 @@ def _argument(key):
 def _text(value):
     """NSString or None → str or None (empty → None)."""
     return str(value) if value else None
+
+
+def _num(x):
+    """A width for a note: a whole number without decimals."""
+    if x is None:
+        return "?"
+    return "%d" % round(x) if abs(x - round(x)) < 1e-9 else "%.1f" % x
 
 
 def _clean(obj):
@@ -542,7 +554,8 @@ def ink_gap(context, snap, m, a, b, kern):
 # edges, takes the clicks without a sign).
 CLICKABLE = ("tightness", "intensity", "threshold", "thresholdField", "harness", "harnessStrength", "harnessButton",
              "master", "size", "threads", "maxPairs", "connected", "joinMode", "reload", "scope", "replace",
-             "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel")
+             "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel", "punctuation",
+             "figures", "conventions")
 
 
 def covered_controls(win):
@@ -609,6 +622,7 @@ class SelfTest(object):
         self.plan = None
         self.before = None
         self.before_shapes = None
+        self.spaces_before = {}  # blank space → (its advance, its glyph's) before the whole-font Apply
         self.phase_times = {}
 
     # --- bookkeeping -------------------------------------------------------
@@ -1181,6 +1195,14 @@ class SelfTest(object):
                   "%d entries (%d before the budget)"
                   % (seconds, st.get("threads", 0), info["kerned_glyphs"], st.get("pairs_in_scope", 0),
                      st.get("class_pairs", 0), info["entries"], st.get("entries_before_budget", 0)))
+        # the word space beside the convention of the font's kind (a note in the status line, nothing written)
+        space = self.win._word_space_note() if hasattr(self.win, "_word_space_note") else None
+        status = str(self.win.w.status.get() or "") if self.win.w is not None else ""
+        self.log("word space", note=space, in_status=bool(space and space in status))
+        if space:
+            self.note("whole-font status: %s%s" % (space, "" if space in status else " (NOT in the status line)"))
+        if space and space not in status:
+            self.error("the whole-font status line does not say where the word space sits")
         if info["entries"] == 0:
             self.warn("the whole-font run produced no kerning entries")
         if info["kerned_glyphs"] <= self.preview_kerned:
@@ -1209,6 +1231,9 @@ class SelfTest(object):
         t = time.time()
         self.plan = kk2_apply.plan(snap, res, True)
         plan_s = time.time() - t
+        # a blank space that has its glyph's advance keeps it (the punctuation space the period's)
+        self.spaces_before = dict((space, (self._width(space, mid), self._width(glyph, mid)))
+                                  for space, glyph in getattr(self.plan, "spaces", {}).items())
         self.log("before apply", capture_s=round(capture_s, 3), plan_s=round(plan_s, 3), gc_tracked=len(gc.get_objects()),
                  kerning_entries=count_entries(self.before["kerning"]), plan=getattr(self.plan, "counts", None))
         previous = win.last_apply
@@ -1219,6 +1244,11 @@ class SelfTest(object):
         self.wait(lambda: win.last_apply is not previous and self.window_state("during Apply") != "applying",
                   self.after_apply, 300.0, "applying the whole-font result")
 
+    def _width(self, name, mid):
+        glyph = self.font.glyphs[name]
+        layer = glyph.layers[mid] if glyph is not None else None
+        return float(layer.width) if layer is not None else None
+
     def after_apply(self):
         win, font, plan = self.win, self.font, self.plan
         snap = win.snapshot
@@ -1226,6 +1256,20 @@ class SelfTest(object):
         apply_s = time.time() - self.apply_t
         if win.revert_point is None:
             self.error("Apply kept no revert point")
+
+        # blank spaces kept in step with their glyph
+        space_bad = []
+        for space, glyph in getattr(plan, "spaces", {}).items():
+            have, want = self._width(space, mid), self._width(glyph, mid)
+            before = self.spaces_before.get(space, (None, None))
+            self.log("space in step", space=space, glyph=glyph, before=before, after=(have, want))
+            self.note("the punctuation space (%s) keeps the period's advance: %s → %s, the period %s → %s"
+                      % (space, _num(before[0]), _num(have), _num(before[1]), _num(want)))
+            if have is None or want is None or abs(have - want) > 1e-6:
+                space_bad.append([space, have, glyph, want])
+        if space_bad:
+            self.error("after Apply %d blank spaces do not have their glyph's advance, e.g. %s"
+                       % (len(space_bad), space_bad[:3]))
 
         # every side Apply wrote is within half a unit of the plan, on the ink
         # like the plan's targets (Glyphs reports sidebearings rounded half
@@ -1313,6 +1357,15 @@ class SelfTest(object):
     def after_revert(self):
         snap = self.win.snapshot
         seconds = time.time() - self.revert_t
+        space_bad = [[space, was[0], self._width(space, snap.master_id)]
+                     for space, was in (self.spaces_before or {}).items()
+                     if self._width(space, snap.master_id) is None or abs(self._width(space, snap.master_id) - was[0]) > 1e-6]
+        if space_bad:
+            self.error("after Revert %d blank spaces are not back to their advance, e.g. %s"
+                       % (len(space_bad), space_bad[:3]))
+        elif self.spaces_before:
+            self.note("Revert: the punctuation space is back to %s" % ", ".join(
+                _num(was[0]) for was in self.spaces_before.values()))
         after = self.font_state(snap.names, snap.master_id)
         kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
         glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"])
@@ -1341,6 +1394,7 @@ class SelfTest(object):
             self.error("after Revert %d of %d composites are not back where they were, e.g. [glyph, dx, off by] %s"
                        % (len(shape_bad), len(self.before_shapes), shape_bad[:5]))
         self.before = self.before_shapes = None
+        self.spaces_before = {}
         if self.win.harness_available():
             self.later(0.3, self.harness_step)
         else:
@@ -1348,6 +1402,383 @@ class SelfTest(object):
             self.after_harness()
 
     def after_harness(self):
+        if self.win.punctuation_available():
+            self.later(0.3, self.punctuation_step)
+        else:
+            self.note("punctuation by convention: not in this engine build, not tested")
+            self.after_punctuation()
+
+    # --- punctuation by convention -------------------------------------------
+
+    def _result_punctuation(self):
+        key = self.win._result_key
+        return key[-3] if key and len(key) >= 3 else None
+
+    def _preview_punct(self, on):
+        win = self.win
+        return (self.window_state("waiting for the punctuation preview") == "ready" and win._result_kind == "preview"
+                and self._result_punctuation() == on and self._result_harness_strength() == 0.0
+                and win.result is not None)
+
+    def punctuation_step(self):
+        """The Punctuation switch, as a user clicks it: off, then on again. Off,
+        letters keep every sidebearing and their kerning while punctuation
+        goes back to the shapes alone; on, each punctuation side moves by its
+        convention, and the same preview comes back exactly."""
+        win = self.win
+        self.heartbeat.stage(PUNCTUATION)
+        if win.w.harness.get():
+            win.w.harness.set(False)
+            win.harnessChanged(None)
+        win.set_harness_style("text")
+        if not win.w.punctuation.get():
+            win.w.punctuation.set(True)
+            self.call_window(PUNCTUATION, win.punctuationChanged, None)
+        self.wait(lambda: self._preview_punct(True), self.punctuation_on_ready, 120.0,
+                  "the preview with punctuation by convention")
+
+    def _engine_rhythm(self, em, per):
+        """The letter rhythm the conventions use, as the engine computes it
+        (Conventions in engine.rs): the median sidebearing of the lowercase
+        group's valid glyphs, else of every letter's, per 1000 em, from
+        `em` (engine-frame (lsb, rsb) per glyph)."""
+        win = self.win
+        snap = win.snapshot
+        valid = [m.valid for m in win.result.metrics]
+
+        def sides(groups):
+            return sorted(x * per for i, spec in enumerate(snap.specs) if valid[i] and spec.group in groups
+                          for x in em[i][:2] if x == x)
+        v = sides((kb.GROUP_LOWERCASE,))
+        if len(v) < 6:
+            v = sides((kb.GROUP_LOWERCASE, kb.GROUP_UPPERCASE))
+        if not v:
+            return 0.0
+        return v[len(v) // 2] if len(v) % 2 else 0.5 * (v[len(v) // 2 - 1] + v[len(v) // 2])
+
+    def _pairs_sample(self):
+        snap = self.win.snapshot
+        out = []
+        for a, b in (("n", "o"), ("H", "a"), ("T", "o"), ("f", "o"), ("n", "."), ("T", "."), ("o", ","), ("n", "-"),
+                     ("(", "H"), ("n", ")"), ("\u201c", "H"), ("n", "\u201d"), ("V", "."), ("n", ":")):
+            na, nb = snap.char_map.get(a), snap.char_map.get(b)
+            if na in snap.index and nb in snap.index:
+                out.append((snap.index[na], snap.index[nb]))
+        return out
+
+    def punctuation_on_ready(self):
+        win = self.win
+        self.punct_m1 = self._metrics()
+        self.punct_pairs = [(a, b) for a, b in self._pairs_sample() if win.result.value(a, b) == win.result.value(a, b)]
+        self.punct_v1 = dict(((a, b), float(win.result.value(a, b))) for a, b in self.punct_pairs)
+        win.w.punctuation.set(False)
+        self.call_window(PUNCTUATION, win.punctuationChanged, None)
+        self.wait(lambda: self._preview_punct(False), self.punctuation_off_ready, 120.0,
+                  "the preview without punctuation by convention")
+
+    def punctuation_off_ready(self):
+        import kk2_punctuation as kpu
+        win = self.win
+        snap = win.snapshot
+        per = 1000.0 / snap.upm
+        m0 = self._metrics()
+        v0 = dict(((a, b), float(win.result.value(a, b))) for a, b in self.punct_pairs)
+        # the punctuation's conventions (the figures' stay on in both previews)
+        coefs, shares, scale, follow = kpu.engine_arg(snap, "text", punctuation=True, figures=False)
+        marks = set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
+        letters = [i for i, name in enumerate(snap.names)
+                   if (snap.infos.get(name) is not None and snap.infos[name].unicode is not None
+                       and 0x41 <= snap.infos[name].unicode <= 0x7A and chr(snap.infos[name].unicode).isalpha())]
+        # letters: the switch must not move them
+        letter_moved = [snap.names[i] for i in letters
+                        if any(abs(p - q) > 1e-6 for p, q in zip(self.punct_m1[i], m0[i]))]
+        # each mark: the convention's shift, from the model's own sidebearings and the lowercase rhythm, in
+        # the frame the engine measures in (along the slant for a master measured that way; the shift itself
+        # is the same in either frame)
+        em0 = [(m.lsb, m.rsb) for m in getattr(win.result, "engine_metrics", win.result.metrics)]
+        rho = self._engine_rhythm(em0, per)
+        off, examples, moved = [], [], 0
+        # a case form takes its base mark's sides (as on, they must be the same)
+        followers = [i for i, f in enumerate(follow) if f != kb.NONE]
+        case_off = [snap.names[i] for i in followers
+                    if any(abs(self.punct_m1[i][sd] - self.punct_m1[follow[i]][sd]) > 1e-6 for sd in (0, 1))]
+        for i in sorted(marks):
+            if not win.result.metrics[i].valid or follow[i] != kb.NONE:
+                continue
+            c = coefs[i]
+            for side in (0, 1):
+                k, m, r = c[3 * side:3 * side + 3]
+                if k != k:
+                    continue
+                want = (k + m * em0[i][side] * per / 50.0 + r * rho / 50.0) / per
+                got = self.punct_m1[i][side] - m0[i][side]
+                if abs(got) >= 0.5:
+                    moved += 1
+                if abs(got - want) > 1.0:
+                    off.append([snap.names[i], "LR"[side], round(got, 1), round(want, 1)])
+            if snap.names[i] in ("period", "comma", "hyphen", "parenleft", "quotedblleft", "question", "guillemetleft",
+                                 "guillemotleft", "quotedblbase", "questiondown", "plus", "dollar"):
+                examples.append("%s %+.0f/%+.0f" % (snap.names[i], (self.punct_m1[i][0] - m0[i][0]) * per,
+                                                    (self.punct_m1[i][1] - m0[i][1]) * per))
+        # kerning: letter pairs unchanged, each mark side kerned with its own share
+        kern_letters = [(snap.names[a], snap.names[b], v0[(a, b)], self.punct_v1[(a, b)]) for a, b in self.punct_pairs
+                        if a not in marks and b not in marks and abs(v0[(a, b)] - self.punct_v1[(a, b)]) > 1e-6]
+        kern_punct = ["%s %s %+.0f→%+.0f" % (snap.names[a], snap.names[b], v0[(a, b)] * per, self.punct_v1[(a, b)] * per)
+                      for a, b in self.punct_pairs if a in marks or b in marks]
+        self.log("punctuation", marks=len(marks), sides_moved=moved, rhythm_per_1000=round(rho, 1),
+                 letters_moved=letter_moved[:10], side_differences=off[:10], letter_kerning_changed=kern_letters[:10],
+                 punct_kerning=kern_punct[:10], kern_scale=scale,
+                 shares=dict((snap.names[i], shares[i]) for i in sorted(marks) if shares[i][0] == shares[i][0]))
+        period = kpu.share_of("period") or (scale, scale)
+        hyphen = kpu.share_of("hyphen") or (scale, scale)
+        self.note("punctuation by convention: %d punctuation and symbol sides moved (left/right per 1000 em: %s), each as its "
+                  "convention says%s; letters untouched%s; each mark kerned with its own share (a period after a "
+                  "letter %d %%, a hyphen %d %%: %s)"
+                  % (moved, ", ".join(examples[:10]), "" if not off else " EXCEPT %d" % len(off),
+                     "" if not (letter_moved or kern_letters) else " EXCEPT %d" % (len(letter_moved) + len(kern_letters)),
+                     round(100 * period[0]), round(100 * hyphen[0]), ", ".join(kern_punct[:5])))
+        if not marks:
+            self.error("no punctuation mark of this font has a convention")
+        if letter_moved:
+            self.error("the Punctuation switch moved %d letters' sidebearings, e.g. %s" % (len(letter_moved), letter_moved[:5]))
+        if kern_letters:
+            self.error("the Punctuation switch changed the kerning of letter pairs, e.g. %s" % kern_letters[:5])
+        if off:
+            self.error("with Punctuation on %d punctuation sides moved other than their convention, e.g. %s"
+                       % (len(off), off[:5]))
+        if followers:
+            self.note("punctuation by convention: %d case forms take their base mark's sides%s"
+                      % (len(followers), "" if not case_off else " EXCEPT %d" % len(case_off)))
+        if case_off:
+            self.error("with Punctuation on %d case forms do not take their base mark's sides, e.g. %s"
+                       % (len(case_off), case_off[:5]))
+        win.w.punctuation.set(True)
+        self.call_window(PUNCTUATION, win.punctuationChanged, None)
+        self.wait(lambda: self._preview_punct(True), self.punctuation_on_again, 120.0,
+                  "the preview with punctuation by convention again")
+
+    def punctuation_on_again(self):
+        m2 = self._metrics()
+        back = sum(1 for x, y in zip(self.punct_m1, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        if back:
+            self.error("with Punctuation on again %d glyphs' sidebearings differ from the first time" % back)
+        else:
+            self.note("punctuation on again: the same preview, exactly")
+        self.later(0.2, self.figures_step)
+
+    # --- figures by convention -----------------------------------------------
+
+    def _result_figures(self):
+        key = self.win._result_key
+        return key[-4] if key and len(key) >= 4 else None
+
+    def _preview_figures(self, on):
+        win = self.win
+        return (self.window_state("waiting for the figures preview") == "ready" and win._result_kind == "preview"
+                and self._result_figures() == on and self._result_harness_strength() == 0.0
+                and win.result is not None)
+
+    def figures_step(self):
+        """The Figures switch, as a user clicks it: off, then on again. Off,
+        every letter and punctuation mark keeps its sidebearings; each
+        proportional figure goes back by exactly what its convention says,
+        a tabular one keeps its width either way; on again, the same
+        preview."""
+        import kk2_punctuation as kpu
+        win = self.win
+        if not kpu.has_figures() or getattr(win.w, "figures", None) is None:
+            self.note("figures by convention: not in this plugin's table, not tested")
+            self.later(0.2, self.conventions_step)
+            return
+        if not win.w.figures.get():
+            win.w.figures.set(True)
+            self.call_window(PUNCTUATION, win.figuresChanged, None)
+        self.wait(lambda: self._preview_figures(True), self.figures_on_ready, 120.0, "the preview with figures by convention")
+
+    def figures_on_ready(self):
+        win = self.win
+        self.fig_m1 = self._metrics()
+        self.fig_e1 = [(m.lsb, m.rsb) for m in getattr(win.result, "engine_metrics", win.result.metrics)]
+        win.w.figures.set(False)
+        self.call_window(PUNCTUATION, win.figuresChanged, None)
+        self.wait(lambda: self._preview_figures(False), self.figures_off_ready, 120.0,
+                  "the preview without figures by convention")
+
+    def figures_off_ready(self):
+        import kk2_punctuation as kpu
+        win = self.win
+        snap = win.snapshot
+        per = 1000.0 / snap.upm
+        m0 = self._metrics()
+        em0 = [(m.lsb, m.rsb) for m in getattr(win.result, "engine_metrics", win.result.metrics)]
+        coefs, _shares, _scale, _follow = kpu.engine_arg(snap, "text", punctuation=False, figures=True)
+        figs = set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
+        fixed = set(i for i, n in enumerate(snap.names) if n in getattr(snap, "fixed", ()))
+        rho = self._engine_rhythm(em0, per)
+        others = [snap.names[i] for i in range(len(snap.names)) if i not in figs
+                  and any(abs(p - q) > 1e-6 for p, q in zip(self.fig_m1[i], m0[i]))]
+        off, moved, kept, examples = [], 0, 0, []
+        for i in sorted(figs):
+            if not win.result.metrics[i].valid:
+                continue
+            got = [self.fig_m1[i][sd] - m0[i][sd] for sd in (0, 1)]
+            if i in fixed:
+                kept += 1
+                if any(abs(g) > 1e-6 for g in got):
+                    off.append([snap.names[i], "tabular", round(got[0], 1), round(got[1], 1)])
+                continue
+            for sd in (0, 1):
+                k, m, r = coefs[i][3 * sd:3 * sd + 3]
+                if k != k:
+                    continue
+                want = (k + m * em0[i][sd] * per / 50.0 + r * rho / 50.0) / per
+                if abs(got[sd]) >= 0.5:
+                    moved += 1
+                if abs(got[sd] - want) > 1.0:
+                    off.append([snap.names[i], "LR"[sd], round(got[sd], 1), round(want, 1)])
+            examples.append("%s %+.0f/%+.0f" % (snap.names[i], got[0] * per, got[1] * per))
+        self.log("figures", figures=len(figs), sides_moved=moved, tabular_kept=kept, differences=off[:10],
+                 others_moved=others[:10], examples=examples[:10])
+        if kept and not moved:
+            self.note("figures by convention: the %d default figures are tabular and keep their widths either way" % kept)
+        else:
+            self.note("figures by convention: %d figure sides moved (left/right per 1000 em: %s), each as its convention "
+                      "says%s; letters and punctuation untouched%s"
+                      % (moved, ", ".join(examples[:6]), "" if not off else " EXCEPT %d" % len(off),
+                         "" if not others else " EXCEPT %d" % len(others)))
+        if others:
+            self.error("the Figures switch moved %d glyphs that are not figures, e.g. %s" % (len(others), others[:5]))
+        if off:
+            self.error("with Figures on %d figure sides moved other than their convention, e.g. %s" % (len(off), off[:5]))
+        win.w.figures.set(True)
+        self.call_window(PUNCTUATION, win.figuresChanged, None)
+        self.wait(lambda: self._preview_figures(True), self.figures_on_again, 120.0,
+                  "the preview with figures by convention again")
+
+    def figures_on_again(self):
+        m2 = self._metrics()
+        back = sum(1 for x, y in zip(self.fig_m1, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        if back:
+            self.error("with Figures on again %d glyphs' sidebearings differ from the first time" % back)
+        else:
+            self.note("figures on again: the same preview, exactly")
+        self.later(0.2, self.conventions_step)
+
+    # --- the Conventions menu ------------------------------------------------
+
+    def _preview_style(self, style):
+        win = self.win
+        return (self.window_state("waiting for the conventions preview") == "ready" and win._result_kind == "preview"
+                and self._result_harness_style() == style and self._result_harness_strength() == 0.0
+                and win.result is not None)
+
+    def _pick_main_style(self, key):
+        win = self.win
+        keys = [k for k, _label in win.styles]
+        win.w.conventions.set(keys.index(key))
+        self.call_window(PUNCTUATION, win.conventionsChanged, None)
+
+    def _letter_kind(self, i):
+        info = self.win.snapshot.infos.get(self.win.snapshot.names[i])
+        cp = getattr(info, "unicode", None)
+        if cp is None:
+            return None
+        return "U" if 0x41 <= cp <= 0x5A else "l" if 0x61 <= cp <= 0x7A else None
+
+    def conventions_step(self):
+        """The Conventions menu, as a user picks it in the main window:
+        Handwriting kerns a capital deeper over its neighbour (Ha, To) and
+        leaves every lowercase pair and every letter's sidebearings as they
+        were; Automatic follows handwriting for a font that joins or leans
+        without an italic angle, else text faces."""
+        win = self.win
+        keys = [k for k, _label in win.styles]
+        if "handwriting" not in keys or "auto" not in keys or not win.engine.features & kb.FEATURE_PUNCTUATION:
+            self.note("conventions: no Handwriting or Automatic choice in this build, not tested")
+            self.after_punctuation()
+            return
+        sample = sorted(win._sample_indices())
+        letters = [i for i in sample if self._letter_kind(i)]
+        res = win.result
+        self.conv_pairs = [(a, b, self._letter_kind(a) + self._letter_kind(b)) for a in letters for b in letters]
+        self.conv_pairs = [(a, b, k) for a, b, k in self.conv_pairs if res.value(a, b) == res.value(a, b)]
+        self.conv_v0 = [float(res.value(a, b)) for a, b, _k in self.conv_pairs]
+        self.conv_m0 = self._metrics()
+        self._pick_main_style("handwriting")
+        self.wait(lambda: self._preview_style("handwriting"), self.conventions_ready, 120.0,
+                  "the preview with handwriting's conventions")
+
+    def conventions_ready(self):
+        win = self.win
+        snap = win.snapshot
+        per = 1000.0 / snap.upm
+        res = win.result
+        t = win._threshold() * snap.upm / 1000.0
+        m1 = self._metrics()
+        moved = [snap.names[i] for i in range(len(snap.names)) if self._letter_kind(i)
+                 and any(abs(p - q) > 1e-6 for p, q in zip(self.conv_m0[i], m1[i]))]
+        same_bad, deeper_bad, deeper = [], [], []
+        for (a, b, k), v0 in zip(self.conv_pairs, self.conv_v0):
+            v1 = float(res.value(a, b))
+            pair = "%s %s" % (snap.names[a], snap.names[b])
+            if k in ("ll", "lU"):
+                if abs(v1 - v0) > 1e-6:
+                    same_bad.append([pair, round(v0 * per, 1), round(v1 * per, 1)])
+            elif v1 > v0 + t + 1e-6:
+                deeper_bad.append([pair, round(v0 * per, 1), round(v1 * per, 1)])
+            elif v1 < v0 - 1.0 / per:
+                deeper.append((v1 - v0, pair, v0, v1, k))
+        deeper.sort()
+        examples = ["%s %+.0f→%+.0f" % (pair, v0 * per, v1 * per) for _d, pair, v0, v1, _k in deeper[:6]]
+        ul = sum(1 for _a, _b, k in self.conv_pairs if k == "Ul")
+        self.log("conventions handwriting", pairs=len(self.conv_pairs), capital_pairs_deeper=len(deeper),
+                 examples=examples, lowercase_changed=same_bad[:10], capital_shallower=deeper_bad[:10],
+                 letters_moved=moved[:10])
+        self.note("conventions, Handwriting picked in the main window: %d pairs with a capital first kerned deeper "
+                  "(%s)%s; lowercase pairs and every letter's sidebearings as they were%s"
+                  % (len(deeper), ", ".join(examples), "" if not deeper_bad else " EXCEPT %d" % len(deeper_bad),
+                     "" if not (same_bad or moved) else " EXCEPT %d" % (len(same_bad) + len(moved))))
+        if moved:
+            self.error("handwriting's conventions moved %d letters' sidebearings, e.g. %s" % (len(moved), moved[:5]))
+        if same_bad:
+            self.error("handwriting's conventions changed %d pairs with a lowercase letter first, e.g. %s"
+                       % (len(same_bad), same_bad[:5]))
+        if deeper_bad:
+            self.error("handwriting's conventions kerned %d pairs with a capital first less deeply, e.g. %s"
+                       % (len(deeper_bad), deeper_bad[:5]))
+        if ul >= 5 and not any(k == "Ul" for _d, _p, _v0, _v1, k in deeper):
+            self.error("handwriting's conventions kerned none of %d capital-lowercase pairs deeper: Pass 2's "
+                       "style does not reach the engine" % ul)
+        self.conv_m1 = m1
+        self.conv_v1 = [float(res.value(a, b)) for a, b, _k in self.conv_pairs]
+        # Automatic: handwriting for a connected script or a hand that leans without an italic angle
+        hand = (win.joins is not None and not win.join_decorated) or win._leans_undeclared()
+        self.conv_auto = "handwriting" if hand else "text"
+        self._pick_main_style("auto")
+        self.wait(lambda: self._preview_style(self.conv_auto), self.conventions_auto_ready, 120.0,
+                  "the preview with the Automatic conventions")
+
+    def conventions_auto_ready(self):
+        win = self.win
+        style = win._style()
+        want = self.conv_auto
+        m_want, v_want = (self.conv_m1, self.conv_v1) if want == "handwriting" else (self.conv_m0, self.conv_v0)
+        m2 = self._metrics()
+        back = sum(1 for x, y in zip(m_want, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        diff = sum(1 for (a, b, _k), v in zip(self.conv_pairs, v_want)
+                   if abs(float(win.result.value(a, b)) - v) > 1e-6)
+        what = ("handwriting's for a font that joins or leans without an italic angle" if want == "handwriting"
+                else "text faces' for a font that neither joins nor leans")
+        if style != want or back or diff:
+            self.error("Automatic should follow %s, but follows %s's conventions: %d glyphs' sidebearings and %d "
+                       "pairs differ from that preview" % (what, style, back, diff))
+        else:
+            self.note("conventions, Automatic: %s (the same preview, exactly)" % what)
+        self._pick_main_style("text")
+        self.wait(lambda: self._preview_style("text"), self.after_punctuation, 120.0,
+                  "the preview with text faces' conventions")
+
+    def after_punctuation(self):
         if self.connected_test:
             self.later(0.3, self.connected_step)
         else:
@@ -1675,9 +2106,15 @@ class SelfTest(object):
         wait for a preview without the harness."""
         win = self.win
         self.heartbeat.stage(HARNESS)
+        # the conventions the stage begins with (Automatic: handwriting for a leaning or joining font), and ends with
+        self.harness_style0 = win.harness_style
         if win.w.harness.get():
             win.w.harness.set(False)
             win.harnessChanged(None)
+        # the harness is learned on top of punctuation by convention (on by default): tested with it on
+        if not win.w.punctuation.get():
+            win.w.punctuation.set(True)
+            win.punctuationChanged(None)
         t = time.perf_counter()
         hw = self.call_window(HARNESS, win.openHarness)
         self.harness_open_ms = (time.perf_counter() - t) * 1000.0
@@ -1802,13 +2239,26 @@ class SelfTest(object):
     def harness_style_step(self):
         """The Display conventions, picked as a user does in the Designer
         Harness window: the preview must move every glyph side by the Display
-        plan, punctuation included."""
+        plan, punctuation included. The menu sets the punctuation's own
+        conventions too, so the plan is measured against the preview at
+        Display without the harness."""
         hw = self.win.harness_window
         if "display" not in [k for k, _label in hw.styles]:
             self.warn("the harness table has no Display conventions")
             self.later(0.2, self.harness_apply)
             return
         self._pick_style("display")
+        hw.w.on.set(False)
+        self.call_window(HARNESS, hw.onChanged, None)
+        self.wait(lambda: self._preview_with(0.0) and self._result_harness_style() == "display"
+                  and self._covers(self.win.harness_window.pairs[:20]), self.harness_style_off_ready, 120.0,
+                  "the preview with the Display conventions, without the harness")
+
+    def harness_style_off_ready(self):
+        self.harness_m0d = self._metrics()
+        hw = self.win.harness_window
+        hw.w.on.set(True)
+        self.call_window(HARNESS, hw.onChanged, None)
         # the window's list follows the conventions: the preview covers its pairs
         self.wait(lambda: self._preview_with(1.0) and self._result_harness_style() == "display"
                   and self._covers(self.win.harness_window.pairs[:20]), self.harness_style_ready, 120.0,
@@ -1822,7 +2272,7 @@ class SelfTest(object):
             raise RuntimeError("the preview with the Display conventions has no Display plan")
         per = 1000.0 / snap.upm
         bad = []
-        for i, ((l0, r0, _a0), (l1, r1, _a1)) in enumerate(zip(self.harness_m0, self._metrics())):
+        for i, ((l0, r0, _a0), (l1, r1, _a1)) in enumerate(zip(self.harness_m0d, self._metrics())):
             dl, dr = plan.sides[i]
             if abs((l1 - l0) - dl) > 1e-3 or abs((r1 - r0) - dr) > 1e-3:
                 bad.append([snap.names[i], round(l1 - l0, 2), round(dl, 2), round(r1 - r0, 2), round(dr, 2)])
@@ -1840,11 +2290,11 @@ class SelfTest(object):
         if bad:
             self.error("with the Display conventions %d glyphs' sidebearings moved other than planned, e.g. %s"
                        % (len(bad), bad[:5]))
-        # back to text faces, which the rest of the test applies
-        self._pick_style("text")
-        self.wait(lambda: self._preview_with(1.0) and self._result_harness_style() == "text"
+        # back to the conventions the stage began with
+        self._pick_style(self.harness_style0)
+        self.wait(lambda: self._preview_with(1.0) and self._result_harness_style() == self.win._style()
                   and self._covers(self.win.harness_window.pairs[:20]), self.harness_apply, 120.0,
-                  "the preview with the text conventions again")
+                  "the preview with the conventions the stage began with")
 
     def harness_apply(self):
         """Apply the preview with the harness: the glyphs it shifted must reach
