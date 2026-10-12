@@ -555,7 +555,7 @@ def ink_gap(context, snap, m, a, b, kern):
 CLICKABLE = ("tightness", "intensity", "threshold", "thresholdField", "harness", "harnessStrength", "harnessButton",
              "master", "size", "threads", "maxPairs", "connected", "joinMode", "reload", "scope", "replace",
              "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel", "punctuation",
-             "figures", "conventions")
+             "figures", "smallCaps", "conventions")
 
 
 def covered_controls(win):
@@ -1453,6 +1453,31 @@ class SelfTest(object):
         self.wait(lambda: self._preview_punct(True), self.punctuation_on_ready, 120.0,
                   "the preview with punctuation by convention")
 
+    def _ruled_move(self, i, sd, m1, m0):
+        """The move the per-side rules give side sd of glyph i between metrics
+        m0 and m1 (a metrics key or an aligned component: its target's side's
+        move; fixed: none), or None for a free side, which its convention
+        moves."""
+        spec = self.win.snapshot.specs[i]
+        rule, t = (spec.lsb_rule, spec.lsb_glyph) if sd == 0 else (spec.rsb_rule, spec.rsb_glyph)
+        if rule == kb.RULE_FIXED:
+            return 0.0
+        if rule in (kb.RULE_FOLLOW_SAME, kb.RULE_FOLLOW_OPPOSITE) and t != kb.NONE and t < len(m0):
+            tsd = sd if rule == kb.RULE_FOLLOW_SAME else 1 - sd
+            return m1[t][tsd] - m0[t][tsd]
+        return None
+
+    def _moved_freely(self, i, m1, m0):
+        """Glyph i moved between m0 and m1 other than its rules move it."""
+        for sd in (0, 1):
+            d = m1[i][sd] - m0[i][sd]
+            if abs(d) <= 1e-6:
+                continue
+            ruled = self._ruled_move(i, sd, m1, m0)
+            if ruled is None or abs(d - ruled) > 1.0:
+                return True
+        return False
+
     def _engine_rhythm(self, em, per):
         """The letter rhythm the conventions use, as the engine computes it
         (Conventions in engine.rs): the median sidebearing of the lowercase
@@ -1500,7 +1525,7 @@ class SelfTest(object):
         m0 = self._metrics()
         v0 = dict(((a, b), float(win.result.value(a, b))) for a, b in self.punct_pairs)
         # the punctuation's conventions (the figures' stay on in both previews)
-        coefs, shares, scale, follow = kpu.engine_arg(snap, "text", punctuation=True, figures=False)
+        coefs, shares, scale, follow = kpu.engine_arg(snap, "text", punctuation=True, figures=False, small_caps=False)
         marks = set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
         letters = [i for i, name in enumerate(snap.names)
                    if (snap.infos.get(name) is not None and snap.infos[name].unicode is not None
@@ -1526,7 +1551,9 @@ class SelfTest(object):
                 k, m, r = c[3 * side:3 * side + 3]
                 if k != k:
                     continue
-                want = (k + m * em0[i][side] * per / 50.0 + r * rho / 50.0) / per
+                want = self._ruled_move(i, side, self.punct_m1, m0)
+                if want is None:
+                    want = (k + m * em0[i][side] * per / 50.0 + r * rho / 50.0) / per
                 got = self.punct_m1[i][side] - m0[i][side]
                 if abs(got) >= 0.5:
                     moved += 1
@@ -1604,7 +1631,7 @@ class SelfTest(object):
         win = self.win
         if not kpu.has_figures() or getattr(win.w, "figures", None) is None:
             self.note("figures by convention: not in this plugin's table, not tested")
-            self.later(0.2, self.conventions_step)
+            self.later(0.2, self.smallcaps_step)
             return
         if not win.w.figures.get():
             win.w.figures.set(True)
@@ -1627,12 +1654,12 @@ class SelfTest(object):
         per = 1000.0 / snap.upm
         m0 = self._metrics()
         em0 = [(m.lsb, m.rsb) for m in getattr(win.result, "engine_metrics", win.result.metrics)]
-        coefs, _shares, _scale, _follow = kpu.engine_arg(snap, "text", punctuation=False, figures=True)
+        coefs, _shares, _scale, _follow = kpu.engine_arg(snap, "text", punctuation=False, figures=True, small_caps=False)
         figs = set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
         fixed = set(i for i, n in enumerate(snap.names) if n in getattr(snap, "fixed", ()))
         rho = self._engine_rhythm(em0, per)
         others = [snap.names[i] for i in range(len(snap.names)) if i not in figs
-                  and any(abs(p - q) > 1e-6 for p, q in zip(self.fig_m1[i], m0[i]))]
+                  and self._moved_freely(i, self.fig_m1, m0)]
         off, moved, kept, examples = [], 0, 0, []
         for i in sorted(figs):
             if not win.result.metrics[i].valid:
@@ -1647,7 +1674,9 @@ class SelfTest(object):
                 k, m, r = coefs[i][3 * sd:3 * sd + 3]
                 if k != k:
                     continue
-                want = (k + m * em0[i][sd] * per / 50.0 + r * rho / 50.0) / per
+                want = self._ruled_move(i, sd, self.fig_m1, m0)
+                if want is None:
+                    want = (k + m * em0[i][sd] * per / 50.0 + r * rho / 50.0) / per
                 if abs(got[sd]) >= 0.5:
                     moved += 1
                 if abs(got[sd] - want) > 1.0:
@@ -1678,6 +1707,102 @@ class SelfTest(object):
             self.error("with Figures on again %d glyphs' sidebearings differ from the first time" % back)
         else:
             self.note("figures on again: the same preview, exactly")
+        self.later(0.2, self.smallcaps_step)
+
+    # --- small caps by convention ---------------------------------------------
+
+    def _preview_small_caps(self, on):
+        win = self.win
+        key = win._result_key
+        return (self.window_state("waiting for the small caps preview") == "ready" and win._result_kind == "preview"
+                and key is not None and len(key) >= 5 and key[-5] == on and self._result_harness_strength() == 0.0
+                and win.result is not None)
+
+    def _small_caps(self, snap):
+        """(coefficients, the glyphs with a small caps convention) of the snapshot."""
+        import kk2_punctuation as kpu
+        coefs = kpu.engine_arg(snap, "text", punctuation=False, figures=False, small_caps=True)[0]
+        return coefs, set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
+
+    def smallcaps_step(self):
+        """The Small caps switch, as a user clicks it: off, then on again. Off,
+        every glyph but the small caps keeps its sidebearings; each small cap
+        goes back by exactly what its convention says; on again, the same
+        preview."""
+        import kk2_punctuation as kpu
+        win = self.win
+        if not kpu.has_small_caps() or getattr(win.w, "smallCaps", None) is None:
+            self.note("small caps by convention: not in this plugin's table, not tested")
+            self.later(0.2, self.conventions_step)
+            return
+        if not self._small_caps(win.snapshot)[1]:
+            self.note("small caps by convention: the font has no small caps, not tested")
+            self.later(0.2, self.conventions_step)
+            return
+        if not win.w.smallCaps.get():
+            win.w.smallCaps.set(True)
+            self.call_window(PUNCTUATION, win.smallCapsChanged, None)
+        self.wait(lambda: self._preview_small_caps(True), self.smallcaps_on_ready, 120.0,
+                  "the preview with small caps by convention")
+
+    def smallcaps_on_ready(self):
+        win = self.win
+        self.sc_m1 = self._metrics()
+        win.w.smallCaps.set(False)
+        self.call_window(PUNCTUATION, win.smallCapsChanged, None)
+        self.wait(lambda: self._preview_small_caps(False), self.smallcaps_off_ready, 120.0,
+                  "the preview without small caps by convention")
+
+    def smallcaps_off_ready(self):
+        win = self.win
+        snap = win.snapshot
+        per = 1000.0 / snap.upm
+        m0 = self._metrics()
+        em0 = [(m.lsb, m.rsb) for m in getattr(win.result, "engine_metrics", win.result.metrics)]
+        coefs, caps = self._small_caps(snap)
+        rho = self._engine_rhythm(em0, per)
+        others = [snap.names[i] for i in range(len(snap.names)) if i not in caps
+                  and self._moved_freely(i, self.sc_m1, m0)]
+        off, moved, examples = [], 0, []
+        for i in sorted(caps):
+            if not win.result.metrics[i].valid:
+                continue
+            got = [self.sc_m1[i][sd] - m0[i][sd] for sd in (0, 1)]
+            for sd in (0, 1):
+                k, m, r = coefs[i][3 * sd:3 * sd + 3]
+                if k != k:
+                    continue
+                want = self._ruled_move(i, sd, self.sc_m1, m0)
+                if want is None:
+                    want = (k + m * em0[i][sd] * per / 50.0 + r * rho / 50.0) / per
+                if abs(got[sd]) >= 0.5:
+                    moved += 1
+                if abs(got[sd] - want) > 1.0:
+                    off.append([snap.names[i], "LR"[sd], round(got[sd], 1), round(want, 1)])
+            examples.append("%s %+.0f/%+.0f" % (snap.names[i], got[0] * per, got[1] * per))
+        self.log("small caps", small_caps=len(caps), sides_moved=moved, differences=off[:10], others_moved=others[:10],
+                 examples=examples[:10])
+        self.note("small caps by convention: %d small cap sides moved (left/right per 1000 em: %s), each as its "
+                  "convention says%s; every other glyph untouched%s"
+                  % (moved, ", ".join(examples[:6]), "" if not off else " EXCEPT %d" % len(off),
+                     "" if not others else " EXCEPT %d" % len(others)))
+        if others:
+            self.error("the Small caps switch moved %d glyphs that are not small caps, e.g. %s" % (len(others), others[:5]))
+        if off:
+            self.error("with Small caps on %d small cap sides moved other than their convention, e.g. %s"
+                       % (len(off), off[:5]))
+        win.w.smallCaps.set(True)
+        self.call_window(PUNCTUATION, win.smallCapsChanged, None)
+        self.wait(lambda: self._preview_small_caps(True), self.smallcaps_on_again, 120.0,
+                  "the preview with small caps by convention again")
+
+    def smallcaps_on_again(self):
+        m2 = self._metrics()
+        back = sum(1 for x, y in zip(self.sc_m1, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        if back:
+            self.error("with Small caps on again %d glyphs' sidebearings differ from the first time" % back)
+        else:
+            self.note("small caps on again: the same preview, exactly")
         self.later(0.2, self.conventions_step)
 
     # --- the Conventions menu ------------------------------------------------
@@ -1718,6 +1843,18 @@ class SelfTest(object):
         res = win.result
         self.conv_pairs = [(a, b, self._letter_kind(a) + self._letter_kind(b)) for a in letters for b in letters]
         self.conv_pairs = [(a, b, k) for a, b, k in self.conv_pairs if res.value(a, b) == res.value(a, b)]
+        # a pair whose kerning classes hold small caps follows the small caps' conventions, which differ by style
+        # (a designer may put t.sc in T's class): left out
+        _coefs, caps = self._small_caps(win.snapshot)
+        n = len(win.snapshot.names)
+        rc = list(res.glyph_right_class) if len(res.glyph_right_class) == n else None
+        lc = list(res.glyph_left_class) if len(res.glyph_left_class) == n else None
+        with_caps_r = set(rc[i] for i in caps if rc is not None and rc[i] != kb.NONE)
+        with_caps_l = set(lc[i] for i in caps if lc is not None and lc[i] != kb.NONE)
+        kept = [(a, b, k) for a, b, k in self.conv_pairs
+                if not ((rc is not None and rc[a] in with_caps_r) or (lc is not None and lc[b] in with_caps_l))]
+        self.conv_caps_left_out = len(self.conv_pairs) - len(kept)
+        self.conv_pairs = kept
         self.conv_v0 = [float(res.value(a, b)) for a, b, _k in self.conv_pairs]
         self.conv_m0 = self._metrics()
         self._pick_main_style("handwriting")
@@ -1751,9 +1888,11 @@ class SelfTest(object):
                  examples=examples, lowercase_changed=same_bad[:10], capital_shallower=deeper_bad[:10],
                  letters_moved=moved[:10])
         self.note("conventions, Handwriting picked in the main window: %d pairs with a capital first kerned deeper "
-                  "(%s)%s; lowercase pairs and every letter's sidebearings as they were%s"
+                  "(%s)%s; lowercase pairs and every letter's sidebearings as they were%s%s"
                   % (len(deeper), ", ".join(examples), "" if not deeper_bad else " EXCEPT %d" % len(deeper_bad),
-                     "" if not (same_bad or moved) else " EXCEPT %d" % (len(same_bad) + len(moved))))
+                     "" if not (same_bad or moved) else " EXCEPT %d" % (len(same_bad) + len(moved)),
+                     "" if not getattr(self, "conv_caps_left_out", 0) else
+                     " (%d pairs whose kerning classes hold small caps left out)" % self.conv_caps_left_out))
         if moved:
             self.error("handwriting's conventions moved %d letters' sidebearings, e.g. %s" % (len(moved), moved[:5]))
         if same_bad:

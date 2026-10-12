@@ -1839,6 +1839,20 @@ class SmokeTest(object):
         rep.check(kpu.mark_of(snap7, snap7.index["one.oldstyle"]) == "one.osf" and
                   kpu.mark_of(snap7, snap7.index["fraction"]) == "fraction.frac",
                   "punctuation lookups: .oldstyle, .numerator and .denominator names count as .osf, .numr and .dnom")
+        if kpu.has_small_caps():
+            # small caps: a.sc, a.smcp, A.c2sc and aacute.sc by their letter, under the Small caps switch only
+            snap9 = Snap([("a", 0x61, 556), ("aacute", 0xE1, 556), ("A", 0x41, 667), ("period", 0x2E, 278),
+                          ("a.sc", None, 480), ("b.smcp", None, 470), ("A.c2sc", None, 480), ("aacute.sc", None, 480)], 9)
+            cs = lambda **kw: kpu.engine_arg(snap9, "text", **kw)[0]
+            c_on, c_off = cs(small_caps=True), cs(small_caps=False)
+            c_fig = cs(punctuation=False, figures=True, small_caps=False)
+            marks9 = [kpu.mark_of(snap9, snap9.index[n]) for n in ("a.sc", "b.smcp", "A.c2sc", "aacute.sc")]
+            rep.check(marks9 == ["a.sc", "b.sc", "a.sc", "a.sc"] and
+                      all(on(c_on[snap9.index[n]]) for n in ("a.sc", "b.smcp", "A.c2sc", "aacute.sc")) and
+                      not any(on(c_off[snap9.index[n]]) or on(c_fig[snap9.index[n]]) for n in ("a.sc", "b.smcp")) and
+                      on(c_off[snap9.index["period"]]) and not on(c_on[snap9.index["a"]]),
+                      "punctuation lookups: small caps (.sc, .smcp, .c2sc, accented) take their letter's, under the "
+                      "Small caps switch only", "%s" % marks9)
         if "one.numr" not in kpu.feature_marks():
             return
         # numerators and denominators: their figure's kind of convention, under the Figures switch; one width kept

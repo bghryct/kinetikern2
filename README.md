@@ -154,6 +154,7 @@ other two.
 | **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
 | **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
 | **Punctuation** | Punctuation by convention (see below), on by default: each punctuation mark's sides set the way designers of well-spaced fonts set them, and each mark kerned with its own share of what its shape suggests: every mark Latin text uses (guillemets, low quotes, ¡ ¿, § ¶ † ‡…) and the symbols that sit with figures ($ € £ # + × …). A mark's case form takes its base mark's sides. Off: punctuation is spaced and kerned from its shape alone, and the designer harness leaves it alone too. |
+| **Small caps** | Small caps by convention (see *Figures by convention*), on by default: small caps (`a.sc`, `a.smcp`, `A.c2sc`, accented ones by their letter) spaced the way designers space them beside the capitals they follow. The model is already about as close to them as to the lowercase, so the gain is small. |
 | **Figures** | Figures by convention (see below), on by default: proportional figures (the default ones, or `.lf` / `.pnum` forms) spaced the way designers space them. From their shapes alone the model sets them 6–26 units per side too tight. Tabular figures keep their widths either way. Also what goes with figures: old-style figures, fractions (precomposed, and the numerators and denominators of a typed one), superscripts, subscripts and ordinals. |
 | **Conventions** | **Automatic** (default), **Text faces**, **Display** or **Handwriting**. Sets the punctuation's conventions, the harness's punctuation, and how far a capital reaches over its neighbour (see *Conventions and Pass 2's pair classes* below). Automatic follows handwriting for a connected script or a master whose stems lean without an italic angle, else text faces. |
 | **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning. A font whose letters do not join is spaced as usual, so it is on by default. The menu beside it: **Keep joins** (default) keeps every joining side's sidebearing and the master's kerning between two joining sides, so every join stays as drawn and the rest of the font is spaced around the letters; **Space joined letters** spaces the letter bodies without their join strokes and lets two joining letters overlap with no kerning (joins can break; Joins… counts them). A design whose glyphs touch by construction (a line or a grid through every glyph) keeps every side that touches. |
@@ -332,7 +333,7 @@ Off: punctuation and these symbols are spaced and kerned from their shapes
 alone, like the letters, and the designer harness (learned on top of these
 conventions) leaves them alone too.
 
-The table (`kk2_punctuation.json`, id `2026-10-12-2bc69aa0`) is learned by
+The table (`kk2_punctuation.json`, id `2026-10-12-3d6a0b43`) is learned by
 `tools/kk2_punctuation_learn.py` from Spacing QA's measurements. Those are
 the bare model at each family's best-fit Looseness, and every pair of the GF
 Latin Kernel's 88 scored glyphs; for the rest, `punctuation-data
@@ -472,13 +473,19 @@ Each pair is kerned as shaping kerns it. What came of it:
   and denominators' to 25.0 (318 reference families; macOS fonts 42.1 → 21.2).
   `.numr` / `.numerator` and `.dnom` / `.denominator` forms take them, and a
   set that shares one width keeps it.
-- **Small caps** (128–131 reference families) are left as the model spaces
-  them. The model is already about as close to their designers as it is to
-  the lowercase (17–21 units held out). Conventions of their own would bring
-  most letters only about half a unit closer, and j, s and u not at all,
-  which is not worth a switch.
+- **Small caps** (128–131 reference families) take conventions of their own,
+  under a switch of their own, **Small caps**. They were learned against the
+  capitals they follow (Caps and Small Caps). The model is already about as
+  close to their designers as it is to the lowercase (17–21 units held out),
+  so the gain is small: about half a unit for most letters, and a 23.4 → 21.3
+  and x 20.4 → 18.7. j, s and u keep the model's spacing, because their own
+  conventions did not bring them closer. `.sc`, `.smcp` and `.c2sc` forms
+  take them, and accented small caps take their letter's (`aacute.sc` a's).
+  Some designers put a capital and its small cap in one kerning class
+  (Barlow's T and t.sc). That class's value then follows the small caps'
+  conventions, which differ by style.
 
-The table records these under `feature_forms` (id `2026-10-12-2bc69aa0`, its
+The table records these under `feature_forms` (id `2026-10-12-3d6a0b43`, its
 `qa_id` unchanged).
 
 ### The word space
@@ -1208,13 +1215,14 @@ the Figures switch, a `.sups` or `.oldstyle` form by its encoded or
 old-style figure, a set of one width kept, the fraction slash as in a
 fraction where the master has numerators and denominators), and which blank
 spaces Apply keeps in step: the figure space follows the zero only without
-tabular figures. Canonical twins take their mark's conventions, and a
+tabular figures. Small caps (`.sc`, `.smcp`, `.c2sc`, accented) follow the
+Small caps switch only. Canonical twins take their mark's conventions, and a
 case form follows its base mark. `.lf` and `.pnum` figures take their
-figure's conventions. Old-style and tabular forms are left alone, and so is
+figure's conventions, old-style forms the old-style figures'. Tabular forms are left alone, and so is
 a `.lf` set whose figures share one width. A preview is compared with a
 direct engine solve under the window's conventions.
 
-Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **113
+Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **114
 passed, 0 failed** on 400 glyphs (11 October 2026; 92 on 3,000 glyphs
 before the conventions, `--glyphs 3000 --max-pairs 30000`).
 
@@ -1261,11 +1269,18 @@ in Glyphs' import):
      letter keeps its sidebearings and every letter pair its kerning. On,
      each side of each mark moved by exactly what its convention says (from
      the sidebearings the engine measures, along the slant for a master
-     measured that way), and the same preview comes back exactly;
+     measured that way), and the same preview comes back exactly. A side
+     that follows another glyph (a metrics key, an aligned component) moves
+     with it instead;
+   - turns **Figures** and then **Small caps** off and on again the same way.
+     Only the figures and their forms, then only the small caps, may move,
+     each by its convention;
    - picks **Handwriting** in the main window's Conventions menu. Pairs with
      a capital first may only kern deeper, and some capital-lowercase pairs
      must; pairs with a lowercase letter first and every letter's
-     sidebearings stay exactly as they were;
+     sidebearings stay exactly as they were. Pairs whose kerning classes hold
+     small caps are left out: their class value follows the small caps'
+     conventions, which differ by style;
    - picks **Automatic**, which must follow handwriting for a font that
      joins or leans without an italic angle and text faces otherwise, with
      the same preview exactly.

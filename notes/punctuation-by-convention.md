@@ -215,15 +215,18 @@ the figures were learned on.
   20.6) join the Figures switch. The slash in a fraction ("fraction.frac":
   the model 108.7, today's slash 66.2, its own 52.8 over 318 reference
   families) is used in masters with numerators and denominators. Small caps
-  are left out: the model is about as close to their designers as to the
-  lowercase (17–21), and conventions gain about half a unit. Numerators and
+  were added later the same day at the user's request, under a switch of
+  their own (Small caps). The model is about as close to their designers as
+  to the lowercase (17–21), and conventions gain about half a unit (a 23.4 →
+  21.3, x 20.4 → 18.7; j, s and u keep the model's). Numerators and
   denominators (12 October 2026, at the user's request, from the same data)
   take conventions of their own on top of the slash's: over every pair of a
   fraction, held out, 36.3 (model) → 31.2 (the slash's) → 25.0.
 - `.case` forms follow their base mark. Proportional lining figures under a
   suffix (`.lf`, `.pnum`, `.plf`) take their figure's conventions, old-style
-  ones (`.osf`, `.onum`, `.oldstyle`) the old-style figures'. Small caps
-  (`.sc`) are left as the model spaces them. Tabular forms keep their widths.
+  ones (`.osf`, `.onum`, `.oldstyle`) the old-style figures', small caps
+  (`.sc`, `.smcp`, `.c2sc`, accented) their letter's. Tabular forms keep
+  their widths.
 - The conventions are per style, not per font. What is left is each
   designer's own taste. The designer harness, learned on top of these
   conventions, corrects what is common to well-spaced text faces.

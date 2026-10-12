@@ -361,7 +361,7 @@ class KK2Window(object):
 
         x = 600
         threshold = min(MAX_THRESHOLD, max(0.0, self._setting("threshold", DEFAULT_THRESHOLD)))
-        w.thresholdLabel = vanilla.TextBox((x, 10, 280, 17), "Ignore threshold (units per 1000 em)",
+        w.thresholdLabel = vanilla.TextBox((x, 10, 236, 17), "Ignore threshold (units per 1000 em)",
                                            sizeStyle="small")
         w.threshold = vanilla.Slider((x, 28, 170, 22), minValue=0.0, maxValue=MAX_THRESHOLD, value=threshold,
                                      callback=self.thresholdChanged)
@@ -373,9 +373,10 @@ class KK2Window(object):
             "matter.")
 
         x = 886
-        w.harness = vanilla.CheckBox((x, 9, 118, 18), "Designer harness", sizeStyle="small",
+        # the switches: right-aligned on the top row, so that the four fit the narrowest window (1200 points)
+        w.harness = vanilla.CheckBox((-358, 9, 113, 18), "Designer harness", sizeStyle="small",
                                      value=self._setting("harness", False, bool), callback=self.harnessChanged)
-        w.punctuation = vanilla.CheckBox((x + 120, 9, 92, 18), "Punctuation", sizeStyle="small",
+        w.punctuation = vanilla.CheckBox((-242, 9, 84, 18), "Punctuation", sizeStyle="small",
                                          value=self._setting("punctuation", True, bool),
                                          callback=self.punctuationChanged)
         w.punctuation.getNSButton().setToolTip_(
@@ -390,8 +391,16 @@ class KK2Window(object):
             "are learned against the figures; a mark's case form takes its base mark's sides. In a master with "
             "numerators and denominators the fraction slash takes the conventions of a slash in a fraction: "
             "designers tuck the figures under it by well over 100 units a side.")
-        w.figures = vanilla.CheckBox((x + 214, 9, 70, 18), "Figures", sizeStyle="small",
+        w.figures = vanilla.CheckBox((-155, 9, 60, 18), "Figures", sizeStyle="small",
                                      value=self._setting("figures", True, bool), callback=self.figuresChanged)
+        w.smallCaps = vanilla.CheckBox((-92, 9, 78, 18), "Small caps", sizeStyle="small",
+                                       value=self._setting("smallCaps", True, bool), callback=self.smallCapsChanged)
+        w.smallCaps.getNSButton().setToolTip_(
+            "Small caps by convention (on by default): small caps (a.sc, a.smcp, A.c2sc, accented ones by their "
+            "letter) spaced the way the designers of well-spaced fonts space them, measured beside the capitals "
+            "they follow (Caps and Small Caps). The model is already about as close to them as to the "
+            "lowercase; their own conventions bring most small caps about half a unit closer, a and x about 2. "
+            "Off: small caps are spaced from their shapes alone.")
         w.figures.getNSButton().setToolTip_(
             "Figures by convention (on by default): proportional figures (the default ones, or .lf / .pnum "
             "forms when the default figures are tabular) spaced the way the designers of well-spaced fonts "
@@ -650,7 +659,8 @@ class KK2Window(object):
         spring, repulsion, coupling = self._physics()
         return (self._generation, round(spring, 9), round(repulsion, 9), round(coupling, 9),
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
-                self.join_count, self._join_mode(), self._figures_on(), self._punctuation_on(), self._style(),
+                self.join_count, self._join_mode(), self._small_caps_on(), self._figures_on(), self._punctuation_on(),
+                self._style(),
                 round(self._harness_strength(), 4))
 
     def _update_labels(self):
@@ -700,18 +710,22 @@ class KK2Window(object):
             text = plan.summary() if plan is not None else "harness on · waiting for the font to be read"
         # one short line (the harness's summary first); the tooltip says it all
         figures = self.punctuation_available() and kpu.has_figures()
+        caps = self.punctuation_available() and kpu.has_small_caps()
         p_on, f_on = bool(self.w.punctuation.get()), figures and bool(self.w.figures.get())
+        c_on = caps and bool(self.w.smallCaps.get())
+        phrase = kpu.STYLE_PHRASES.get(kpu.style_of(self._style()), "text faces' conventions")
+
+        def listed(names):
+            return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+        off = [n for n, on, have in (("punctuation", p_on, True), ("figures", f_on, figures), ("small caps", c_on, caps))
+               if have and not on]
         if not self.punctuation_available():
             punct = "punctuation: rebuild the plugin (build.sh)"
-        elif p_on or f_on:
-            what = "punctuation and figures" if p_on and f_on else "punctuation" if p_on else "figures"
-            punct = "%s for %s" % (kpu.STYLE_PHRASES.get(kpu.style_of(self._style()), "text faces' conventions"), what)
-            if p_on and not f_on and figures:
-                punct += ", figures as the shapes say"
-            elif f_on and not p_on:
-                punct += ", punctuation as the shapes say"
+        elif not (p_on or f_on or c_on):
+            punct = listed(off) + " as the shapes say"
         else:
-            punct = "punctuation and figures as the shapes say" if figures else "punctuation as the shapes say"
+            # every switch on: the conventions followed; else which ones the shapes alone set
+            punct = phrase + ("" if not off else ", %s as the shapes say" % listed(off))
         self.w.harnessValue.set("%s · %s" % (text, punct))
         tip = ["Designer harness: " + text]
         if self.punctuation_available():
@@ -721,9 +735,12 @@ class KK2Window(object):
                                       "figures keep their widths"
                                       % kpu.STYLE_PHRASES.get(kpu.style_of(self._style()), "text faces' conventions")
                                       if f_on else "spaced from their shapes alone"))
+        if caps:
+            tip.append("Small caps: " + ("by %s" % phrase if c_on else "spaced from their shapes alone"))
         self.w.harnessValue.getNSTextField().setToolTip_("\n".join(tip))
         self.w.punctuation.enable(self.punctuation_available())
         self.w.figures.enable(self.punctuation_available() and kpu.has_figures())
+        self.w.smallCaps.enable(self.punctuation_available() and kpu.has_small_caps())
         self.w.harnessStrength.enable(bool(self.w.harness.get()) and self.harness_available())
 
     def _update_max_pairs_note(self):
@@ -1280,6 +1297,7 @@ class KK2Window(object):
             style = self._style()
             punct = self._punctuation_on()
             figs = self._figures_on()
+            caps = self._small_caps_on()
 
             def harness(sub, looseness, kept):
                 try:
@@ -1290,7 +1308,7 @@ class KK2Window(object):
 
             def punctuation(sub):
                 try:
-                    return kpu.engine_arg(sub, style, punctuation=punct, figures=figs)
+                    return kpu.engine_arg(sub, style, punctuation=punct, figures=figs, small_caps=caps)
                 except Exception:
                     print(traceback.format_exc())
                     return None
@@ -1301,7 +1319,7 @@ class KK2Window(object):
                 current_steps=lambda sub: current_kerning_steps(sub, table, READ_SLICE),
                 harness=harness if self.engine.features & kb.FEATURE_HARNESS else None,
                 threads=self._threads(), budget_s=READ_SLICE,
-                punctuation=punctuation if punct or figs else None, style=style)
+                punctuation=punctuation if punct or figs or caps else None, style=style)
         except Exception:
             print(traceback.format_exc())
             self._slant_probe = None
@@ -2090,14 +2108,19 @@ class KK2Window(object):
         return bool(self.w is not None and getattr(self.w, "figures", None) is not None and self.w.figures.get()
                     and self.punctuation_available() and kpu.has_figures())
 
+    def _small_caps_on(self):
+        return bool(self.w is not None and getattr(self.w, "smallCaps", None) is not None and self.w.smallCaps.get()
+                    and self.punctuation_available() and kpu.has_small_caps())
+
     def _punctuation_arg(self, snap=None):
-        """Punctuation and figures by convention for the solves (kk2_punctuation.engine_arg), or None when both
-        are off."""
+        """Punctuation, figures and small caps by convention for the solves (kk2_punctuation.engine_arg), or None
+        when all three are off."""
         snap = self.snapshot if snap is None else snap
-        if not (self._punctuation_on() or self._figures_on()) or snap is None:
+        if not (self._punctuation_on() or self._figures_on() or self._small_caps_on()) or snap is None:
             return None
         try:
-            return kpu.engine_arg(snap, self._style(), punctuation=self._punctuation_on(), figures=self._figures_on())
+            return kpu.engine_arg(snap, self._style(), punctuation=self._punctuation_on(), figures=self._figures_on(),
+                                  small_caps=self._small_caps_on())
         except Exception:
             print(traceback.format_exc())
             return None
@@ -2111,6 +2134,11 @@ class KK2Window(object):
 
     def figuresChanged(self, sender):
         self._save("figures", bool(self.w.figures.get()))
+        self._update_labels()
+        self._request_preview()
+
+    def smallCapsChanged(self, sender):
+        self._save("smallCaps", bool(self.w.smallCaps.get()))
         self._update_labels()
         self._request_preview()
 

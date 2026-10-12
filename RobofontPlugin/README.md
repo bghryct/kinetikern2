@@ -28,6 +28,9 @@ window, the same controls and the same tools:
   `.numerator`, `.dnom`, `.denominator`); a set of one width keeps it; in a
   font with numerators and denominators the fraction slash takes the
   conventions of a slash in a fraction (under Punctuation);
+- **Small caps** by convention (on by default, a switch of its own): small
+  caps (`.sc`, `.smcp`, `.c2sc`, accented ones by their letter) spaced as
+  designers space them beside the capitals they follow;
 - after a whole-font run, where the word space sits against what designers
   of the font's kind set for its n (Kinetikern2 does not set it);
 - the punctuation and figure spaces kept in step: Apply gives a blank
@@ -234,6 +237,15 @@ meet exactly flush, which the touching rule finds connected
 (`test_flush_joins`); and a hand that joins only in part, whose stem letters
 carry exit strokes, which the test for hands that join in part finds
 connected while letters that touch at the top do not (`test_partly_joins`).
+
+## Verified again (12 October 2026, small caps)
+
+The Small caps switch. Inside RoboFont, on Barlow (OFL; its small caps,
+accented ones included, and numerators built as components of its
+denominators): **PASSED**. 164 small cap sides moved as their conventions
+say, every other glyph stayed, and a side that follows another glyph (an
+aligned component) moved with it. On Arial and Libre Caslon Text:
+**PASSED**. The headless suite PASSED.
 
 ## Verified again (12 October 2026, later)
 

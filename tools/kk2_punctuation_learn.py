@@ -886,9 +886,9 @@ out["kernel_id"] = kernel_id
 if args.small_data or args.feature_data:
     # the finished table, with the small forms added and nothing else changed
     base = json.load(open(args.base))
-    # small caps are measured, not added: the model spaces them about as designers do already (held out, about
-    # half a unit closer with conventions of their own, none at all for j, s, u: 11 October 2026)
-    small = [n for n, _c in SMALL if n not in SCAPS]
+    # small caps too (their own switch in the plugins): held out about half a unit closer with conventions of their
+    # own, up to 2 (a, x); j, s and u have none (12 October 2026, at the user's request)
+    small = [n for n, _c in SMALL]
     if args.feature_data and "fraction.frac" in table["text"]:
         small = small + ["fraction.frac"] + FRACTION_FIGURES
         base["kern"]["fraction.frac"] = kern["fraction.frac"]

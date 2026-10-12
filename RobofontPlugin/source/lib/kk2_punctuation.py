@@ -32,6 +32,7 @@ from __future__ import division, print_function, unicode_literals
 
 import json
 import os
+import unicodedata
 
 import kk2_bridge as kb
 import kk2_harness as kh
@@ -66,6 +67,9 @@ OSF_SUFFIXES = ("osf", "onum", "oldstyle")
 NUMR_SUFFIXES = ("numr", "numerator")
 DNOM_SUFFIXES = ("dnom", "denominator")
 FRACTION_SLASH = 0x2044
+# Small caps (a.sc, a.smcp, A.c2sc, and accented ones by their letter: aacute.sc) take the small caps'
+# conventions, under a switch of their own.
+SC_SUFFIXES = ("sc", "smcp", "c2sc")
 
 
 def table():
@@ -122,6 +126,25 @@ def has_fraction_forms(snap):
     return hit
 
 
+def small_caps_marks():
+    """The small caps the table has conventions for (the Small caps switch)."""
+    return frozenset(n for n in feature_marks() if n.endswith(".sc"))
+
+
+def has_small_caps():
+    return available() and bool(small_caps_marks())
+
+
+def _letter_of(snap, name):
+    """The basic Latin letter a glyph's name stands for (a, A, aacute → a), lowercase, or None."""
+    info = snap.infos.get(name)
+    ch = chr(info.unicode) if info is not None and info.unicode is not None else (name if len(name) == 1 else None)
+    if ch is None:
+        return None
+    base = unicodedata.normalize("NFD", ch)[0]
+    return base.lower() if "a" <= base.lower() <= "z" else None
+
+
 def small_marks():
     """The superscripts, subscripts and ordinals the table has conventions for (the Figures switch)."""
     return frozenset(table().get("small_forms", ()))
@@ -152,8 +175,9 @@ def mark_of(snap, i):
     its base mark, proportional lining figures (one.lf) by their figure, and
     a figure's superscript or subscript form (one.sups) by the encoded one,
     an old-style figure (one.osf), a numerator (one.numr) or a denominator
-    (one.dnom) by its kind, and the slash of a master with numerators and
-    denominators as the slash in a fraction."""
+    (one.dnom) by its kind, a small cap (a.sc, A.c2sc, aacute.sc) by its
+    letter, and the slash of a master with numerators and denominators as
+    the slash in a fraction."""
     name = snap.names[i]
     info = snap.infos.get(name)
     if info is None or info.empty:
@@ -180,6 +204,10 @@ def mark_of(snap, i):
         form = "osf" if parts[1] in OSF_SUFFIXES else "numr" if parts[1] in NUMR_SUFFIXES else "dnom"
         if k in FIGURE_NAMES and k + "." + form in feature_marks():
             return k + "." + form
+    if len(parts) == 2 and parts[1] in SC_SUFFIXES:
+        letter = _letter_of(snap, parts[0])
+        if letter is not None and letter + ".sc" in small_caps_marks():
+            return letter + ".sc"
     if len(parts) == 2 and (parts[1] in SUPS_SUFFIXES or parts[1] in SINF_SUFFIXES):
         base = snap.infos.get(parts[0])
         k = codes.get(base.unicode) if base is not None and base.unicode is not None else None
@@ -233,7 +261,7 @@ def share_of(mark):
     return (float(k[0]), float(k[1]))
 
 
-def engine_arg(snap, style, punctuation=True, figures=True):
+def engine_arg(snap, style, punctuation=True, figures=True, small_caps=True):
     """(coefficients, shares, kern scale, follow) for kk2_bridge.Engine.solve:
     per glyph of the snapshot, 6 coefficients (c, m, r of its left side, then
     its right side; NaN c = no convention), 2 kerning shares (left, right;
@@ -243,8 +271,8 @@ def engine_arg(snap, style, punctuation=True, figures=True):
     punctuation's and symbols' conventions, shares and case forms (off: kern
     scale 1, every mark kerned in full); `figures`: the figures' and their
     small forms' (superscripts, subscripts, ordinals), old-style figures'
-    and precomposed fractions'."""
-    key = (id(snap), getattr(snap, "generation", 0), style, bool(punctuation), bool(figures))
+    and precomposed fractions'; `small_caps`: the small caps'."""
+    key = (id(snap), getattr(snap, "generation", 0), style, bool(punctuation), bool(figures), bool(small_caps))
     hit = _cache.get(key)
     if hit is not None:
         return hit
@@ -254,7 +282,8 @@ def engine_arg(snap, style, punctuation=True, figures=True):
     coefs = []
     shares = []
     figs = figure_marks()
-    smalls = small_marks() | (feature_marks() - set(["fraction.frac"]))
+    caps = small_caps_marks()
+    smalls = small_marks() | (feature_marks() - set(["fraction.frac"]) - caps)
     follow = []
     tabular = _tabular_suffixes(snap, figs)
     one_width = _one_width_sets(snap) if smalls else frozenset()
@@ -269,7 +298,8 @@ def engine_arg(snap, style, punctuation=True, figures=True):
             k = None  # figures under a suffix that all share one width: tabular whatever the name, kept
         if i in one_width:
             k = None  # superscripts or subscripts that share one width: kept
-        on = k is not None and (figures if resolve(k) in figs or k in smalls else punctuation)
+        on = k is not None and (small_caps if k in caps else figures if resolve(k) in figs or k in smalls
+                                else punctuation)
         shares.append((share_of(k) or (NAN, NAN)) if on else (NAN, NAN))
         c = marks.get(resolve(k)) if on else None
         if not c:
