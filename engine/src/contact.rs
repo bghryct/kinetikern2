@@ -327,6 +327,44 @@ pub fn touch_set(a: &InkRows, b: &InkRows) -> Vec<(f64, f64)> {
     touch_set_rows(a, b, true)
 }
 
+/// The shortest distance between two inks, the second set `dx` to the right
+/// (font units), up to `limit`: the gap of a pair that does not join is how
+/// far the second glyph must move to touch, along the line of text, and
+/// strokes that pass each other at a slant come closer than that. `limit`
+/// when nothing comes closer. A join is broken when its strokes stay
+/// `checker::BROKEN` apart along this line (Spacing QA's rule too).
+pub fn clearance(a: &InkRows, b: &InkRows, dx: f64, limit: f64) -> f64 {
+    let reach = (limit / a.step).ceil() as i64;
+    let mut best = limit;
+    for k in a.k0..a.k_end() {
+        let sa = a.at(k);
+        if sa.is_empty() {
+            continue;
+        }
+        for dk in -reach..=reach {
+            let sb = b.at(k + dk);
+            let dy = dk.abs() as f64 * a.step;
+            if sb.is_empty() || dy >= best {
+                continue;
+            }
+            for &(a0, a1) in sa {
+                for &(b0, b1) in sb {
+                    let (b0, b1) = (b0 as f64 + dx, b1 as f64 + dx);
+                    let across = if b0 > a1 as f64 {
+                        b0 - a1 as f64
+                    } else if a0 as f64 > b1 {
+                        a0 as f64 - b1
+                    } else {
+                        0.0
+                    };
+                    best = best.min(across.hypot(dy));
+                }
+            }
+        }
+    }
+    best
+}
+
 /// How a pair of glyphs meets at one offset.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Contact {
@@ -566,6 +604,27 @@ mod tests {
 
     fn ink(c: &[Vec<(Vec2, u32)>]) -> InkRows {
         InkRows::of_contours(c, 1.0, 0.0, 0.0)
+    }
+
+    #[test]
+    fn clearance_is_the_shortest_line_between_the_inks() {
+        // side by side, 2 apart along the text: 2 along the shortest line too
+        let a = ink(&[rect(0.0, 0.0, 100.0, 100.0)]);
+        let b = ink(&[rect(0.0, 0.0, 100.0, 100.0)]);
+        assert!((clearance(&a, &b, 102.0, 3.0) - 2.0).abs() < 1e-4);
+        // 5 apart along the text: nothing closer than the limit
+        assert_eq!(clearance(&a, &b, 105.0, 3.0), 3.0);
+        // a stroke that starts 2 scanlines above the other's top and 1 unit
+        // past it: no contact along the text, yet only √5 apart (the rows
+        // are measured centre to centre)
+        let up = ink(&[rect(0.0, 101.0, 100.0, 200.0)]);
+        let c = clearance(&a, &up, 101.0, 3.0);
+        assert!((c - 5f64.sqrt()).abs() < 1e-4, "{c}");
+        // 3 scanlines above and 1 past: √10, beyond the limit
+        let higher = ink(&[rect(0.0, 102.0, 100.0, 200.0)]);
+        assert_eq!(clearance(&a, &higher, 101.0, 3.0), 3.0);
+        // overlapping inks are 0 apart
+        assert_eq!(clearance(&a, &b, 50.0, 3.0), 0.0);
     }
 
     #[test]

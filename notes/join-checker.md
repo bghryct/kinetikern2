@@ -119,9 +119,11 @@ button carries the checker's count and opens the Joins window: findings as
 drawn, what the preview does to the joins, drawing advice, proofs in an Edit
 tab or the Space Center. Its findings follow Spacing QA's rule on the basic
 a–z pairs as drawn (no shaping): a side joins when it joins at least half
-its a–z partners; two joining sides that do not meet are broken, 3 units
-per 1000 em apart or more (closer: *nearly touch: a hairline gap*), in a
-script where fewer than 1 in 20 such pairs fail to meet. In a partly
+its a–z partners; two joining sides that do not meet are broken when their
+strokes stay 3 units per 1000 em apart or more along the shortest line
+between them (closer, along it or along the text: *nearly touch: a hairline
+gap*; 13 October, `contact::clearance`, `JOINPAIR_NEAR`), in a script where
+fewer than 1 in 20 such pairs fail to meet. In a partly
 connected hand (1 in 20 or more) only a pair whose sides both join at least
 75 % of their partners is broken; the rest are listed as *not joined:
 partly connected* (style, not flagged). A broken join shows the kern that
@@ -135,8 +137,9 @@ word ("n" + pair + "n", default features) with harfrust, so scripts that join
 through contextual alternates and connectors (Playwrite) are seen too. A side
 joins when the glyph shaping sets there joins at least half the glyphs it is
 set next to, so a form set without its stroke (Pacifico's o.fina before x)
-makes a pen lift, not a break. Broken joins 3 units apart or more are a WARN
-(`spacing/joins-broken`); closer, the strokes nearly touch. A partly
+makes a pen lift, not a break. Broken joins, 3 units apart or more along the
+shortest line between the strokes (the engine's `join_clearance`), are a
+WARN (`spacing/joins-broken`); closer, the strokes nearly touch. A partly
 connected hand (`joins::PARTLY`, 1 in 20) flags only pairs of two sides that
 join at least 75 % of their partners (`joins::STRONG`). Scores leave the
 kept joins out; every report also tries Space joined letters and no join mode

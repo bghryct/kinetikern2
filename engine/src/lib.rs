@@ -299,6 +299,10 @@ pub const JOINPAIR_CROSSING_AFTER: u32 = 8;
 pub const JOINPAIR_FRAGILE: u32 = 16;
 /// Not joined, and the kerning that would join it makes the strokes cross.
 pub const JOINPAIR_FIX_CROSSES: u32 = 32;
+/// Not joined, and the strokes come closer than `checker::BROKEN` units per
+/// 1000 em along the text or along the shortest line between them: they
+/// nearly touch (not a broken join). Feature 4096.
+pub const JOINPAIR_NEAR: u32 = 64;
 
 /// One pair in detail (`kk2_join_pairs`), font units.
 #[repr(C)]
@@ -307,7 +311,10 @@ pub struct KK2JoinPair {
     pub left: u32,
     pub right: u32,
     pub flags: u32,
-    pub reserved: u32,
+    /// Not joined in the font: the shortest distance between the strokes,
+    /// up to `checker::BROKEN` units per 1000 em (NaN when it joins). Was
+    /// `reserved` (0) before feature 4096.
+    pub clearance: f32,
     /// Joined in the font: room to close and to open (else NaN).
     pub close: f64,
     pub open: f64,
@@ -1502,10 +1509,13 @@ pub unsafe extern "C" fn kk2_measure(
 /// when to measure along it (`kk2_stem_glyphs`, `kk2_stem_slant`,
 /// `kk2_lean_wins`), 2048 punctuation by convention and Pass 2's pair
 /// classes (`kk2_solve_start4`, `KK2Punctuation`, `PARAM_V1_PASS2`,
-/// `PARAM_STYLE_DISPLAY`, `PARAM_STYLE_HANDWRITING`).
+/// `PARAM_STYLE_DISPLAY`, `PARAM_STYLE_HANDWRITING`), 4096 the join
+/// checker's shortest line (`KK2JoinPair.clearance`, `JOINPAIR_NEAR`: a join
+/// is broken only when its strokes stay 3 units per 1000 em apart along the
+/// shortest line between them, as Spacing QA judges it).
 #[no_mangle]
 pub extern "C" fn kk2_features() -> u32 {
-    4095
+    8191
 }
 
 /// The glyphs `kk2_stem_slant` reads, by name, space separated and in its
@@ -1691,11 +1701,14 @@ pub unsafe extern "C" fn kk2_join_pairs(
             if d.fix_crosses {
                 flags |= JOINPAIR_FIX_CROSSES;
             }
+            if d.near {
+                flags |= JOINPAIR_NEAR;
+            }
             *out.add(k) = KK2JoinPair {
                 left: d.left,
                 right: d.right,
                 flags,
-                reserved: 0,
+                clearance: d.clearance as f32,
                 close: d.drawn.close,
                 open: d.drawn.open,
                 gap: d.drawn.gap,

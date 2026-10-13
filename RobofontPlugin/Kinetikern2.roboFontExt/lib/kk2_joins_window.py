@@ -11,7 +11,8 @@ and under the result the main window shows:
   script that joins consistently every such pair; in a partly connected hand
   (1 in 20 such pairs or more do not meet) only a pair whose sides both join
   three in four of their partners, the others listed as "not joined: partly
-  connected" (style). Closer than 3 units per 1000 em, the strokes nearly
+  connected" (style). Strokes that come closer than 3 units per 1000 em,
+  along the line of text or along the shortest line between them, nearly
   touch. A join is fragile when it has less than 5 units of room to open; a
   crossing when the two letters enclose white that neither has alone, or
   change a counter. A broken join lists the kerning that would join it, or
@@ -51,7 +52,7 @@ FRAGILE = 5.0  # units per 1000 em (the engine's JOIN_FRAGILE)
 JOINING = 0.5  # a side joins when it joins at least this share of its a–z partners
 STRONG = 0.75  # in a partly connected hand only sides this joining make broken joins
 PARTLY = 0.05  # a hand whose joining sides fail to meet this often joins partly by design
-BROKEN_GAP = 3.0  # units per 1000 em: closer, the strokes nearly touch (Spacing QA's BROKEN_GAP)
+BROKEN_GAP = 3.0  # units per 1000 em: closer, the strokes nearly touch (the engine's JOIN_BROKEN, Spacing QA's BROKEN_GAP)
 KERN_FIX_MAX = 100.0  # units per 1000 em: more kerning than this does not fix a broken join
 
 
@@ -59,6 +60,10 @@ def _num(v, digits=0):
     if v is None or v != v or v in (float("inf"), float("-inf")):
         return "–"
     return ("%%.%df" % digits) % v
+
+
+def _finite(v):
+    return v is not None and v == v and v not in (float("inf"), float("-inf"))
 
 
 def _signed(v, digits=0):
@@ -204,9 +209,14 @@ class JoinsWindow(object):
         exceptions = len(apart) / float(len(between)) if between else 0.0
         partly = exceptions >= PARTLY
         gap = lambda d: d["gap"] * per if d["gap"] == d["gap"] else float("inf")
+        # nearly touching: closer than BROKEN_GAP along the text or, with an
+        # engine that measures it (FEATURE_JOIN_CLEARANCE), along the shortest
+        # line between the strokes, as Spacing QA judges it
+        touching = lambda d: d["near"] if d.get("near") is not None else gap(d) < BROKEN_GAP
+        closest = lambda d: d["clearance"] * per if _finite(d.get("clearance")) else gap(d)
         candidates = [d for d in apart if not partly or sides(d, STRONG)]
-        broken = [d for d in candidates if gap(d) >= BROKEN_GAP]
-        near = [d for d in candidates if gap(d) < BROKEN_GAP]
+        broken = [d for d in candidates if not touching(d)]
+        near = [d for d in candidates if touching(d)]
         partial = [d for d in apart if partly and not sides(d, STRONG)]
         broken.sort(key=lambda d: -(d["gap"] if d["gap"] == d["gap"] else 0))
         partial.sort(key=lambda d: -(d["gap"] if d["gap"] == d["gap"] else 0))
@@ -225,7 +235,7 @@ class JoinsWindow(object):
                                       proof=[pair_name(d)]))
         for d in near:
             self.findings.append(dict(what=label(d), finding="nearly touch: a hairline gap",
-                                      value="%s apart" % _num(d["gap"] * per, 1), note="", proof=[pair_name(d)]))
+                                      value="%s apart" % _num(min(closest(d), gap(d)), 1), note="", proof=[pair_name(d)]))
         for d in partial:
             self.findings.append(dict(what=label(d), finding="not joined: partly connected",
                                       value="%s apart" % _num(d["gap"] * per, 1), note="style, not flagged",

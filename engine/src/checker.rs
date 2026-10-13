@@ -105,14 +105,22 @@ pub struct PairCheck {
     /// strokes cross or close a counter, so no kerning joins it cleanly (a
     /// longer stroke or an alternate does).
     pub fix_crosses: bool,
+    /// Not joined: the shortest distance between the strokes as drawn, up to
+    /// `FontJoins::broken` (font units; NaN when it joins).
+    pub clearance: f64,
+    /// Not joined, and the strokes come closer than `BROKEN` along the text
+    /// or along the shortest line: they nearly touch (not a broken join).
+    pub near: bool,
 }
 
 /// A connected script's letters for the checker, built with the context.
 pub struct FontJoins {
     pub keep: bool,
-    /// Scanline spacing and the room below which a join is fragile (font units).
+    /// Scanline spacing, the room below which a join is fragile, and the
+    /// distance below which strokes that do not join nearly touch (font units).
     pub step: f64,
     pub fragile: f64,
+    pub broken: f64,
     pub kinds: Vec<JoinKind>,
     pub ink: Vec<Option<InkRows>>,
     /// Counters of each letter (for crossings).
@@ -137,6 +145,11 @@ pub struct FontJoins {
 const PAD: f64 = 0.02;
 /// A join with less room than this (units per 1000 em) to open is fragile.
 pub const FRAGILE: f64 = 5.0;
+/// Two letters that do not join but whose strokes come closer than this
+/// (units per 1000 em), along the line of text or along the shortest line
+/// between them, nearly touch; from this on the join is broken (Spacing QA's
+/// `BROKEN_GAP`). 3 units are 0.3 px at 100 pixels to the em.
+pub const BROKEN: f64 = 3.0;
 /// Enclosed white smaller than this many scanline cells is not a crossing
 /// (where two inks only touch, the scanlines leave slivers of a cell).
 pub const MIN_CROSSING_CELLS: f64 = 4.0;
@@ -424,6 +437,7 @@ impl FontJoins {
             keep: setup.keep,
             step,
             fragile: FRAGILE * upm / 1000.0,
+            broken: BROKEN * upm / 1000.0,
             kinds,
             ink,
             holes,
@@ -681,7 +695,7 @@ impl FontJoins {
             .par_iter()
             .map(|&(l, r)| {
                 let (a, b) = (l as usize, r as usize);
-                let mut out = PairCheck { left: l, right: r, height: f64::NAN, ..PairCheck::default() };
+                let mut out = PairCheck { left: l, right: r, height: f64::NAN, clearance: f64::NAN, ..PairCheck::default() };
                 if a >= n || b >= n {
                     return out;
                 }
@@ -698,6 +712,10 @@ impl FontJoins {
                 out.crossing_drawn = self.crossing_at(a, b, offset);
                 if !out.drawn.joins && out.drawn.fix.is_finite() {
                     out.fix_crosses = self.crossing_at(a, b, offset + out.drawn.fix);
+                }
+                if !out.drawn.joins {
+                    out.clearance = contact::clearance(ra, rb, offset, self.broken);
+                    out.near = out.drawn.gap < self.broken || out.clearance < self.broken;
                 }
                 let dk = if takes(a) && takes(b) && !lsb.is_empty() { kern(a, b) - self.font_kern(a, b) } else { 0.0 };
                 out.delta = side(a, true) + side(b, false) + if dk.is_finite() { dk } else { 0.0 };

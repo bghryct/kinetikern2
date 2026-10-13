@@ -1462,10 +1462,27 @@ class SelfTest(object):
         rule, t = (spec.lsb_rule, spec.lsb_glyph) if sd == 0 else (spec.rsb_rule, spec.rsb_glyph)
         if rule == kb.RULE_FIXED:
             return 0.0
+        # a side Keep joins keeps (a join's) keeps the designer's sidebearing
+        kept = self._kept_sides()
+        if kept and i < len(kept) and kept[i] & (kb.JOINSIDE_LEFT_KEPT if sd == 0 else kb.JOINSIDE_RIGHT_KEPT):
+            return 0.0
         if rule in (kb.RULE_FOLLOW_SAME, kb.RULE_FOLLOW_OPPOSITE) and t != kb.NONE and t < len(m0):
             tsd = sd if rule == kb.RULE_FOLLOW_SAME else 1 - sd
             return m1[t][tsd] - m0[t][tsd]
         return None
+
+    def _kept_sides(self):
+        """The JOINSIDE_* bits of the window's context when it keeps joins
+        (else None), read once per context."""
+        win = self.win
+        ctx = win.context
+        if (win.joins is None or ctx is None or not win._keeps_joins()
+                or not win.engine.features & kb.FEATURE_JOIN_CHECK):
+            return None
+        cached = getattr(self, "_kept_cache", None)
+        if cached is None or cached[0] is not ctx:
+            self._kept_cache = cached = (ctx, win.engine.join_sides(ctx))
+        return cached[1]
 
     def _moved_freely(self, i, m1, m0):
         """Glyph i moved between m0 and m1 other than its rules move it."""
@@ -1481,11 +1498,16 @@ class SelfTest(object):
     def _engine_rhythm(self, em, per):
         """The letter rhythm the conventions use, as the engine computes it
         (Conventions in engine.rs): the median sidebearing of the lowercase
-        group's valid glyphs, else of every letter's, per 1000 em, from
-        `em` (engine-frame (lsb, rsb) per glyph)."""
+        group's valid glyphs, else of every letter's, per 1000 em, from the
+        sides Pass 1 wants before its rules (`Result.wanted`: a side Keep
+        joins pins keeps the designer's value, but the rhythm is the
+        model's), else from `em` (engine-frame (lsb, rsb) per glyph)."""
         win = self.win
         snap = win.snapshot
         valid = [m.valid for m in win.result.metrics]
+        wanted = win.result.wanted() if hasattr(win.result, "wanted") else []
+        if len(wanted) == len(em):
+            em = wanted
 
         def sides(groups):
             return sorted(x * per for i, spec in enumerate(snap.specs) if valid[i] and spec.group in groups
@@ -1524,8 +1546,9 @@ class SelfTest(object):
         per = 1000.0 / snap.upm
         m0 = self._metrics()
         v0 = dict(((a, b), float(win.result.value(a, b))) for a, b in self.punct_pairs)
-        # the punctuation's conventions (the figures' stay on in both previews)
-        coefs, shares, scale, follow = kpu.engine_arg(snap, "text", punctuation=True, figures=False, small_caps=False)
+        # the punctuation's conventions (the figures' stay on in both previews), for the conventions the window
+        # follows (Automatic: handwriting's for a connected script or an undeclared lean)
+        coefs, shares, scale, follow = kpu.engine_arg(snap, win._style(), punctuation=True, figures=False, small_caps=False)
         marks = set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
         letters = [i for i, name in enumerate(snap.names)
                    if (snap.infos.get(name) is not None and snap.infos[name].unicode is not None
@@ -1654,7 +1677,7 @@ class SelfTest(object):
         per = 1000.0 / snap.upm
         m0 = self._metrics()
         em0 = [(m.lsb, m.rsb) for m in getattr(win.result, "engine_metrics", win.result.metrics)]
-        coefs, _shares, _scale, _follow = kpu.engine_arg(snap, "text", punctuation=False, figures=True, small_caps=False)
+        coefs, _shares, _scale, _follow = kpu.engine_arg(snap, win._style(), punctuation=False, figures=True, small_caps=False)
         figs = set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
         fixed = set(i for i, n in enumerate(snap.names) if n in getattr(snap, "fixed", ()))
         rho = self._engine_rhythm(em0, per)
@@ -1721,7 +1744,7 @@ class SelfTest(object):
     def _small_caps(self, snap):
         """(coefficients, the glyphs with a small caps convention) of the snapshot."""
         import kk2_punctuation as kpu
-        coefs = kpu.engine_arg(snap, "text", punctuation=False, figures=False, small_caps=True)[0]
+        coefs = kpu.engine_arg(snap, self.win._style(), punctuation=False, figures=False, small_caps=True)[0]
         return coefs, set(i for i, c in enumerate(coefs) if c[0] == c[0] or c[3] == c[3])
 
     def smallcaps_step(self):
@@ -1838,11 +1861,29 @@ class SelfTest(object):
             self.note("conventions: no Handwriting or Automatic choice in this build, not tested")
             self.after_punctuation()
             return
+        if win._style() != "text":
+            # Automatic already follows handwriting's conventions for a connected script or a lean: start from
+            # text faces' so that picking Handwriting shows
+            self._pick_main_style("text")
+            self.wait(lambda: self._preview_style("text"), self.conventions_from_text, 120.0,
+                      "the preview with text faces' conventions")
+            return
+        self.conventions_from_text()
+
+    def conventions_from_text(self):
+        win = self.win
         sample = sorted(win._sample_indices())
         letters = [i for i in sample if self._letter_kind(i)]
         res = win.result
         self.conv_pairs = [(a, b, self._letter_kind(a) + self._letter_kind(b)) for a in letters for b in letters]
         self.conv_pairs = [(a, b, k) for a, b, k in self.conv_pairs if res.value(a, b) == res.value(a, b)]
+        # a pair of two kept sides keeps the font's kerning whatever the conventions (Keep joins): left out
+        bits = None
+        if win.joins is not None and win._keeps_joins() and win.engine.features & kb.FEATURE_JOIN_CHECK:
+            bits = win.engine.join_sides(win.context)
+        if bits:
+            self.conv_pairs = [(a, b, k) for a, b, k in self.conv_pairs
+                               if not (bits[a] & kb.JOINSIDE_RIGHT_KEPT and bits[b] & kb.JOINSIDE_LEFT_KEPT)]
         # a pair whose kerning classes hold small caps follows the small caps' conventions, which differ by style
         # (a designer may put t.sc in T's class): left out
         _coefs, caps = self._small_caps(win.snapshot)
@@ -2113,6 +2154,25 @@ class SelfTest(object):
                      if kb.JOINKIND_LOWER in (kinds[a], kinds[b])]
             drawn = win.engine.join_pairs(win.context, pairs)
             self.joined_before = set((snap.names[d["left"]], snap.names[d["right"]]) for d in drawn if d["joins"])
+            if win.engine.features & kb.FEATURE_JOIN_CLEARANCE:
+                # the engine's shortest line: a pair that does not join nearly
+                # touches when its strokes come within 3 units per 1000 em
+                # along the text or along that line (Spacing QA's rule)
+                per = 1000.0 / snap.upm
+                odd, apart = [], [d for d in drawn if not d["joins"]]
+                for d in apart:
+                    c, g = d["clearance"] * per, d["gap"] * per
+                    if c != c:
+                        odd.append((snap.names[d["left"]], snap.names[d["right"]], "no clearance"))
+                    elif abs(c - 3.0) > 1e-3 and abs(g - 3.0) > 1e-3 and d["near"] != (g < 3.0 or c < 3.0):
+                        odd.append((snap.names[d["left"]], snap.names[d["right"]], round(g, 2), round(c, 2), d["near"]))
+                near = sum(1 for d in apart if d["near"])
+                self.log("join clearance", apart=len(apart), near=near, odd=odd[:10])
+                if odd:
+                    self.error("connected script: %d pairs disagree with the shortest-line rule, e.g. %s" % (len(odd), odd[:5]))
+                else:
+                    self.note("connected script: the shortest line measured for %d pairs that do not join (%d nearly touch)"
+                              % (len(apart), near))
         # Apply the preview with the joins, then Revert
         self.before = self.font_state(snap.names, snap.master_id)
         self.connected_written = []
@@ -2234,9 +2294,14 @@ class SelfTest(object):
 
     def connected_off_again(self):
         m2 = self._metrics()
-        back = sum(1 for x, y in zip(self.joins_off_metrics, m2) if any(abs(p - q) > 1e-9 for p, q in zip(x, y)))
+        names = self.win.snapshot.names
+        diff = [[names[i] if i < len(names) else i] + [round(p, 6) for p in x] + [round(q, 6) for q in y]
+                for i, (x, y) in enumerate(zip(self.joins_off_metrics, m2)) if any(abs(p - q) > 1e-9 for p, q in zip(x, y))]
+        back = len(diff)
         if back:
-            self.error("after turning Connected script off %d glyphs' sidebearings differ from before" % back)
+            self.log("connected off again", differences=diff[:10])
+            self.error("after turning Connected script off %d glyphs' sidebearings differ from before, e.g. [glyph, "
+                       "before, now] %s" % (back, diff[:5]))
         else:
             self.note("connected script off: every glyph back to the spacing without joins")
         self.after_connected()

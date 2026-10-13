@@ -84,12 +84,19 @@ FEATURE_STEM_SLANT = 1024
 # punctuation by convention and Pass 2's pair classes (kk2_solve_start4,
 # KK2Punctuation, PARAM_V1_PASS2)
 FEATURE_PUNCTUATION = 2048
+# the join checker's shortest line (KK2JoinPair.clearance, JOINPAIR_NEAR): a
+# join is broken only when its strokes stay 3 units per 1000 em apart along
+# the shortest line between them, as Spacing QA judges it
+FEATURE_JOIN_CLEARANCE = 4096
 
 # kk2_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
 # KK2JoinPair.flags
 JOINPAIR_JOINS, JOINPAIR_JOINS_AFTER, JOINPAIR_CROSSING, JOINPAIR_CROSSING_AFTER, JOINPAIR_FRAGILE = 1, 2, 4, 8, 16
 JOINPAIR_FIX_CROSSES = 32  # not joined, and the kerning that joins it makes the strokes cross
+# not joined, and the strokes come closer than 3 units per 1000 em along the
+# text or along the shortest line: they nearly touch (FEATURE_JOIN_CLEARANCE)
+JOINPAIR_NEAR = 64
 # kk2_join_sides bits per glyph
 JOINSIDE_LEFT_JOINS, JOINSIDE_RIGHT_JOINS = 1, 2
 JOINSIDE_LEFT_KEPT, JOINSIDE_RIGHT_KEPT = 4, 8
@@ -222,7 +229,7 @@ class KK2JoinSide(Structure):
 
 class KK2JoinPair(Structure):
     """One pair in detail (kk2_join_pairs), font units."""
-    _fields_ = [("left", c_uint32), ("right", c_uint32), ("flags", c_uint32), ("reserved", c_uint32)] + [
+    _fields_ = [("left", c_uint32), ("right", c_uint32), ("flags", c_uint32), ("clearance", c_float)] + [
         (n, c_double) for n in ("close", "open", "gap", "fix", "height", "delta")]
 
 
@@ -679,8 +686,11 @@ class Engine(object):
     def join_pairs(self, context, pairs, result=None, scope=None):
         """Pairs [(left, right)] in detail, as the font sets them and under
         `result`: [dict(left, right, joins, joins_after, crossing,
-        crossing_after, fragile, fix_crosses, close, open, gap, fix, height,
-        delta)], font units (NaN where it does not apply)."""
+        crossing_after, fragile, fix_crosses, near, close, open, gap,
+        clearance, fix, height, delta)], font units (NaN where it does not
+        apply). `near` and `clearance` (the shortest distance between the
+        strokes of a pair that does not join) need FEATURE_JOIN_CLEARANCE:
+        None and NaN without it."""
         if not self.features & FEATURE_JOIN_CHECK:
             raise EngineError("this engine build has no join checker (kk2_join_pairs)")
         count = len(pairs)
@@ -698,6 +708,7 @@ class Engine(object):
         if n == 0xFFFFFFFF:
             raise EngineError(self.last_error())
         rows = []
+        shortest = bool(self.features & FEATURE_JOIN_CLEARANCE)
         for k in range(n):
             o = out[k]
             rows.append({"left": o.left, "right": o.right, "joins": bool(o.flags & JOINPAIR_JOINS),
@@ -706,6 +717,8 @@ class Engine(object):
                          "crossing_after": bool(o.flags & JOINPAIR_CROSSING_AFTER),
                          "fragile": bool(o.flags & JOINPAIR_FRAGILE),
                          "fix_crosses": bool(o.flags & JOINPAIR_FIX_CROSSES), "close": o.close, "open": o.open,
+                         "near": bool(o.flags & JOINPAIR_NEAR) if shortest else None,
+                         "clearance": float(o.clearance) if shortest else float("nan"),
                          "gap": o.gap, "fix": o.fix, "height": o.height, "delta": o.delta})
         return rows
 

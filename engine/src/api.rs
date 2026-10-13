@@ -25,11 +25,11 @@ pub use crate::engine::{
 pub use crate::geometry::{Vec2, NODE_CURVE, NODE_LINE, NODE_OFFCURVE, NODE_QCURVE};
 pub use crate::checker::{
     decorated_design, letters_partly_joined, letters_touching, FontJoin, JoinCheck, JoinSetup, PairCheck, PartlyJoined,
-    SideBreaks, DECORATED as JOIN_DECORATED, FRAGILE as JOIN_FRAGILE, MIN_CROSSING_CELLS, PARTLY_ABOVE, PARTLY_PAIRS,
+    SideBreaks, BROKEN as JOIN_BROKEN, DECORATED as JOIN_DECORATED, FRAGILE as JOIN_FRAGILE, MIN_CROSSING_CELLS, PARTLY_ABOVE, PARTLY_PAIRS,
     PARTLY_STEMS, STEM_LEFT, STEM_RIGHT,
 };
 pub use crate::contact::{
-    contact as join_contact, contact_both, contact_height, contact_in, crossings, row_step, touch_heights, touch_set,
+    clearance as join_clearance, contact as join_contact, contact_both, contact_height, contact_in, crossings, row_step, touch_heights, touch_set,
     touch_set_rows, touches, Contact, InkRows,
 };
 pub use crate::joins::{detect as detect_joins, Bands as JoinBands, JoinGlyph, JoinKind, JoinRule};

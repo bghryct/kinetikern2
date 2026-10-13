@@ -731,8 +731,10 @@ whose glyphs touch by construction, of any glyph and an a–z letter).
 - *Findings*: the basic a–z pairs as the master sets them (as drawn, without
   features), judged as Spacing QA judges them. A side joins when it joins at
   least half its a–z partners, and two joining sides that do not meet make a
-  broken join, 3 units per 1000 em apart or more; closer, they *nearly
-  touch: a hairline gap*. That holds in a script where fewer than 1 in 20
+  broken join when their strokes stay 3 units per 1000 em apart or more
+  along the shortest line between them (a stroke that ends above or below
+  its partner comes closer than the gap along the text); closer, they
+  *nearly touch: a hairline gap*. That holds in a script where fewer than 1 in 20
   such pairs fail to meet. In a partly connected hand (1 in 20 or more) only
   a pair whose sides both join at least 75 % of their partners is broken; its
   other non-joins are listed as *not joined: partly connected* (style, not
