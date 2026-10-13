@@ -1,13 +1,13 @@
-# Glyphs 3 crash during the Kinetikern2 self-test: investigation notes (paused)
+# Glyphs 3 crash during the Kinetikern2 self-test: investigation notes
 
-Status: the crash at font close is settled and mitigated in the self-test (see *13 October* at the end); the GC crash is still open. First paused on 2026-10-06, about 21:45. I made no changes to the Kinetikern2 code, the engine or build.sh, so nothing needs reverting. All instrumentation lives in the session scratchpad (see "Tooling"). The temporary font copy has been deleted. No temporary Glyphs instance is running. The user's Glyphs 3 (pid 87931) was never touched.
+Status: both crashes are explained. The crash at font close is mitigated in the self-test (see *13 October*). The GC crash comes from another plugin's outdated loader (see *13 October, evening* at the end). First paused on 2026-10-06, about 21:45. I made no changes to the Kinetikern2 code, the engine or build.sh, so nothing needs reverting. All instrumentation lives in the session scratchpad (see "Tooling"). The temporary font copy has been deleted. No temporary Glyphs instance is running. The user's Glyphs 3 (pid 87931) was never touched.
 
 ## TL;DR
 
 * There are **two different crash bugs**. Neither has been traced to Kinetikern2 code.
-  1. **GC crash** (the two crash reports from earlier today): `visit_decref ← dict_traverse ← gc_collect_main`, during a **full (generation-2) collection**. A str-keyed dict holds a pointer to a freed object. **Not reproduced** in 25 runs here, and the root cause is still open. The first of the two reports came from **v1 (Kinetic SDF Kerning)**, not Kinetikern2.
+  1. **GC crash** (the two crash reports from earlier today): `visit_decref ← dict_traverse ← gc_collect_main`, during a **full (generation-2) collection**. A str-keyed dict holds a pointer to a freed object. **Not reproduced** in 25 runs here, and the root cause is still open. The first of the two reports came from **v1 (Kinetic SDF Kerning)**, not Kinetikern2. *Solved on 13 October:* the dict is `sys.modules`, and the plugin "Show Distance And Angle Of Nodes In Corner" frees its own module at every launch (see *13 October, evening*).
   2. **PyObjC 10.2 nil-argument bug** (new, reproduced once, root cause proven): a crash in `method_stub → PyObjCMethodSignature_WithMetaData → PyObjCRT_SkipTypeSpec(0x388)` when the self-test closes the font. Glyphs calls each Python palette's `setWindowController_(None)` (inherited from GlyphsApp's `PalettePlugin`; not Waterfall, as first thought: see *13 October* below). PyObjC 10.2 then wrongly treats `None` as a block. Fixed upstream in PyObjC 11.0. This is not Kinetikern2.
-* Font Proofer Companion (a compiled Cython plugin) runs Python on **background `threading.Timer` threads**. Those threads call `Glyphs.fonts` / `doc.font` whenever a font opens or closes. They are the only background Python threads in the test instance. This is the leading suspect for the GC crash, but it is **unproven**: the experiment for it is written and has not been run yet.
+* Font Proofer Companion (a compiled Cython plugin) runs Python on **background `threading.Timer` threads**. Those threads call `Glyphs.fonts` / `doc.font` whenever a font opens or closes. They are the only background Python threads in the test instance. This is the leading suspect for the GC crash, but it is **unproven**: the experiment for it is written and has not been run yet. *(Superseded on 13 October: FPC is not involved.)*
 
 ## Environment
 
@@ -65,7 +65,7 @@ Ruled out or very unlikely:
 * **PyObjC 10.2's `forwardInvocation:` return-buffer overflow** (fixed in 10.2.1): it hides inside pymalloc's 16-byte granularity, and the debug allocator never reported a bad pad byte.
 * **The PyObjC nil-argument bug as the cause of the GC crashes**: the address bits were clear in reports 1 and 2 (see above).
 
-Still open:
+Still open (all three superseded on 13 October by the loader finding at the end):
 * **H1 (leading): a cross-thread race involving Font Proofer Companion.** Its debounce `threading.Timer` threads touch `NSDocumentController`, `GSDocument` and `GSFont` from a background thread while the main thread opens or closes documents. PyObjC releases the GIL around every ObjC call, so interleaving is real. Under this hypothesis, a race in PyObjC 10.2 (for example upstream issue #619, a race in class-proxy creation, fixed in 10.3.1) or an ObjC over-release of objects that hold Python references would leave a dangling Python reference, and the next full GC would crash. This fits: report 1 (v1) and report 2 (v2) both loaded fpcompanion, and the mock smoke test (no Glyphs, no FPC) never crashed. Weakness: the rate under my conditions is low or zero, and the corrupting event itself has not been observed.
 * **H2: a rare write through the PyObjC 10.2 block-check path** (`PyObjCObject_SET_BLOCK(v, sig)` into a non-PyObjC object at `v+32`). It needs an even refcount, the address bits set, and garbage that happens to parse as a type string. Unlikely.
 * **H3: something specific to timing or CPU load during the user's earlier runs** (for example builds or smoke tests running in parallel), which would make races more likely.
@@ -143,3 +143,56 @@ Status: **explained; mitigated in the self-test.** The crash itself can only be 
   - `build.sh --verify` lists the crash reports from before the run. When the instance dies at the close, it reports the test from the earlier file.
   - `tools/kk2_crash_report.py` prints any new crash report's top frames and names this known cause; only this cause leaves the verdict standing, and any other crash fails the run.
   - `KK2_SETTINGS="selfTestCrashAtClose YES"` crashes the instance at the close on purpose, to test that path.
+
+## 13 October, evening: the GC crash, solved
+
+Status: **root cause proven.** It is not Kinetikern2, v1 or Font Proofer Companion. One installed plugin's outdated loader frees its own Python module while Glyphs starts. The fix belongs in that plugin.
+
+* **The dict is `sys.modules`.** A C scanner thread (`kk2scan`, every 5 ms from launch) found one bad entry, always the same key: `__main__com_weiweihuanghuang_ShowDistanceAndAngleInCorner`. That is the module of "Show Distance And Angle Of Nodes In Corner" by Wei Huang (`ShowDistanceAndAngleOfNodesInCorner.glyphsReporter`, GitHub `weiweihuanghuang/Show-Distance-And-Angle-Of-Nodes-In-Corner`).
+* **Who frees it: the plugin's loader binary.** Every Python plugin bundle runs `Contents/MacOS/plugin`, a small loader from the GlyphsSDK plugin templates (derived from py2app's bundle template). The loader calls `PyImport_AddModule("__main__" + bundle id with dots as underscores)`, which returns a **borrowed** reference, and runs `plugin.py` in that module's dict.
+  - 63 of the 68 loader bundles here share one build, arm64 UUID `9f173642…`, byte-identical in every bundle. It calls `Py_IncRef(module)` right after `PyImport_AddModule` and never releases it: arm64 +0x2888 loads `_Py_IncRefPtr` (0x8238), and x0 is still the module.
+  - This plugin is the only one with build `216be8e8…`. Its last commit, of 2020-11-20, is "New binary for M1 and Glyphs 3 compatibility", and the local clone equals upstream HEAD. The build imports no `Py_IncRef`. After `fclose` it calls `Py_DecRef(module)`: arm64 +0x2a90 `ldr x8, [x27, #0x220]` (x27 = page 0x8000, so `_Py_DecRefPtr`), +0x2a94 `mov x0, x21` (the module from `PyImport_AddModule`), +0x2a98 `blr x8`. That releases the one reference `sys.modules` owns. The module is freed while `sys.modules` still points to it, **on every launch**.
+  - The other two builds are correct: `773c06a1` (Inverter, ShowBlackFill, ShowNodeIndexes) and `702bd09f` (MetricsSolver) neither keep nor release the module, so its refcount stays at 1.
+  - Kinetikern2, its GitHub clone and v1 ship the standard build `9f173642`: not affected.
+* **Evidence** (temporary instances only; a `sitecustomize.py` arrives through `open --env PYTHONPATH=…`).
+  - **No race.** Without any extra thread, the victim's key is already freed (refcount 0, `ob_type` still `PyModule_Type`) the first time the watcher can see it, 5.96–6.67 s after Python started (runs A01, C01, E01). The free happens inside the loader, while it holds the GIL. My earlier "race" reading came from runs with a refcount-churning thread, and it was wrong.
+  - **The moment.** The instance was aborted the instant the scanner saw the freed entry (HA01). The main thread was then starting the next plugin's loader (`plugin` +0x2458, `NSIsSymbolNameDefined`), inside `-[NSBundle loadAndReturnError:]` ← Glyphs +0x30028 ← +0x30a04 ← +0x2c70c ← +0x2842c ← main-menu nib loading.
+  - **The count** (F01). The watcher created three modules before the plugins loaded and kept a reference to each, so `PyImport_AddModule` returned those. After loading:
+
+    | Module | Loader | References after loading |
+    |---|---|---|
+    | ShowDistanceAndAngle (markfromberg) | `9f173642` | 3 = sys.modules + mine + the loader's |
+    | ShowDistanceBetweenTwoPoints (mekkablue) | `9f173642` | 3 |
+    | **ShowDistanceAndAngleInCorner** | `216be8e8` | **1** = sys.modules + mine **− 1** |
+
+    The extra reference kept the module alive: that run had no freed entry.
+* **Why it crashes only sometimes.** The freed block (80 bytes, pymalloc) usually goes 1–8 ms later to the next plugin's module, ShowDistanceBetweenTwoPoints: the same size, and created next. Two keys then point to one live module (E01, E2_01: "SHARED"), with one reference too few. That is harmless as long as nobody removes those keys. If something else takes the block first (A01, C01), the key points to whatever lives there. Once that object dies, the next full collection walks `sys.modules` into freed memory: `visit_decref ← dict_traverse ← gc_collect_main`, generation 2. That is the signature of reports 1 and 2, and of the scanner's catch in B24 (1 launch in 24: the block reused by a str-like object, refcount 28, a hash where `ob_type` was). It fits the earlier decoding (a large str-keyed dict, an old dict holding a newer value, a str hash in `ob_type`). Any Glyphs launch with this plugin installed can crash this way, whether or not a test or Kinetikern2 runs; report 1 had only v1 loaded.
+* **Side effect of my runs: two plugins flagged as crashed.**
+  - Before it loads each plugin, Glyphs sets an extended attribute `CrashFlag` in two places:
+    - on that plugin's entry in `Plugins/`, on the symlink itself (`XATTR_NOFOLLOW`, +0x309c8; read it with `xattr -s`);
+    - on the `Plugins` folder (+0x261f4). The folder path is built from `applicationSupportPath` + "Plugins" and stored at +0x26298.
+
+    After the plugin has loaded, Glyphs removes both (+0x30a6c, +0x2620c).
+  - When the app dies while a plugin loads, both flags stay. The next launch reads the folder's flag (+0x2c614 `getxattr` → `setTempData:forKey:@"PluginHasCrashed"`). It skips every entry that still carries a flag (+0x308b4). It then shows "The last time Glyphs was started, the following plugins crashed", with the buttons OK, Remove and Ignore (error code 990, handler at +0x2f0b0). The next plugin that loads clears the folder's flag again; the entries' flags stay until someone answers the alert.
+  - **OK** does nothing: the alert returns at every launch, and the plugins stay unloaded. **Remove** moves the plugins into `Plugins (Disabled)`. **Ignore** removes the flags (+0x2f6dc).
+  - My runs HT01 and HA01 stopped the instance on purpose during plugin loading. `ShowHTLSPolygons.glyphsReporter` (CrashFlag "13") and `ShowHintsAlsoInOtherMasters.glyphsReporter` ("15") were therefore flagged. Both still loaded in B24, and every run from A01 to F01 skipped them. The cure is Ignore, or `xattr -s -d CrashFlag "…/Plugins/<name>"` for each.
+  - A natural GC crash during plugin loading would flag an innocent plugin in the same way.
+* **Fixes.**
+  1. **The plugin.** Replace `Contents/MacOS/plugin` with the current loader. The standard one is generic (it reads `PyMainFileNames` from Info.plist) and ad-hoc signed, and neither bundle has sealed resources, so a copy from any other Python plugin works. Or uninstall the plugin. Either way, tell the author (the GitHub repo) to rebuild with the current GlyphsSDK loader.
+  2. **Glyphs** (Georg Seifert), worth a report:
+     - Glyphs could recognise this loader build (UUID `216be8e8`; its strings lack `Py_IncRef`) or check after each Python plugin loads that its `sys.modules` entry is alive.
+     - `CrashFlag` blames whichever plugin was loading when Glyphs died. A heap corruption that crashes later blames an innocent plugin.
+  3. **Our harness:** test instances must never be stopped during plugin loading. A check in `build.sh` could list new `CrashFlag`s after a run.
+* **Done on this Mac** (user: "yes, clear the flags, fix the plugin and push").
+  - Both `CrashFlag`s cleared (`xattr -s -d`). No entry in `Plugins/`, and not the folder, has one now.
+  - The plugin's loader is replaced with the standard build: a byte-identical copy of `ShowDistanceAndAngleOfNodes`' loader, copied next to it and renamed into place. The original is in the plugin's git history: `git checkout -- ShowDistanceAndAngleOfNodesInCorner.glyphsReporter/Contents/MacOS/plugin` in its Repositories clone restores it. A Plugin Manager update that changes that file upstream would bring the old loader back.
+  - Verified in temporary instances:
+    - G01: the module is alive under its own name, with 2 references like the other standard-loader modules. 71 keys point to 71 objects, there are no bad entries and no alert, and ShowHTLSAreas and ShowHintsAlsoInOtherMasters load again.
+    - H01, the hold test: 3 references, the same as the control (1 before the fix).
+    - `./build.sh --verify` (Arial) passed. The instance then hit the known PyObjC close crash (`Glyphs 3-2026-10-13-194406.ips`). macOS wrote the report about 26 s after the instance died, after build.sh's 20 s wait, so build.sh warned "macOS wrote no crash report". A longer wait would close that gap.
+* **Tooling** (scratchpad `crash/`, copied to `notes/crash-scripts/gc/`; the scratchpad paths are still inside):
+  - `site/sitecustomize.py`: the startup watcher. Modes: `KK2_SITE_CONTINUE`, `KK2_SITE_HOLD=a,b`, `KK2_SITE_CHECK_AT=s` (alias check plus the texts of a modal window, then exit 0), `KK2_SITE_ABORT`, `KK2_SITE_HAMMER`.
+  - `aliasloop.sh`: launches with the watcher.
+  - `startscan.py`, `startloop.sh`: a scan after startup, as a dev script. A modal alert at startup blocks the plugin's dev-script timer, which is why the watcher does its own check.
+  - `stub/annot3.py`: annotates a loader's disassembly with its `…Ptr` globals.
+  - `decode.py`: names the `objc_msgSend` stubs, CFStrings and C strings in Glyphs' arm64 code.
