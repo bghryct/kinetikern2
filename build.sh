@@ -187,6 +187,10 @@ fi
 TMP="${TMPDIR:-/tmp}"
 RESULTS="$(mktemp -d "${TMP%/}/kk2-verify.XXXXXX")"
 REPORT="$RESULTS/selftest.json"
+# the crash reports there before the run (a crash of this run's instance is reported after it)
+CRASH_TOOL="$ROOT/tools/kk2_crash_report.py"
+ls "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep '^Glyphs 3-.*\.ips$' > "$RESULTS/crashes-before.txt" || true
+CLOSE_CRASH=0
 # the results folder is unique, so it identifies this run's instance
 PATTERN="$KEY\.selfTestOut $(printf '%s' "$RESULTS" | sed 's/[][\.*^$?+(){}|]/\\&/g')"
 EXTRA=()
@@ -214,7 +218,16 @@ while [ ! -f "$REPORT" ]; do
   ELAPSED=$(( $(date +%s) - START ))
   [ -n "$PID" ] || PID="$(pgrep -f "$PATTERN" | head -n 1 || true)"
   if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
-    echo "the temporary Glyphs 3 quit without writing selftest.json (a crash? see Console.app)" >&2
+    # the test writes its verdict before it closes the font: closing a
+    # document can crash the app for a cause outside Kinetikern2
+    if [ -f "$RESULTS/selftest-before-close.json" ]; then
+      echo "the temporary Glyphs 3 quit while closing the font, after the test wrote its verdict" >&2
+      REPORT="$RESULTS/selftest-before-close.json"
+      CLOSE_CRASH=1
+      break
+    fi
+    echo "the temporary Glyphs 3 quit without writing selftest.json" >&2
+    "$PY" "$CRASH_TOOL" "$RESULTS/crashes-before.txt" "Glyphs 3" --wait 20 >&2 || true
     exit 1
   fi
   if [ "$ELAPSED" -ge "$VERIFY_TIMEOUT" ]; then
@@ -248,7 +261,8 @@ for image in window groups pairs connected; do
   [ -f "$RESULTS/$image.png" ] && echo "$image image: $RESULTS/$image.png"
 done
 echo "report: $REPORT"
-"$PY" - "$REPORT" <<'EOF'
+STATUS=0
+"$PY" - "$REPORT" <<'EOF' || STATUS=$?
 import json, sys
 with open(sys.argv[1]) as f:
     r = json.load(f)
@@ -263,3 +277,17 @@ for e in r.get("errors", []):
     print("error: " + e.rstrip())
 sys.exit(0 if r.get("ok") else 1)
 EOF
+# a crash of the temporary instance: what crashed. The known PyObjC crash at a
+# font close is outside Kinetikern2 (tools/kk2_crash_report.py); any other
+# crash fails the run.
+CRASH=0
+"$PY" "$CRASH_TOOL" "$RESULTS/crashes-before.txt" "Glyphs 3" --wait "$([ "$CLOSE_CRASH" = 1 ] && echo 20 || echo 0)" || CRASH=$?
+if [ "$CRASH" = 4 ]; then
+  echo "error: the temporary Glyphs 3 crashed (above), and not with the known PyObjC crash at a font close" >&2
+  STATUS=1
+elif [ "$CRASH" = 3 ]; then
+  echo "warning: the temporary Glyphs 3 crashed closing the font: the known PyObjC crash, outside Kinetikern2; the verdict above was written before the close"
+elif [ "$CLOSE_CRASH" = 1 ]; then
+  echo "warning: the temporary Glyphs 3 quit while closing the font, and macOS wrote no crash report"
+fi
+exit "$STATUS"

@@ -86,6 +86,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import tempfile
 import time
 import traceback
@@ -3283,8 +3284,18 @@ class SelfTest(object):
             self.close_window()
         except Exception:
             self.error(traceback.format_exc())
+        # the verdict, before the font closes: closing a document can crash
+        # the app for a cause outside Kinetikern2 (PyObjC before 11.0 and a
+        # palette's setWindowController_(None): tools/kk2_crash_report.py),
+        # and build.sh then reports the test from this file
+        self.finalize_report()
+        self.dump_report("selftest-before-close.json")
+        if kk2_args.flag("selfTestCrashAtClose"):
+            # the test of build.sh's fallback: an instance that dies here
+            os.kill(os.getpid(), signal.SIGSEGV)
         try:
             if self.font is not None:
+                self.log("closing the font")
                 self.font.close(save=False)
                 self.log("font closed")
         except Exception:
@@ -3300,7 +3311,7 @@ class SelfTest(object):
         if self.activity is not None:
             NSProcessInfo.processInfo().endActivity_(self.activity)
             self.activity = None
-        self.write_report()
+        self.dump_report()
         if self.quit:
             AppHelper.callLater(1.0, NSApp().terminate_, None)
 
@@ -3324,6 +3335,14 @@ class SelfTest(object):
             self.error("the closed window still holds its engine result or context")
 
     def write_report(self):
+        self.finalize_report()
+        self.dump_report()
+
+    def finalize_report(self):
+        """The main thread's stalls into the report (notes, and an error past the limit); once."""
+        if getattr(self, "_finalized", False):
+            return
+        self._finalized = True
         try:
             worst, stage = self.heartbeat.worst(JUDGED)
             self.report["stalls"] = self.heartbeat.stages
@@ -3339,15 +3358,22 @@ class SelfTest(object):
             if worst > self.max_stall:
                 self.error("the main thread was busy for %.0f ms at once during the %s (limit %.0f ms)"
                            % (worst, stage, self.max_stall))
+        except Exception:
+            print(traceback.format_exc())
+
+    def dump_report(self, name="selftest.json"):
+        """The report as it stands, as `name` in the results folder."""
+        try:
             self.report["seconds"] = self.now()
             self.report["ok"] = not self.report["errors"]
             os.makedirs(self.out, exist_ok=True)
-            path = os.path.join(self.out, "selftest.json")
+            path = os.path.join(self.out, name)
             # written under another name first: build.sh polls for selftest.json
             with open(path + ".part", "w") as f:
                 json.dump(_clean(self.report), f, indent=2, default=str)
             os.replace(path + ".part", path)
-            print("Kinetikern2 self-test %s: %s" % ("passed" if self.report["ok"] else "FAILED", path))
+            if name == "selftest.json":
+                print("Kinetikern2 self-test %s: %s" % ("passed" if self.report["ok"] else "FAILED", path))
         except Exception:
             print(traceback.format_exc())
 

@@ -1,12 +1,12 @@
 # Glyphs 3 crash during the Kinetikern2 self-test: investigation notes (paused)
 
-Status: **paused on 2026-10-06, about 21:45.** I made no changes to the Kinetikern2 code, the engine or build.sh, so nothing needs reverting. All instrumentation lives in the session scratchpad (see "Tooling"). The temporary font copy has been deleted. No temporary Glyphs instance is running. The user's Glyphs 3 (pid 87931) was never touched.
+Status: the crash at font close is settled and mitigated in the self-test (see *13 October* at the end); the GC crash is still open. First paused on 2026-10-06, about 21:45. I made no changes to the Kinetikern2 code, the engine or build.sh, so nothing needs reverting. All instrumentation lives in the session scratchpad (see "Tooling"). The temporary font copy has been deleted. No temporary Glyphs instance is running. The user's Glyphs 3 (pid 87931) was never touched.
 
 ## TL;DR
 
 * There are **two different crash bugs**. Neither has been traced to Kinetikern2 code.
   1. **GC crash** (the two crash reports from earlier today): `visit_decref ← dict_traverse ← gc_collect_main`, during a **full (generation-2) collection**. A str-keyed dict holds a pointer to a freed object. **Not reproduced** in 25 runs here, and the root cause is still open. The first of the two reports came from **v1 (Kinetic SDF Kerning)**, not Kinetikern2.
-  2. **PyObjC 10.2 nil-argument bug** (new, reproduced once, root cause proven): a crash in `method_stub → PyObjCMethodSignature_WithMetaData → PyObjCRT_SkipTypeSpec(0x388)` when the self-test closes the font. Glyphs calls the **Waterfall** plugin's Python `setWindowController_(None)`. PyObjC 10.2 then wrongly treats `None` as a block. Fixed upstream in PyObjC 11.0. This is not Kinetikern2.
+  2. **PyObjC 10.2 nil-argument bug** (new, reproduced once, root cause proven): a crash in `method_stub → PyObjCMethodSignature_WithMetaData → PyObjCRT_SkipTypeSpec(0x388)` when the self-test closes the font. Glyphs calls each Python palette's `setWindowController_(None)` (inherited from GlyphsApp's `PalettePlugin`; not Waterfall, as first thought: see *13 October* below). PyObjC 10.2 then wrongly treats `None` as a block. Fixed upstream in PyObjC 11.0. This is not Kinetikern2.
 * Font Proofer Companion (a compiled Cython plugin) runs Python on **background `threading.Timer` threads**. Those threads call `Glyphs.fonts` / `doc.font` whenever a font opens or closes. They are the only background Python threads in the test instance. This is the leading suspect for the GC crash, but it is **unproven**: the experiment for it is written and has not been run yet.
 
 ## Environment
@@ -114,3 +114,32 @@ to Glyphs: opening any file under `/tmp/…` may hang Glyphs 3.
 4. Keep accumulating plain and scanner runs (`WRAP=$PWD/scanwrap.py ./loop.sh S2 10 wrap --env PYTHONFAULTHANDLER=1`), and also with CPU load in parallel (H3). With the scanner, the first GC-crash candidate will name the dict (its keys and owner).
 5. Run the self-test on a `.glyphs` source. Copy one to scratch first, e.g. `~/Documents/Github/OswaldFont/sources/Oswald.glyphs`; the self-test then makes its own temp copy.
 6. If H1 is confirmed, apply mitigation 4 to the self-test, and 2 and 3 regardless. Then verify: py_compile all modules, the smoke test (Arial default; Lato `--glyphs 3000 --max-pairs 30000`), and at least 5 clean `./build.sh --verify` runs across Lato and Arial with no new `.ips`.
+
+## 13 October: the crash at font close, settled
+
+Status: **explained; mitigated in the self-test.** The crash itself can only be fixed in Glyphs' Python.
+
+* **What crashes.** PyObjC before 11.0 has this check in `method_stub` (`libffi_support.m`; the same code is in 9.0.1 and 10.2, fixed in 11.0):
+  `PyObjCObject_IsBlock(v) && PyObjCObject_GetBlock(v) == NULL`. It runs on every argument of a method that a Python class implements, without checking that the argument is a PyObjC object. A nil argument arrives as `None`, so PyObjC reads the memory next to Python's None. Whether that crashes depends on two things:
+  - **the launch**: bits 30 and 25 of the low word of `&_PyNone_Type`, which depend on where the Python framework was loaded;
+  - **the moment**: None's reference count must be even.
+  When both hold, PyObjC reads `PyType_Type.tp_basicsize` (0x388) as a pointer. Today's two reports (15:12 and 15:55) have x0 = 0x388, x27 = &_Py_NoneStruct and both bits set.
+* **Who receives nil: the palettes, not Waterfall.** My conclusion of 6 October was wrong. A trace in a temporary instance (`scratchpad/crash/wctrace.py`: a profile hook logged every Python `setWindowController_` while a font opened and closed three times) shows the actual calls:
+  - Waterfall's method was never called.
+  - On open, Glyphs gives each Python palette of the window the window controller.
+  - On close, it gives each palette `setWindowController_(None)`. Here that is GSDMATPalette, Distribute, SetPalette and TTControlInstructions: four calls per close.
+  - They inherit the method from GlyphsApp's own `PalettePlugin` (`Scripts311/GlyphsApp/plugins.pyc`).
+* **Rate.** Every crash report with this signature on this Mac (5: 6, 8, 12 and twice on 13 October) came from a temporary test instance. Each ran 1.5–2.5 min from launch to crash, and the user's own Glyphs has not crashed. The rate is about 1 test run in 8. The user's Glyphs is exposed all the same: in an unlucky launch, a font close can crash it.
+* **Waterfall** (Toshi Omagari, installed build 15, upstream build 17 of July 2026) does implement `setWindowController_` in Python. The method stores the controller and never reads it again. Removing it would not help, since the palettes are the ones called.
+* **RoboFont 4.4** bundles PyObjC 9.0.1, which has the same unguarded check. No RoboFont run has crashed this way: Python 3.9's memory next to None differs.
+* **The fix: PyObjC 11 or later in Glyphs' Python.**
+  - Glyphs 3.5.1 (3534) ships GlyphsApp for Python 3.8, 3.9, 3.11, 3.12 and 3.14 (`Contents/Scripts3xx`).
+  - Its Plugin Manager lists only the Python 3.11 module (`py311`, PyObjC 10.2; `glyphs-packages` glyphs3 branch). The module's `py314` branch (Python 3.14.6, PyObjC 12.2.1, June 2026) exists upstream but is not listed for Glyphs 3.
+  - Font Proofer Companion, the only plugin here with compiled modules, ships builds for 3.9–3.14.
+  - Only standalone scripts would break on 3.14: four of Filipe Negrão's workflow scripts (`distutils`) and Wei Huang's html2text helper (`cgi`).
+  - To report to Glyphs: update PyObjC in the `py311` module (PyObjC 11.1 supports 3.11), or list `py314` for Glyphs 3.
+* **Mitigation in the self-test (both plugins).**
+  - The test writes its verdict to `selftest-before-close.json` before it closes the font, then `selftest.json` as before.
+  - `build.sh --verify` lists the crash reports from before the run. When the instance dies at the close, it reports the test from the earlier file.
+  - `tools/kk2_crash_report.py` prints any new crash report's top frames and names this known cause; only this cause leaves the verdict standing, and any other crash fails the run.
+  - `KK2_SETTINGS="selfTestCrashAtClose YES"` crashes the instance at the close on purpose, to test that path.
