@@ -51,7 +51,12 @@ entry wherever classes, the threshold or the budget left another value (zero
 exceptions included, which Apply writes); those entries come after the
 budget, as the harness's do. A glyph with a fixed advance (tabular figures,
 a glyph with a width metrics key: `GLYPH_FIXED_ADVANCE`) keeps both sides
-when either is kept, since the two add up to its advance. The designer
+when either is kept, since the two add up to its advance. A side with a
+`SideRule::Follow` (an aligned composite's, a metrics key's) and the side it
+follows are kept together (`engine::keep_followed_sides`, 13 October): a
+mark's tail that touches the next letter kept Kolker Brush's Eogonek on the
+right while E moved, so Glyphs aligned it to E again on Apply (not what the
+preview showed) and a UFO kept it apart from its base. The designer
 harness leaves kept sides and pairs alone. With `PARAM_FIT_FROZEN` the
 Looseness is fitted to the kept sides of the lowercase base letters: Great
 Vibes' swash capitals alone fit below −6, its lowercase at −0.5.

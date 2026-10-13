@@ -648,6 +648,9 @@ impl Context {
                 .collect::<Option<Vec<_>>>()
         })
         .ok_or(Cancelled)?;
+        if keep {
+            keep_followed_sides(&mut glyphs);
+        }
 
         let mut group_ids: Vec<u32> = glyphs.iter().filter(|g| g.valid).map(|g| g.group_id).collect();
         group_ids.sort_unstable();
@@ -1173,6 +1176,49 @@ impl Context {
             }
         }
         flags
+    }
+}
+
+/// Keep joins: a side that follows another glyph's (an aligned composite's,
+/// a metrics key's) is that side plus an offset, so the two are kept
+/// together: when either keeps its join as drawn, both do. Else a mark that
+/// touches the next letter (the tail of an ogonek) pins a composite's side
+/// while its base moves, and the composite leaves its base: Glyphs aligns it
+/// to the base again on Apply, so the font is not what the preview showed,
+/// and a UFO keeps it apart (Kolker Brush's Eogonek, E's right side moved).
+fn keep_followed_sides(glyphs: &mut [PreparedGlyph]) {
+    let n = glyphs.len();
+    for _round in 0..8 {
+        let mut changed = false;
+        for i in 0..n {
+            for left in [true, false] {
+                let rule = if left { glyphs[i].lsb_rule } else { glyphs[i].rsb_rule };
+                let SideRule::Follow { glyph, opposite, .. } = rule else { continue };
+                let t = glyph as usize;
+                if t >= n || !glyphs[i].valid || !glyphs[t].valid {
+                    continue;
+                }
+                let target_left = left != opposite;
+                let mine = if left { glyphs[i].kept_left } else { glyphs[i].kept_right };
+                let theirs = if target_left { glyphs[t].kept_left } else { glyphs[t].kept_right };
+                if mine != theirs {
+                    if left {
+                        glyphs[i].kept_left = true;
+                    } else {
+                        glyphs[i].kept_right = true;
+                    }
+                    if target_left {
+                        glyphs[t].kept_left = true;
+                    } else {
+                        glyphs[t].kept_right = true;
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }
 

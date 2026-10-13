@@ -692,7 +692,11 @@ in whole rows and columns of the pair table (`notes/connected-scripts-deep-dive.
   glyph–glyph exception where class kerning, the threshold or Max pairs would
   give it another value, an exception of 0 included). A glyph whose advance
   is fixed (tabular figures, a glyph with a width metrics key) keeps both
-  sides when either is kept. Every join stays as drawn. Kinetikern2 spaces
+  sides when either is kept, and a side that follows another glyph's (an
+  aligned composite, a metrics key) is kept together with it: when the tail
+  of an accent touches the next letter (Kolker Brush's Eogonek), its base
+  keeps that side too, so the composite stays on its base. Every join stays
+  as drawn. Kinetikern2 spaces
   and kerns everything else — punctuation, figures, capitals that do not
   join, a letter next to a period (it keeps clear of the exit stroke) — at
   the tightness of the kept lowercase letters: the Looseness is fitted to

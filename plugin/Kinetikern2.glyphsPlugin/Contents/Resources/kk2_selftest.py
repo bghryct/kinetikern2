@@ -2176,10 +2176,22 @@ class SelfTest(object):
         # Apply the preview with the joins, then Revert
         self.before = self.font_state(snap.names, snap.master_id)
         self.connected_written = []
+        written = set()
         for name in sorted(win.plan_names(res) or ()):
             i = snap.index.get(name)
             if i is not None and m[i].valid:
                 self.connected_written.append((name, m[i].lsb, m[i].rsb))
+                written.add(i)
+        # and the glyphs that follow them (aligned composites, metrics keys): they move with them, and must
+        # land where the preview shows them too (a composite kept apart from its base would not)
+        self.connected_followers = 0
+        for i, spec in enumerate(snap.specs):
+            if i in written or i >= len(m) or not m[i].valid:
+                continue
+            if any(rule in (kb.RULE_FOLLOW_SAME, kb.RULE_FOLLOW_OPPOSITE) and t in written
+                   for rule, t in ((spec.lsb_rule, spec.lsb_glyph), (spec.rsb_rule, spec.rsb_glyph))):
+                self.connected_written.append((snap.names[i], m[i].lsb, m[i].rsb))
+                self.connected_followers += 1
         previous = win.last_apply
         if not self.call_window(CONNECTED, win._apply, res, False):
             raise RuntimeError("the window did not apply the connected-script preview")
@@ -2202,7 +2214,9 @@ class SelfTest(object):
         if bad:
             self.error("after the connected-script Apply %d glyphs differ from the preview, e.g. %s" % (len(bad), bad[:5]))
         else:
-            self.note("connected script Apply: %d glyphs written as the preview showed them" % len(self.connected_written))
+            self.note("connected script Apply: %d glyphs written as the preview showed them, %d of them composites or "
+                      "keyed glyphs that follow the others" % (len(self.connected_written),
+                                                              getattr(self, "connected_followers", 0)))
         self.wait(lambda: self.window_state("after the connected Apply") == "ready", self.connected_reread, 120.0,
                   "the window after the connected-script Apply")
 

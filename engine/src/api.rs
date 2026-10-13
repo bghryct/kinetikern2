@@ -829,6 +829,36 @@ mod tests {
     }
 
     #[test]
+    fn keep_joins_keeps_a_composite_and_its_base_together() {
+        // E touches nothing on its right; its composite, E with a mark whose
+        // tail runs along the baseline into the next letter, touches the n:
+        // the composite's side is kept, and so is E's, which it follows
+        let mut n = GlyphInput::simple(vec![rect(60.0, 0.0, 440.0, 500.0)], 500.0, GROUP_LOWERCASE);
+        n.cur_lsb = 60.0;
+        n.cur_rsb = 60.0;
+        let mut e = GlyphInput::simple(vec![rect(60.0, 0.0, 440.0, 700.0)], 400.0, GROUP_UPPERCASE);
+        e.cur_lsb = 60.0;
+        e.cur_rsb = -40.0;
+        let mut eo = GlyphInput::simple(vec![rect(60.0, 0.0, 440.0, 700.0), rect(380.0, 0.0, 520.0, 40.0)], 400.0, GROUP_UPPERCASE);
+        eo.cur_lsb = 60.0;
+        eo.cur_rsb = -120.0;
+        eo.base = 1;
+        eo.lsb_rule = SideRule::Follow { glyph: 1, opposite: false, offset: 0.0 };
+        eo.rsb_rule = SideRule::Follow { glyph: 1, opposite: false, offset: -80.0 };
+        let kinds = vec![JoinKind::Lower, JoinKind::Upper, JoinKind::Upper];
+        let setup = JoinSetup { kinds, kerning: Vec::new(), keep: true };
+        let eng = Engine::prepare_with_joins(vec![n, e, eo], 1000.0, 1, &setup).unwrap();
+        let kept = eng.kept_sides();
+        assert!(kept[2].1, "the composite touches the n: kept {kept:?}");
+        assert!(kept[1].1, "E's right side, which the composite follows, is kept with it: {kept:?}");
+        let sol = eng.solve(&Settings::new()).unwrap();
+        assert_eq!((sol.rsb[1], sol.rsb[2]), (-40.0, -120.0), "both as drawn: the composite stays on its base");
+        assert_eq!(sol.lsb[2] - sol.lsb[1], 0.0);
+        let check = eng.check_joins(&sol, None).unwrap();
+        assert_eq!(check.broken, 0, "{check:?}");
+    }
+
+    #[test]
     fn the_looseness_moves_the_rest_from_the_one_fitted_to_the_kept_joins() {
         // with fit_frozen the solve runs at the Looseness fitted to the kept
         // joins plus the settings' own: 0 matches them, and the slider moves
