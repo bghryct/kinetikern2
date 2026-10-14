@@ -627,7 +627,7 @@ CLICKABLE = ("tightness", "intensity", "threshold", "thresholdField", "harness",
              "master", "size", "threads", "maxPairs", "connected", "joinMode", "reload", "scope", "replace",
              "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel", "punctuation",
              "figures", "smallCaps", "conventions", "tightField", "kerning", "intensityField",
-             "harnessStrengthField", "viewMode", "showing", "overlayStyle", "alignWords", "sizeField")
+             "harnessStrengthField", "viewMode", "showing", "overlayStyle", "alignWords", "sizeField", "settingsMenu")
 
 
 def covered_controls(win):

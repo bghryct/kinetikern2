@@ -47,6 +47,7 @@ same pairs up in the font's kerning.
 
 from __future__ import division, print_function, unicode_literals
 
+import json
 import math
 import os
 import time
@@ -55,7 +56,8 @@ import weakref
 
 import objc
 import vanilla
-from AppKit import NSAlert, NSAlertFirstButtonReturn, NSColor, NSFont, NSObject
+import vanilla.dialogs
+from AppKit import NSAlert, NSAlertFirstButtonReturn, NSColor, NSFont, NSObject, NSPasteboard, NSPasteboardTypeString
 from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 import kk3_apply as ka
@@ -90,6 +92,10 @@ VIEWS = ["Side by side", "Toggle", "Overlay"]
 VIEW_SIDE, VIEW_TOGGLE, VIEW_OVERLAY = 0, 1, 2
 OVERLAY_STYLES = ["Font in red", "Both translucent"]
 OVERLAY_RED, OVERLAY_TRANSLUCENT = 0, 1
+# Copy, Paste, Save and Load Settings: a JSON object that names itself, its choices as words
+SETTINGS_FORMAT, SETTINGS_VERSION = "kinetikern3", 1
+SCOPE_NAMES, VIEW_NAMES, OVERLAY_NAMES, JOIN_NAMES = ["sample", "whole"], ["side", "toggle", "overlay"], \
+    ["red", "translucent"], ["keep", "space"]
 SCOPES = ["Glyphs in sample text", "Whole font"]
 SCOPE_SAMPLE, SCOPE_WHOLE = 0, 1
 LOOSENESS_RATIO = 3.86
@@ -296,6 +302,7 @@ class KK3Window(object):
         self._overlay_due = False  # the font laid over Kinetikern3 (Toggle, Overlay), after the right pane
         self._left_stale = False  # the left pane, hidden (Toggle, Overlay), missed a layout
         self._showing_font = False  # Toggle: the font as it is is shown (else Kinetikern3)
+        self._test_pasteboard = None  # Copy and Paste Settings in a test instance (never the user's clipboard)
         self._render_at = 0.0  # not before this time (a pause after typing)
         self._fonts = []  # the fonts the Font popup lists, in its order
         self._ruled = set()  # glyphs with a side driven by a metrics key or an aligned component
@@ -513,7 +520,7 @@ class KK3Window(object):
             "most lowercase letters overlap most of their partners, the font is a connected script. A font whose "
             "letters do not join is spaced as usual, so this can stay on.")
         mode = int(self._setting("joinMode", JOIN_KEEP, int))
-        w.joinMode = vanilla.PopUpButton((980, 66, 150, 20), JOIN_MODES, callback=self.joinModeChanged,
+        w.joinMode = vanilla.PopUpButton((980, 66, 124, 20), JOIN_MODES, callback=self.joinModeChanged,
                                          sizeStyle="small")
         w.joinMode.set(mode if mode in (JOIN_KEEP, JOIN_SPACE) else JOIN_KEEP)
         w.joinMode.getNSPopUpButton().setToolTip_(
@@ -528,6 +535,18 @@ class KK3Window(object):
         # window's edge, and the label then covered every control above.)
         w.connectedValue = vanilla.TextBox((14, 0, 10, 10), "", sizeStyle="mini")
         w.connectedValue.show(False)
+        w.settingsMenu = vanilla.ActionButton((-92, 64, 38, 22), [
+            dict(title="Copy Settings", callback=self.copySettings),
+            dict(title="Paste Settings", callback=self.pasteSettings),
+            "----",
+            dict(title="Save Settings…", callback=self.saveSettings),
+            dict(title="Load Settings…", callback=self.loadSettings),
+            "----",
+            dict(title="Reset Settings", callback=self.resetSettings)], sizeStyle="small")
+        w.settingsMenu.getNSPopUpButton().setToolTip_(
+            "Settings: copy them as text (JSON) to paste into another Kinetikern3 window or keep with a project, "
+            "save them to a file and load them, or go back to Kinetikern3's defaults. The sample text, the master "
+            "and the font's spacing groups stay with the font.")
         w.reload = vanilla.Button((-50, 64, 36, 22), "↻", callback=self.reloadOutlines, sizeStyle="small")
         w.reload.getNSButton().setToolTip_("Read the outlines of the font again")
 
@@ -2185,6 +2204,237 @@ class KK3Window(object):
         else:
             self._set_status("Reverted the last apply: the kerning, groups and sidebearings of %s are back as they "
                              "were." % name)
+
+    # ------------------------------------------------------------ settings
+    def settings(self):
+        """Every control's setting, as a plain dict: Copy and Save Settings write it as JSON, Paste and Load
+        Settings read it back (apply_settings). The sample text, the master and the font's spacing groups
+        belong to the font and stay out."""
+        w = self.w
+        return {
+            SETTINGS_FORMAT: SETTINGS_VERSION,
+            "looseness": round(float(w.tightness.get()), 4),
+            "kerning": bool(w.kerning.get()),
+            "intensity": round(float(w.intensity.get()), 2),
+            "threshold": round(self._threshold(), 3),
+            "harness": bool(w.harness.get()),
+            "harnessStrength": round(float(w.harnessStrength.get()), 2),
+            "conventions": self.harness_style,
+            "punctuation": bool(w.punctuation.get()),
+            "figures": bool(w.figures.get()),
+            "smallCaps": bool(w.smallCaps.get()),
+            "connected": bool(w.connected.get()),
+            "joinMode": JOIN_NAMES[self._join_mode()],
+            "alongSlant": bool(w.alongSlant.get()),
+            "maxPairs": self._budget(),
+            "threads": self._threads(),
+            "applyTo": SCOPE_NAMES[int(w.scope.get())],
+            "replaceKerning": bool(w.replace.get()),
+            "textSize": round(self._size, 1),
+            "view": VIEW_NAMES[self._view()],
+            "overlay": OVERLAY_NAMES[int(w.overlayStyle.get())],
+            "alignWords": bool(w.alignWords.get()),
+        }
+
+    @staticmethod
+    def default_settings():
+        """Kinetikern3's own settings (Reset Settings)."""
+        return {SETTINGS_FORMAT: SETTINGS_VERSION, "looseness": 0.0, "kerning": True, "intensity": 100.0,
+                "threshold": DEFAULT_THRESHOLD, "harness": False, "harnessStrength": 100.0, "conventions": kh.AUTO,
+                "punctuation": True, "figures": True, "smallCaps": True, "connected": True, "joinMode": "keep",
+                "alongSlant": True, "maxPairs": DEFAULT_MAX_PAIRS, "threads": 0, "applyTo": "sample",
+                "replaceKerning": True, "textSize": DEFAULT_SIZE, "view": "side", "overlay": "red",
+                "alignWords": True}
+
+    def apply_settings(self, d):
+        """Sets the controls from a settings dict (settings()) the way a user would: each change goes through
+        its control's callback, so it is saved and the preview follows. Connected script, the join mode and
+        Along the italic angle only when they change, as each starts the engine again. Keys it does not know
+        and values of the wrong kind are left out. Returns (the keys applied, the keys left out)."""
+        if not isinstance(d, dict) or SETTINGS_FORMAT not in d:
+            raise ValueError('not Kinetikern3 settings (they start with {"%s": %d, ...})'
+                             % (SETTINGS_FORMAT, SETTINGS_VERSION))
+        w = self.w
+        known = set(self.settings())
+        applied, ignored = [], [k for k in d if k not in known]
+
+        def number(key, lo, hi):
+            if key not in d:
+                return None
+            v = d[key]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                ignored.append(key)
+                return None
+            applied.append(key)
+            return min(hi, max(lo, float(v)))
+
+        def flag(key):
+            if key not in d:
+                return None
+            if not isinstance(d[key], bool):
+                ignored.append(key)
+                return None
+            applied.append(key)
+            return d[key]
+
+        def choice(key, names):
+            if key not in d:
+                return None
+            v = d[key]
+            if isinstance(v, str) and v in names:
+                applied.append(key)
+                return names.index(v)
+            ignored.append(key)
+            return None
+
+        loose, inten = number("looseness", TIGHT_MIN, LOOSE_MAX), number("intensity", 0.0, MAX_INTENSITY)
+        if loose is not None:
+            w.tightness.set(loose)
+        if inten is not None:
+            w.intensity.set(inten)
+        if loose is not None or inten is not None:
+            self.physicsChanged(None)
+        v = flag("kerning")
+        if v is not None:
+            w.kerning.set(v)
+            self.kerningChanged(None)
+        v = number("threshold", 0.0, MAX_THRESHOLD)
+        if v is not None:
+            w.threshold.set(v)
+            self.thresholdChanged(None)
+        on, strength = flag("harness"), number("harnessStrength", 0.0, 100.0)
+        if on is not None:
+            w.harness.set(on)
+        if strength is not None:
+            w.harnessStrength.set(strength)
+        if on is not None or strength is not None:
+            self.harnessChanged(None)
+        if "conventions" in d:
+            if d["conventions"] in [k for k, _label in self.styles]:
+                applied.append("conventions")
+                self.set_harness_style(d["conventions"])
+            else:
+                ignored.append("conventions")
+        for key, control, callback in (("punctuation", w.punctuation, self.punctuationChanged),
+                                       ("figures", w.figures, self.figuresChanged),
+                                       ("smallCaps", w.smallCaps, self.smallCapsChanged),
+                                       ("replaceKerning", w.replace, self.replaceChanged),
+                                       ("alignWords", w.alignWords, self.alignWordsChanged)):
+            v = flag(key)
+            if v is not None:
+                control.set(v)
+                callback(None)
+        v = number("maxPairs", 0, 1.0e9)
+        if v is not None:
+            w.maxPairs.set(str(int(v)) if v >= 1 else "")
+            self.maxPairsChanged(None)
+        v = number("threads", 0, self.engine.cpu_count)
+        if v is not None:
+            w.threads.set(int(v))
+            self.threadsChanged(None)
+        v = choice("applyTo", SCOPE_NAMES)
+        if v is not None:
+            w.scope.set(v)
+            self.scopeChanged(None)
+        v = number("textSize", MIN_SIZE, MAX_SIZE)
+        if v is not None:
+            self._set_size(v)
+        style, view = choice("overlay", OVERLAY_NAMES), choice("view", VIEW_NAMES)
+        if style is not None:
+            w.overlayStyle.set(style)
+            self._save("overlayStyle", style)
+        if view is not None:
+            w.viewMode.set(view)
+            self._save("view", view)
+        if style is not None or view is not None:
+            self._apply_view()
+        # the ones that start the engine again, only when they change
+        connected, mode = flag("connected"), choice("joinMode", JOIN_NAMES)
+        restart = False
+        if connected is not None and connected != bool(w.connected.get()):
+            w.connected.set(connected)
+            restart = True
+        if mode is not None and mode != int(w.joinMode.get()):
+            w.joinMode.set(mode)
+            self._save("joinMode", mode)
+            restart = True
+        if restart:
+            self.connectedChanged(None)
+        v = flag("alongSlant")
+        if v is not None and v != bool(w.alongSlant.get()):
+            w.alongSlant.set(v)
+            self.alongSlantChanged(None)
+        return applied, ignored
+
+    def settings_text(self, indent=None):
+        return json.dumps(self.settings(), indent=indent)
+
+    def load_settings_text(self, text, source):
+        """Applies settings given as JSON text; the status line says what happened. True when they applied."""
+        try:
+            applied, ignored = self.apply_settings(json.loads(text or ""))
+        except Exception as e:
+            self._set_status("No Kinetikern3 settings in %s: %s" % (source, e))
+            return False
+        note = "Settings from %s: %d applied" % (source, len(applied))
+        if ignored:
+            note += "; left out (unknown, or not a value it can take): %s" % ", ".join(sorted(set(ignored)))
+        self._set_status(note + ".")
+        return True
+
+    def _pasteboard(self):
+        """The general pasteboard; in a test instance a private one (a test never touches the clipboard)."""
+        if self._unattended:
+            if self._test_pasteboard is None:
+                self._test_pasteboard = NSPasteboard.pasteboardWithUniqueName()
+            return self._test_pasteboard
+        return NSPasteboard.generalPasteboard()
+
+    def copySettings(self, sender):
+        pb = self._pasteboard()
+        pb.clearContents()
+        pb.setString_forType_(self.settings_text(), NSPasteboardTypeString)
+        self._set_status("Settings copied as text (JSON): Paste Settings in any Kinetikern3 window takes them.")
+
+    def pasteSettings(self, sender):
+        self.load_settings_text(self._pasteboard().stringForType_(NSPasteboardTypeString), "the clipboard")
+
+    def saveSettings(self, sender):
+        vanilla.dialogs.putFile(messageText="Save Kinetikern3's settings", fileName="Kinetikern3 settings.json",
+                                fileTypes=["json"], parentWindow=self.w, resultCallback=self.save_settings_to)
+
+    def save_settings_to(self, path):
+        path = path[0] if isinstance(path, (list, tuple)) and path else path
+        if not path:
+            return False
+        try:
+            with open(path, "w") as f:
+                f.write(self.settings_text(indent=2) + "\n")
+        except Exception as e:
+            self._set_status("The settings could not be saved: %s" % e)
+            return False
+        self._set_status("Settings saved to %s." % os.path.basename(path))
+        return True
+
+    def loadSettings(self, sender):
+        vanilla.dialogs.getFile(messageText="Load Kinetikern3's settings", fileTypes=["json"], parentWindow=self.w,
+                                resultCallback=self.load_settings_from)
+
+    def load_settings_from(self, path):
+        path = path[0] if isinstance(path, (list, tuple)) and path else path
+        if not path:
+            return False
+        try:
+            with open(path) as f:
+                text = f.read()
+        except Exception as e:
+            self._set_status("The settings could not be read: %s" % e)
+            return False
+        return self.load_settings_text(text, os.path.basename(path))
+
+    def resetSettings(self, sender):
+        self.apply_settings(self.default_settings())
+        self._set_status("Settings back to Kinetikern3's defaults (Paste Settings brings back settings you copied).")
 
     # ----------------------------------------------------------- callbacks
     def physicsChanged(self, sender):
