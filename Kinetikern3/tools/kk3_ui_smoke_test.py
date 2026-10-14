@@ -1238,10 +1238,12 @@ class UI(object):
 
     # the controls the contract names
     def tightness(self):
-        return self.slider(-1.0, 1.0)
+        import kk3_window
+        return self.slider(kk3_window.TIGHT_MIN, kk3_window.LOOSE_MAX)
 
     def intensity(self):
-        return self.slider(0.0, 200.0)
+        import kk3_window
+        return self.slider(0.0, kk3_window.MAX_INTENSITY)
 
     def threshold(self):
         return self.slider(0.0, 20.0)

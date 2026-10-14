@@ -68,7 +68,8 @@ except ImportError:  # outside Glyphs (tests)
 PREFIX = "com.mirkovelimirovic.Kinetikern3."
 LEGACY_PREFIX = "com.mirkovelimirovic.Kinetikern2."  # read while Kinetikern3 has no setting of its own
 # preferences the window remembers between sessions (keys under PREFIX)
-PERSISTED = ("tightness", "intensity", "threshold", "maxPairs", "threads", "scope", "size", "sample", "replace")
+PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "sample",
+             "replace")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -80,6 +81,12 @@ SIZES = ["24", "36", "48", "60", "72", "96", "128"]
 SCOPES = ["Glyphs in sample text", "Whole font"]
 SCOPE_SAMPLE, SCOPE_WHOLE = 0, 1
 LOOSENESS_RATIO = 3.86
+# the Looseness slider (0 = the model's own spacing). The designers of hairline and thin
+# fonts space them at about -0.4 to +0.2; -1 already sets some of them with almost no
+# sidebearing, others need -2 or -3 for a tight display setting, where the sidebearings of
+# a hairline go below zero (Archer Hairline's n: +50 at 0, +5 at -1, -10 at -2)
+TIGHT_MIN, LOOSE_MAX = -3.0, 2.0
+MAX_INTENSITY = 200.0
 DEFAULT_THRESHOLD = 5.0  # units per 1000 em
 MAX_THRESHOLD = 20.0
 DEFAULT_MAX_PAIRS = 30000
@@ -155,6 +162,16 @@ def _as_bool(value):
 
 def _count(n):
     return "{:,}".format(int(n))
+
+
+def _number(text):
+    """A number typed into a field (a comma or a minus sign as typed; a % sign is ignored), else None."""
+    text = (text or "").strip().replace(",", ".").replace("\u2212", "-").replace("%", "").strip()
+    try:
+        v = float(text)
+    except ValueError:
+        return None
+    return v if v == v and abs(v) != float("inf") else None
 
 
 _engines = {}
@@ -350,24 +367,39 @@ class KK3Window(object):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        w = vanilla.FloatingWindow((1240, 860), "Kinetikern3 — %s" % self.font.familyName, minSize=(1200, 600),
-                                   autosaveName=None if self._unattended else PREFIX + "window")
+        w = vanilla.Window((1240, 860), "Kinetikern3 — %s" % self.font.familyName, minSize=(1200, 600),
+                           autosaveName=None if self._unattended else PREFIX + "window")
         self.w = w
 
-        # row 1: physics and threshold
+        # row 1: physics and threshold; each slider has a field for an exact value (Return applies it)
         x = 14
         w.tightLabel = vanilla.TextBox((x, 10, 220, 17), "Looseness / Tightness", sizeStyle="small")
-        w.tightMin = vanilla.TextBox((x, 32, 34, 14), "Tight", sizeStyle="mini")
-        w.tightness = vanilla.Slider((x + 34, 28, 240, 22), minValue=-1.0, maxValue=1.0,
-                                     value=self._setting("tightness", 0.0), callback=self.physicsChanged)
-        w.tightMax = vanilla.TextBox((x + 280, 32, 40, 14), "Loose", sizeStyle="mini")
+        w.tightMin = vanilla.TextBox((x, 32, 30, 14), "Tight", sizeStyle="mini")
+        w.tightness = vanilla.Slider((x + 30, 28, 200, 22), minValue=TIGHT_MIN, maxValue=LOOSE_MAX,
+                                     value=min(LOOSE_MAX, max(TIGHT_MIN, self._setting("tightness", 0.0))),
+                                     callback=self.physicsChanged)
+        w.tightMax = vanilla.TextBox((x + 234, 32, 32, 14), "Loose", sizeStyle="mini")
+        w.tightField = vanilla.EditText((x + 268, 28, 52, 21), "", callback=self.tightFieldChanged,
+                                        continuous=False, sizeStyle="small")
+        w.tightField.getNSTextField().setToolTip_(
+            "The Looseness, from %g (tight) to %+g (loose); 0 is the model's own spacing." % (TIGHT_MIN, LOOSE_MAX))
         w.tightValue = vanilla.TextBox((x, 52, 330, 14), "", sizeStyle="mini")
 
-        x = 360
-        w.sdfLabel = vanilla.TextBox((x, 10, 220, 17), "SDF Kerning Intensity", sizeStyle="small")
-        w.intensity = vanilla.Slider((x, 28, 210, 22), minValue=0.0, maxValue=200.0,
-                                     value=self._setting("intensity", 100.0), callback=self.physicsChanged)
-        w.sdfValue = vanilla.TextBox((x, 52, 230, 14), "", sizeStyle="mini")
+        x = 352
+        # the label is the kerning switch: off previews and applies Kinetikern3's spacing alone
+        w.kerning = vanilla.CheckBox((x, 9, 220, 18), "SDF Kerning Intensity", sizeStyle="small",
+                                     value=self._setting("kerning", True, bool), callback=self.kerningChanged)
+        w.kerning.getNSButton().setToolTip_(
+            "Kerning on or off. Off: the preview shows Kinetikern3's spacing without its kerning, and Apply writes "
+            "the spacing alone (as at 0 %; with Replace existing kerning on, the kerning between the glyphs it "
+            "spaces is removed). The intensity keeps its value for when kerning is on again.")
+        w.intensity = vanilla.Slider((x, 28, 170, 22), minValue=0.0, maxValue=MAX_INTENSITY,
+                                     value=min(MAX_INTENSITY, max(0.0, self._setting("intensity", 100.0))),
+                                     callback=self.physicsChanged)
+        w.intensityField = vanilla.EditText((x + 176, 28, 44, 21), "", callback=self.intensityFieldChanged,
+                                            continuous=False, sizeStyle="small")
+        w.intensityUnit = vanilla.TextBox((x + 223, 32, 16, 14), "%", sizeStyle="mini")
+        w.sdfValue = vanilla.TextBox((x, 52, 236, 14), "", sizeStyle="mini")
 
         x = 600
         threshold = min(MAX_THRESHOLD, max(0.0, self._setting("threshold", DEFAULT_THRESHOLD)))
@@ -424,7 +456,7 @@ class KK3Window(object):
             "closer to the figure before them. A set of old-style figures, numerators, denominators, "
             "superscripts or subscripts that shares one width keeps it.")
         self.styles = kh.style_choices()
-        w.conventions = vanilla.PopUpButton((x + 98, 28, 106, 20), [label for _k, label in self.styles],
+        w.conventions = vanilla.PopUpButton((x + 100, 28, 106, 20), [label for _k, label in self.styles],
                                             callback=self.conventionsChanged, sizeStyle="mini")
         keys = [k for k, _label in self.styles]
         w.conventions.set(keys.index(self.harness_style) if self.harness_style in keys else 0)
@@ -439,10 +471,13 @@ class KK3Window(object):
             "differs: more space in parentheses and around / ? ! &, less around quotes, period, comma and "
             "hyphen; more on the open sides of E, F, L and T (most at light weights and tight settings), less on "
             "the diagonals of A, V, W, Y. Learned from the text fonts on Google Fonts.")
-        w.harnessStrength = vanilla.Slider((x, 28, 92, 22), minValue=0.0, maxValue=100.0,
-                                           value=self._setting("harnessStrength", 100.0),
+        w.harnessStrength = vanilla.Slider((x, 28, 58, 22), minValue=0.0, maxValue=100.0,
+                                           value=min(100.0, max(0.0, self._setting("harnessStrength", 100.0))),
                                            callback=self.harnessChanged)
         w.harnessStrength.getNSSlider().setToolTip_("How much of the harness to apply (100 % = what the data say).")
+        w.harnessStrengthField = vanilla.EditText((x + 62, 28, 34, 21), "", callback=self.harnessStrengthFieldChanged,
+                                                  continuous=False, sizeStyle="small")
+        w.harnessStrengthField.getNSTextField().setToolTip_("How much of the harness to apply, in percent.")
         w.harnessButton = vanilla.Button((-96, 26, -14, 22), "Harness…", callback=self.openHarness,
                                          sizeStyle="small")
         w.harnessButton.getNSButton().setToolTip_("The pairs the harness changes most, drawn with and without it.")
@@ -582,6 +617,7 @@ class KK3Window(object):
         w.open()
         panes = [left_group.scroll.getNSScrollView(), right_group.scroll.getNSScrollView()]
         self.sync.attach(panes + [self.editor.getNSScrollView()], fit_width=panes)
+        self._show_slider_values()
         self._update_labels()
         self._update_max_pairs_note()
 
@@ -589,7 +625,23 @@ class KK3Window(object):
         return self.font.masters[self.w.master.get()]
 
     def _physics(self):
-        return physics_from_sliders(self.w.tightness.get(), self.w.intensity.get())
+        return physics_from_sliders(self.w.tightness.get(), self._intensity())
+
+    def _kerning_on(self):
+        return self.w is None or getattr(self.w, "kerning", None) is None or bool(self.w.kerning.get())
+
+    def _intensity(self):
+        """The kerning intensity the solves use, in percent: 0 while the kerning switch is off."""
+        return float(self.w.intensity.get()) if self._kerning_on() else 0.0
+
+    def _show_slider_values(self):
+        """The fields show their sliders' values (after a slider moved, or a field took a value)."""
+        w = self.w
+        if w is None:
+            return
+        w.tightField.set("%+.2f" % float(w.tightness.get()))
+        w.intensityField.set("%g" % round(float(w.intensity.get()), 1))
+        w.harnessStrengthField.set("%g" % round(float(w.harnessStrength.get()), 1))
 
     def _point_size(self):
         return float(SIZES[self.w.size.get()])
@@ -681,7 +733,10 @@ class KK3Window(object):
             else:
                 fitted = " · matched to the %s: %+.2f" % (what, self._fitted)
         self.w.tightValue.set("spring %.2f · repulsion %.2f%s%s" % (spring, repulsion, gap, fitted))
-        self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
+        if not self._kerning_on():
+            self.w.sdfValue.set("kerning off: Kinetikern3's spacing alone")
+        else:
+            self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
         t = self._threshold()
         upm = self._upm()
         if t > 0:
@@ -738,7 +793,9 @@ class KK3Window(object):
         self.w.punctuation.enable(self.punctuation_available())
         self.w.figures.enable(self.punctuation_available() and kpu.has_figures())
         self.w.smallCaps.enable(self.punctuation_available() and kpu.has_small_caps())
-        self.w.harnessStrength.enable(bool(self.w.harness.get()) and self.harness_available())
+        strength = bool(self.w.harness.get()) and self.harness_available()
+        self.w.harnessStrength.enable(strength)
+        self.w.harnessStrengthField.enable(strength)
 
     def _update_max_pairs_note(self):
         n = self._budget()
@@ -759,9 +816,11 @@ class KK3Window(object):
             return
         solving = self._job is not None and self._job_kind == "whole"
         busy = solving or self._stepper is not None or self.state == "applying"
-        for control in (w.tightness, w.intensity, w.threshold, w.thresholdField, w.maxPairs, w.threads, w.master,
-                        w.scope, w.replace, w.reload):
+        for control in (w.tightness, w.tightField, w.kerning, w.threshold, w.thresholdField, w.maxPairs, w.threads,
+                        w.master, w.scope, w.replace, w.reload):
             control.enable(not busy)
+        for control in (w.intensity, w.intensityField):
+            control.enable(not busy and self._kerning_on())
         w.connected.enable(not busy and bool(self.engine.features & kb.FEATURE_JOINS))
         w.joinMode.enable(not busy and bool(w.connected.get()) and bool(self.engine.features & kb.FEATURE_JOIN_CHECK))
         snap = self.snapshot
@@ -2008,6 +2067,7 @@ class KK3Window(object):
     def physicsChanged(self, sender):
         self._save("tightness", float(self.w.tightness.get()))
         self._save("intensity", float(self.w.intensity.get()))
+        self._show_slider_values()
         self._update_labels()
         self._request_preview()
         if self.harness_window is not None:
@@ -2129,9 +2189,40 @@ class KK3Window(object):
     def conventionsChanged(self, sender):
         self.set_harness_style(self.styles[max(0, self.w.conventions.get())][0])
 
+    def kerningChanged(self, sender):
+        self._save("kerning", bool(self.w.kerning.get()))
+        self._update_controls()
+        self._update_labels()
+        self._request_preview()
+
+    def tightFieldChanged(self, sender):
+        v = _number(self.w.tightField.get())
+        if v is None:
+            self._show_slider_values()  # not a number: the slider's value again
+            return
+        self.w.tightness.set(min(LOOSE_MAX, max(TIGHT_MIN, v)))
+        self.physicsChanged(sender)
+
+    def intensityFieldChanged(self, sender):
+        v = _number(self.w.intensityField.get())
+        if v is None:
+            self._show_slider_values()
+            return
+        self.w.intensity.set(min(MAX_INTENSITY, max(0.0, v)))
+        self.physicsChanged(sender)
+
+    def harnessStrengthFieldChanged(self, sender):
+        v = _number(self.w.harnessStrengthField.get())
+        if v is None:
+            self._show_slider_values()
+            return
+        self.w.harnessStrength.set(min(100.0, max(0.0, v)))
+        self.harnessChanged(sender)
+
     def harnessChanged(self, sender):
         self._save("harness", bool(self.w.harness.get()))
         self._save("harnessStrength", float(self.w.harnessStrength.get()))
+        self._show_slider_values()
         self._update_labels()
         self._request_preview()
         if self.harness_window is not None:

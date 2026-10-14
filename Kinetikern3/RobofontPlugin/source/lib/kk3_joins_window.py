@@ -117,7 +117,7 @@ class JoinsWindow(object):
         self.host = host
         self.rows = []
         self.view = FINDINGS
-        w = vanilla.FloatingWindow((760, 560), "Joins — Kinetikern3", minSize=(620, 360))
+        w = vanilla.Window((760, 560), "Joins — Kinetikern3", minSize=(620, 360))
         self.w = w
         w.summary = vanilla.TextBox((14, 10, -14, 64), "", sizeStyle="small")
         # not w.show: vanilla windows have a show() method, which Glyphs' vanilla refuses to replace
