@@ -1,6 +1,12 @@
 # encoding: utf-8
 """
-kk3_proof — the side-by-side proofing panes of the Kinetikern3 window.
+kk3_proof — the proofing panes of the Kinetikern3 window.
+
+The window shows the font as it is and Kinetikern3 side by side, or one over
+the other in one pane (Toggle, Overlay): there the font's pane is laid over
+Kinetikern3's as a transparent layer with the same line breaks (its lines
+break where Kinetikern3's do and are clipped, never wrapped), so a glyph of
+one sits where the same glyph of the other does, line by line.
 
 Each pane is a TextKit 1 NSTextView (an explicit storage → layout manager →
 container stack, so the view never switches to TextKit 2) whose glyphs are
@@ -35,17 +41,19 @@ import time
 import objc
 from AppKit import (NSAffineTransform, NSAttachmentAttributeName, NSAttributedString, NSBezierPath, NSColor, NSFont,
                     NSFontAttributeName, NSForegroundColorAttributeName, NSGraphicsContext, NSKernAttributeName,
-                    NSLayoutManager, NSLineBreakByWordWrapping, NSMakePoint, NSMakeRect, NSMakeSize,
+                    NSLayoutManager, NSLineBreakByClipping, NSLineBreakByWordWrapping, NSMakePoint, NSMakeRect,
+                    NSMakeSize,
                     NSMutableAttributedString, NSMutableParagraphStyle, NSNotificationCenter, NSObject,
                     NSParagraphStyleAttributeName, NSTextAttachment, NSTextAttachmentCell, NSTextContainer,
                     NSTextStorage, NSTextView, NSViewBoundsDidChangeNotification, NSViewFrameDidChangeNotification,
-                    NSViewWidthSizable, NSWritingDirectionAttributeName)
+                    NSViewHeightSizable, NSViewWidthSizable, NSWritingDirectionAttributeName)
 
 ATTACHMENT = "￼"
 # the tokens of kk3_snapshot.tokenize besides glyph names
 NEWLINE = "\n"
 SPACE = " "
 MISSING = None
+LINE_SEPARATOR = "\u2028"  # a line break inside a paragraph: where an overlaid pane breaks its lines
 
 _LTR, _RTL = 0, 1  # NSWritingDirectionLeftToRight, NSWritingDirectionRightToLeft
 _OVERRIDE = 2  # NSWritingDirectionOverride
@@ -121,6 +129,47 @@ def _make_cell_class():
 
 
 KK3GlyphCell = _class("KK3GlyphCell", _make_cell_class)
+
+
+def _make_text_view_class():
+    class KK3ProofTextView(NSTextView):
+        """A proof pane's text view: read-only; once the window gives it a click
+        callback, a click or the space bar calls it (Toggle: switch between the
+        font and Kinetikern3), and a pinch calls the magnify callback (the text
+        size)."""
+
+        def acceptsFirstResponder(self):
+            if getattr(self, "kk3_on_click", None) is not None:
+                return True  # so that the space bar reaches it after a click
+            return objc.super(KK3ProofTextView, self).acceptsFirstResponder()
+
+        def mouseDown_(self, event):
+            callback = getattr(self, "kk3_on_click", None)
+            if callback is None:
+                objc.super(KK3ProofTextView, self).mouseDown_(event)
+                return
+            if self.window() is not None:
+                self.window().makeFirstResponder_(self)
+            callback()
+
+        def keyDown_(self, event):
+            callback = getattr(self, "kk3_on_click", None)
+            if callback is not None and event.charactersIgnoringModifiers() == " ":
+                callback()
+                return
+            objc.super(KK3ProofTextView, self).keyDown_(event)
+
+        def magnifyWithEvent_(self, event):
+            callback = getattr(self, "kk3_on_magnify", None)
+            if callback is None:
+                objc.super(KK3ProofTextView, self).magnifyWithEvent_(event)
+                return
+            callback(float(event.magnification()))
+
+    return KK3ProofTextView
+
+
+KK3ProofTextView = _class("KK3ProofTextView", _make_text_view_class)
 
 
 def _make_sync_class():
@@ -236,7 +285,9 @@ def make_text_view(width=400.0, height=300.0):
     container = NSTextContainer.alloc().initWithContainerSize_(NSMakeSize(width, 1.0e7))
     container.setWidthTracksTextView_(True)
     layout.addTextContainer_(container)
-    view = NSTextView.alloc().initWithFrame_textContainer_(NSMakeRect(0, 0, width, height), container)
+    view = KK3ProofTextView.alloc().initWithFrame_textContainer_(NSMakeRect(0, 0, width, height), container)
+    view.kk3_on_click = None
+    view.kk3_on_magnify = None
     view.setEditable_(False)
     view.setSelectable_(False)
     view.setRichText_(True)
@@ -277,12 +328,13 @@ def vertical_metrics(snapshot):
     return ascender, descender, cap_height
 
 
-def _paragraph_style(line, direction):
+def _paragraph_style(line, direction, clip=False):
+    """`clip`: lines never wrap (an overlaid pane: they break where the pane under it breaks them)."""
     para = NSMutableParagraphStyle.alloc().init()
     para.setMinimumLineHeight_(line)
     para.setMaximumLineHeight_(line)
     para.setParagraphSpacing_(line * 0.35)
-    para.setLineBreakMode_(NSLineBreakByWordWrapping)
+    para.setLineBreakMode_(NSLineBreakByClipping if clip else NSLineBreakByWordWrapping)
     para.setBaseWritingDirection_(direction)
     return para
 
@@ -290,14 +342,23 @@ def _paragraph_style(line, direction):
 class ProofPane(object):
     """One proofing pane: glyph cells per (glyph, kern), the text re-laid on every render."""
 
-    def __init__(self, title=""):
+    def __init__(self, title="", overlay=False):
         self.title = title
+        # an overlay: a transparent layer laid over another pane's view, as tall as it, whose lines break
+        # where that pane's do (render's `breaks`)
+        self.overlay = bool(overlay)
         self.view, self.storage = make_text_view()
+        if self.overlay:
+            self.view.setDrawsBackground_(False)
+            self.view.setVerticallyResizable_(False)
+            self.view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         self._wrap = KK3WrapDelegate.alloc().init()
         layout = self.view.layoutManager()
         layout.setDelegate_(self._wrap)
         objc.setAssociatedObject(layout, _DELEGATE_KEY, self._wrap, objc.OBJC_ASSOCIATION_RETAIN)
         self.tokens = []
+        self.chars = []  # the character of each token in the last render (a glyph is ATTACHMENT)
+        self.rtl = []  # each token's direction in the last render (True: right to left)
         self.kerned_pairs = 0  # adjacent glyph pairs with a non-zero kern in the last render
         self._snapshot = None
         self._vertical = None
@@ -313,6 +374,8 @@ class ProofPane(object):
     def clear(self):
         """Empties the pane (e.g. while the font is read again)."""
         self.tokens = []
+        self.chars = []
+        self.rtl = []
         self.kerned_pairs = 0
         self._wrap.kk3_word_starts = frozenset()
         self.storage.beginEditing()
@@ -349,8 +412,11 @@ class ProofPane(object):
                 return False
         return True
 
-    def render(self, tokens, snapshot, metrics=None, kern=None, point_size=48.0, color=None):
+    def render(self, tokens, snapshot, metrics=None, kern=None, point_size=48.0, color=None, breaks=None):
         """Lays out `tokens` (see kk3_snapshot.tokenize) at `point_size`.
+
+        `breaks`: character indices where lines must start (another pane's
+        line_starts()); the space before each becomes a line separator.
 
         `metrics(name)` returns (lsb, rsb, advance) in font units for a glyph
         spaced differently from the font, or None to draw it as it is.
@@ -381,6 +447,9 @@ class ProofPane(object):
             if tok is not MISSING and tok != SPACE and tok != NEWLINE and tok not in glyphs:
                 glyphs[tok] = self._glyph(tok, snapshot, metrics, scale)
         chars = [NEWLINE if tok == NEWLINE else SPACE if tok == SPACE else ATTACHMENT for tok in tokens]
+        for k in breaks or ():
+            if 0 < k <= count and chars[k - 1] == SPACE:
+                chars[k - 1] = LINE_SEPARATOR
         drawn = [chars[i] == ATTACHMENT and glyphs.get(tokens[i]) is not None for i in range(count)]
         rtl = [drawn[i] and glyphs[tokens[i]][3] for i in range(count)]
         word_starts = [0]
@@ -404,7 +473,7 @@ class ProofPane(object):
                     extra[left] = k
                     self.kerned_pairs += 1
 
-        base = {NSParagraphStyleAttributeName: _paragraph_style(line, _LTR), NSFontAttributeName: _SPACE_FONT,
+        base = {NSParagraphStyleAttributeName: _paragraph_style(line, _LTR, self.overlay), NSFontAttributeName: _SPACE_FONT,
                 NSForegroundColorAttributeName: color}
         text = NSMutableAttributedString.alloc().initWithString_attributes_("".join(chars), base)
         text.beginEditing()
@@ -446,11 +515,71 @@ class ProofPane(object):
                 del self._pool[name]
         if any(rtl):
             self._set_directions(text, chars, drawn, rtl, line)
+        self.chars = chars
+        self.rtl = rtl
 
         text.endEditing()
         self.storage.beginEditing()
         self.storage.setAttributedString_(text)
         self.storage.endEditing()
+
+    def line_starts(self):
+        """Where the laid-out lines start (character indices; the first line's
+        0 left out): what an overlay of this pane breaks its lines at."""
+        layout = self.view.layoutManager()
+        layout.ensureLayoutForTextContainer_(self.view.textContainer())
+        n = layout.numberOfGlyphs()
+        starts = set()
+        g = 0
+        while g < n:
+            _rect, glyphs = layout.lineFragmentRectForGlyphAtIndex_effectiveRange_(g, None)
+            if glyphs.length == 0:
+                break
+            chars = layout.characterRangeForGlyphRange_actualGlyphRange_(glyphs, None)[0]
+            if chars.location > 0:
+                starts.add(int(chars.location))
+            g = glyphs.location + glyphs.length
+        return starts
+
+    def align_words(self, base):
+        """An overlay: moves each word to start where the same word starts in
+        `base` (the pane under it, laid out from the same tokens) by widening or
+        narrowing the space before it. Within a word the glyphs then show the
+        two spacings; what accumulates over the words before it on the line
+        does not. Right-to-left runs and lines `base` broke inside a word stay
+        as they are. Returns how many words moved."""
+        count = len(self.tokens)
+        chars = self.chars
+        if count < 2 or len(chars) != count or len(base.chars) != count:
+            return 0
+        lo, lb = self.view.layoutManager(), base.view.layoutManager()
+        lo.ensureLayoutForTextContainer_(self.view.textContainer())
+        lb.ensureLayoutForTextContainer_(base.view.textContainer())
+        breaks = base.line_starts()
+        edits = []
+        shift = 0.0  # what the edits so far moved this line by
+        for k in range(1, count):
+            before = chars[k - 1]
+            if before in (NEWLINE, LINE_SEPARATOR) or k in breaks:
+                shift = 0.0  # a new line: both start at its left edge
+                continue
+            if before != SPACE or chars[k] != ATTACHMENT or self.rtl[k] or base.rtl[k]:
+                continue
+            xb = lb.locationForGlyphAtIndex_(lb.glyphIndexForCharacterAtIndex_(k)).x
+            xo = lo.locationForGlyphAtIndex_(lo.glyphIndexForCharacterAtIndex_(k)).x + shift
+            delta = xb - xo
+            if abs(delta) > 0.01:
+                edits.append((k - 1, delta))
+                shift += delta
+        if not edits:
+            return 0
+        storage = self.storage
+        storage.beginEditing()
+        for i, delta in edits:
+            kern = storage.attribute_atIndex_effectiveRange_(NSKernAttributeName, i, None)[0]
+            storage.addAttribute_value_range_(NSKernAttributeName, float(kern or 0.0) + delta, (i, 1))
+        storage.endEditing()
+        return len(edits)
 
     def _set_directions(self, text, chars, drawn, rtl, line):
         """Paragraph directions and per-run overrides for text with RTL glyphs."""
@@ -465,7 +594,7 @@ class ProofPane(object):
             if any(rtl[i] for i in glyphs):
                 if rtl[glyphs[0]]:
                     if rtl_para is None:
-                        rtl_para = _paragraph_style(line, _RTL)
+                        rtl_para = _paragraph_style(line, _RTL, self.overlay)
                     text.addAttribute_value_range_(NSParagraphStyleAttributeName, rtl_para,
                                                    (start, min(end + 1, count) - start))
                 # a run spans glyphs of one direction and the spaces between them

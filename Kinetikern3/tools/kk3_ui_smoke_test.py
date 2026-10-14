@@ -70,6 +70,7 @@ import AppKit  # noqa: E402
 from AppKit import (NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSApp, NSAppearance,  # noqa: E402
                     NSApplication, NSApplicationActivationPolicyAccessory, NSAttachmentAttributeName, NSBezierPath,
                     NSBitmapImageFileTypePNG, NSButton, NSControlTextDidChangeNotification,
+                    NSControlTextDidEndEditingNotification,
                     NSEventTrackingRunLoopMode, NSMakeRect, NSNotification, NSPopUpButton, NSProgressIndicator,
                     NSSlider, NSTextField, NSTextView)
 from Foundation import NSDate, NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer  # noqa: E402
@@ -1224,7 +1225,10 @@ class UI(object):
 
     def panes(self):
         """(left, right) proof text views."""
-        views = sorted((v for v in self.views if isinstance(v, NSTextView) and not v.isEditable()),
+        views = [v for v in self.views if isinstance(v, NSTextView) and not v.isEditable()
+                 and not v.isHiddenOrHasHiddenAncestor()]
+        # not the font's pane laid over Kinetikern3's (a text view inside another: Toggle, Overlay)
+        views = sorted((v for v in views if not any(o is not v and v.isDescendantOf_(o) for o in views)),
                        key=lambda v: _frame(v)[0])
         if len(views) < 2:
             raise Abort("the window has %d proof panes, expected 2" % len(views))
@@ -1258,7 +1262,12 @@ class UI(object):
         return self.popup(lambda items: "Whole font" in items, "scope")
 
     def size(self):
-        return self.popup(lambda items: items and all(t.isdigit() for t in items), "size")
+        """The text size slider (logarithmic: it runs from log(MIN_SIZE) to log(MAX_SIZE))."""
+        import kk3_window
+        return self.slider(math.log(kk3_window.MIN_SIZE), math.log(kk3_window.MAX_SIZE))
+
+    def size_field(self):
+        return self.field_beside(self.size())
 
     def threads(self):
         return self.popup(lambda items: items and items[0].startswith("Auto"), "threads")
@@ -1289,6 +1298,17 @@ def type_into(field, text):
         delegate.controlTextDidChange_(note)
     elif field.action() is not None:
         field.sendAction_to_(field.action(), field.target())
+
+
+def enter_into(field, text):
+    """As typing and pressing Return in a field that applies on Return (vanilla's continuous=False:
+    its delegate hears controlTextDidEndEditing)."""
+    field.setStringValue_(text)
+    delegate = field.delegate()
+    note = NSNotification.notificationWithName_object_(NSControlTextDidEndEditingNotification, field)
+    if delegate is None or not delegate.respondsToSelector_("controlTextDidEndEditing:"):
+        raise Abort("the field has no delegate that hears the end of editing")
+    delegate.controlTextDidEndEditing_(note)
 
 
 def edit_text(view, text):
@@ -2014,7 +2034,12 @@ class SmokeTest(object):
         want, got = set(self.mask_indices()), self.kerned(win.result)
         rep.check(got == want, "the preview kerns exactly the glyphs of the sample text",
                   "%d kerned, %d kernable glyphs in the sample" % (len(got), len(want)))
-        self.act("size pop-up", choose, ui.size(), "72")
+        self.act("text size field", enter_into, ui.size_field(), "72")
+        rep.check(str(ui.size_field().stringValue()) == "72" and abs(win._point_size() - 72.0) < 1e-9
+                  and MockGlyphs.defaults[PREFIX + "size"] == "72",
+                  "the text size field sets the panes' size, saved in Glyphs.defaults",
+                  "field %r, panes %r pt, saved %r" % (str(ui.size_field().stringValue()), win._point_size(),
+                                                        MockGlyphs.defaults[PREFIX + "size"]))
 
         # Cancel in the confirmation alert writes nothing
         state0 = font.state()
@@ -2300,7 +2325,7 @@ class SmokeTest(object):
                   "followed; %s)" % what, "%d glyphs; %d differ by more than a unit, e.g. (glyph, LSB, result, RSB, "
                   "result) %s" % (len(shown) if shown is not None else len(snap.names), len(sbad), sbad[:3]))
         left, right = ui.panes()
-        scale = float(str(ui.size().titleOfSelectedItem())) / snap.upm
+        scale = float(str(ui.size_field().stringValue())) / snap.upm
         cl, cr = pane_cells(left), pane_cells(right)
         diffs = [abs(a - b) / scale for a, b in zip(cl, cr) if a is not None and b is not None]
         far = [d for d in diffs if d > 2.5]
@@ -2363,7 +2388,7 @@ class SmokeTest(object):
         rep.check(not [w for w in writes if w[5]] and font.undo.disabled == 0 and font.updates_disabled == 0,
                   "Revert writes with undo registration off", "%d writes" % len(writes))
         rep.check(not ui.button("Revert Last Apply").isEnabled(), "Revert Last Apply is disabled once used")
-        scale = float(str(ui.size().titleOfSelectedItem())) / win.snapshot.upm
+        scale = float(str(ui.size_field().stringValue())) / win.snapshot.upm
         cells = pane_cells(ui.panes()[0])
         moved = [abs(a - b) / scale for a, b in zip(cells, left_before) if a is not None and b is not None]
         rep.check(len(cells) == len(left_before) and max(moved or [0]) < 1e-3,
@@ -2427,7 +2452,7 @@ class SmokeTest(object):
             "threshold": (ui.threshold().doubleValue(), 3.0),
             "max pairs": (str(ui.max_pairs_field().stringValue()), str(self.args.max_pairs)),
             "scope": (str(ui.scope().titleOfSelectedItem()), "Whole font"),
-            "size": (str(ui.size().titleOfSelectedItem()), "72"),
+            "size": (str(ui.size_field().stringValue()), "72"),
         }
         wrong = ["%s %r (saved %r)" % (k, a, b) for k, (a, b) in settings.items()
                  if (a != b if isinstance(b, str) else abs(a - b) > 1e-9)]

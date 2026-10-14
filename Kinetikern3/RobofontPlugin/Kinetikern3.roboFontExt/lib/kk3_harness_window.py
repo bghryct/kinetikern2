@@ -69,7 +69,9 @@ class HarnessWindow(object):
         w.strengthLabel = vanilla.TextBox((210, 13, 60, 17), "Strength", sizeStyle="small")
         w.strength = vanilla.Slider((268, 10, 200, 22), minValue=0.0, maxValue=100.0,
                                     value=float(mw.harnessStrength.get()), callback=self.strengthChanged)
-        w.strengthValue = vanilla.TextBox((476, 13, 60, 17), "", sizeStyle="small")
+        w.strengthField = vanilla.EditText((476, 10, 44, 21), "", callback=self.strengthFieldChanged, continuous=False,
+                                           sizeStyle="small")
+        w.strengthUnit = vanilla.TextBox((523, 13, 16, 17), "%", sizeStyle="small")
         w.which = vanilla.SegmentedButton((-420, 9, -12, 24), [dict(title=t) for _, t in FILTERS],
                                           callback=self.whichChanged, sizeStyle="small")
         w.which.set(0)
@@ -126,6 +128,18 @@ class HarnessWindow(object):
         self.main.w.harnessStrength.set(float(self.w.strength.get()))
         self.main.harnessChanged(None)
 
+    def strengthFieldChanged(self, sender):
+        text = (self.w.strengthField.get() or "").strip().replace(",", ".").replace("%", "").strip()
+        try:
+            v = float(text)
+        except ValueError:
+            v = None
+        if v is None or v != v:
+            self.w.strengthField.set("%g" % round(float(self.w.strength.get()), 1))
+            return
+        self.w.strength.set(min(100.0, max(0.0, v)))
+        self.strengthChanged(sender)
+
     def settings_changed(self):
         """The main window's harness switch, strength or Looseness changed."""
         if self._closed:
@@ -166,7 +180,7 @@ class HarnessWindow(object):
             return
         main = self.main
         snap = main.snapshot
-        self.w.strengthValue.set("%d %%" % round(float(self.w.strength.get())))
+        self.w.strengthField.set("%g" % round(float(self.w.strength.get()), 1))
         if snap is None:
             self.w.status.set("The font is still being read.")
             return

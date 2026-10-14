@@ -8,10 +8,13 @@ masters of a family are separate UFOs) and the window works on the one
 chosen.
 
 Layout: physics and kerning controls on top, a progress row with Cancel under
-them, then a vertical split with two proofing panes side by side (left: the
-font as it is, with its own spacing and kerning; right: the live engine
-result) over the editable multi-paragraph sample text. Editing or scrolling
-the sample text updates and scrolls both panes.
+them, a row for the view and the text size, then a vertical split with the
+proofing panes (left: the font as it is, with its own spacing and kerning;
+right: the live engine result) over the editable multi-paragraph sample text.
+Editing or scrolling the sample text updates and scrolls the panes. The View
+shows the two side by side, or in one pane: Toggle switches between them (a
+click on the preview or the space bar), Overlay lays the font over
+Kinetikern3 with the same line breaks (kk3_proof).
 
 Nothing here waits. One NSTimer in the common run-loop modes (so it keeps
 firing during slider drags, open menus and the confirmation alert, where the
@@ -52,7 +55,7 @@ import weakref
 
 import objc
 import vanilla
-from AppKit import NSAlert, NSAlertFirstButtonReturn, NSFont, NSObject
+from AppKit import NSAlert, NSAlertFirstButtonReturn, NSColor, NSFont, NSObject
 from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 import kk3_apply as ka
@@ -71,7 +74,8 @@ import kk3_snapshot as ks
 
 PREFIX = host.PREFIX
 # preferences the window remembers between sessions (keys under PREFIX)
-PERSISTED = ("tightness", "intensity", "threshold", "maxPairs", "threads", "scope", "size", "sample", "replace")
+PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "view",
+             "overlayStyle", "alignWords", "sample", "replace")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -79,10 +83,22 @@ SAMPLE_TEXT = (
     "human language with a durable visual form.\n"
     "/T/o/T/a/T/e /V/A/V/o /P/A /r/period /y/period /f/parenright"
 )
-SIZES = ["24", "36", "48", "60", "72", "96", "128"]
+# the proof text size, points (a logarithmic slider, a field, a pinch on the preview)
+MIN_SIZE, MAX_SIZE, DEFAULT_SIZE = 8.0, 400.0, 48.0
+# how the panes show the font as it is and Kinetikern3
+VIEWS = ["Side by side", "Toggle", "Overlay"]
+VIEW_SIDE, VIEW_TOGGLE, VIEW_OVERLAY = 0, 1, 2
+OVERLAY_STYLES = ["Font in red", "Both translucent"]
+OVERLAY_RED, OVERLAY_TRANSLUCENT = 0, 1
 SCOPES = ["Glyphs in sample text", "Whole font"]
 SCOPE_SAMPLE, SCOPE_WHOLE = 0, 1
 LOOSENESS_RATIO = 3.86
+# the Looseness slider (0 = the model's own spacing). The designers of hairline and thin
+# fonts space them at about -0.4 to +0.2; -1 already sets some of them with almost no
+# sidebearing, others need -2 or -3 for a tight display setting, where the sidebearings of
+# a hairline go below zero (Archer Hairline's n: +50 at 0, +5 at -1, -10 at -2)
+TIGHT_MIN, LOOSE_MAX = -3.0, 2.0
+MAX_INTENSITY = 200.0
 DEFAULT_THRESHOLD = 5.0  # units per 1000 em
 MAX_THRESHOLD = 20.0
 DEFAULT_MAX_PAIRS = 30000
@@ -158,6 +174,16 @@ def _as_bool(value):
 
 def _count(n):
     return "{:,}".format(int(n))
+
+
+def _number(text):
+    """A number typed into a field (a comma or a minus sign as typed; a % sign is ignored), else None."""
+    text = (text or "").strip().replace(",", ".").replace("\u2212", "-").replace("%", "").strip()
+    try:
+        v = float(text)
+    except ValueError:
+        return None
+    return v if v == v and abs(v) != float("inf") else None
 
 
 _engines = {}
@@ -267,6 +293,9 @@ class KK3Window(object):
         self._confirm_plan = False  # ask before applying the plan being made
         self._font_written = False  # Apply or Revert changed the font since it was read
         self._left_due = self._right_due = False  # panes waiting for a tick of their own
+        self._overlay_due = False  # the font laid over Kinetikern3 (Toggle, Overlay), after the right pane
+        self._left_stale = False  # the left pane, hidden (Toggle, Overlay), missed a layout
+        self._showing_font = False  # Toggle: the font as it is is shown (else Kinetikern3)
         self._render_at = 0.0  # not before this time (a pause after typing)
         self._fonts = []  # the fonts the Font popup lists, in its order
         self._ruled = set()  # glyphs with a side driven by a metrics key or an aligned component
@@ -340,24 +369,39 @@ class KK3Window(object):
 
     # ------------------------------------------------------------------ UI
     def _build(self):
-        w = vanilla.FloatingWindow((1240, 860), "Kinetikern3 — %s" % host.font_title(self.font),
-                                   minSize=(1200, 600), autosaveName=None if self._unattended else PREFIX + "window")
+        w = vanilla.Window((1240, 860), "Kinetikern3 — %s" % host.font_title(self.font),
+                           minSize=(1200, 600), autosaveName=None if self._unattended else PREFIX + "window")
         self.w = w
 
-        # row 1: physics and threshold
+        # row 1: physics and threshold; each slider has a field for an exact value (Return applies it)
         x = 14
         w.tightLabel = vanilla.TextBox((x, 10, 220, 17), "Looseness / Tightness", sizeStyle="small")
-        w.tightMin = vanilla.TextBox((x, 32, 34, 14), "Tight", sizeStyle="mini")
-        w.tightness = vanilla.Slider((x + 34, 28, 240, 22), minValue=-1.0, maxValue=1.0,
-                                     value=self._setting("tightness", 0.0), callback=self.physicsChanged)
-        w.tightMax = vanilla.TextBox((x + 280, 32, 40, 14), "Loose", sizeStyle="mini")
+        w.tightMin = vanilla.TextBox((x, 32, 30, 14), "Tight", sizeStyle="mini")
+        w.tightness = vanilla.Slider((x + 30, 28, 200, 22), minValue=TIGHT_MIN, maxValue=LOOSE_MAX,
+                                     value=min(LOOSE_MAX, max(TIGHT_MIN, self._setting("tightness", 0.0))),
+                                     callback=self.physicsChanged)
+        w.tightMax = vanilla.TextBox((x + 234, 32, 32, 14), "Loose", sizeStyle="mini")
+        w.tightField = vanilla.EditText((x + 268, 28, 52, 21), "", callback=self.tightFieldChanged,
+                                        continuous=False, sizeStyle="small")
+        w.tightField.getNSTextField().setToolTip_(
+            "The Looseness, from %g (tight) to %+g (loose); 0 is the model's own spacing." % (TIGHT_MIN, LOOSE_MAX))
         w.tightValue = vanilla.TextBox((x, 52, 330, 14), "", sizeStyle="mini")
 
-        x = 360
-        w.sdfLabel = vanilla.TextBox((x, 10, 220, 17), "SDF Kerning Intensity", sizeStyle="small")
-        w.intensity = vanilla.Slider((x, 28, 210, 22), minValue=0.0, maxValue=200.0,
-                                     value=self._setting("intensity", 100.0), callback=self.physicsChanged)
-        w.sdfValue = vanilla.TextBox((x, 52, 230, 14), "", sizeStyle="mini")
+        x = 352
+        # the label is the kerning switch: off previews and applies Kinetikern3's spacing alone
+        w.kerning = vanilla.CheckBox((x, 9, 220, 18), "SDF Kerning Intensity", sizeStyle="small",
+                                     value=self._setting("kerning", True, bool), callback=self.kerningChanged)
+        w.kerning.getNSButton().setToolTip_(
+            "Kerning on or off. Off: the preview shows Kinetikern3's spacing without its kerning, and Apply writes "
+            "the spacing alone (as at 0 %; with Replace existing kerning on, the kerning between the glyphs it "
+            "spaces is removed). The intensity keeps its value for when kerning is on again.")
+        w.intensity = vanilla.Slider((x, 28, 170, 22), minValue=0.0, maxValue=MAX_INTENSITY,
+                                     value=min(MAX_INTENSITY, max(0.0, self._setting("intensity", 100.0))),
+                                     callback=self.physicsChanged)
+        w.intensityField = vanilla.EditText((x + 176, 28, 44, 21), "", callback=self.intensityFieldChanged,
+                                            continuous=False, sizeStyle="small")
+        w.intensityUnit = vanilla.TextBox((x + 223, 32, 16, 14), "%", sizeStyle="mini")
+        w.sdfValue = vanilla.TextBox((x, 52, 236, 14), "", sizeStyle="mini")
 
         x = 600
         threshold = min(MAX_THRESHOLD, max(0.0, self._setting("threshold", DEFAULT_THRESHOLD)))
@@ -414,7 +458,7 @@ class KK3Window(object):
             "closer to the figure before them. A set of old-style figures, numerators, denominators, "
             "superscripts or subscripts that shares one width keeps it.")
         self.styles = kh.style_choices()
-        w.conventions = vanilla.PopUpButton((x + 98, 28, 106, 20), [label for _k, label in self.styles],
+        w.conventions = vanilla.PopUpButton((x + 100, 28, 106, 20), [label for _k, label in self.styles],
                                             callback=self.conventionsChanged, sizeStyle="mini")
         keys = [k for k, _label in self.styles]
         w.conventions.set(keys.index(self.harness_style) if self.harness_style in keys else 0)
@@ -429,10 +473,13 @@ class KK3Window(object):
             "differs: more space in parentheses and around / ? ! &, less around quotes, period, comma and "
             "hyphen; more on the open sides of E, F, L and T (most at light weights and tight settings), less on "
             "the diagonals of A, V, W, Y. Learned from the text fonts on Google Fonts.")
-        w.harnessStrength = vanilla.Slider((x, 28, 92, 22), minValue=0.0, maxValue=100.0,
-                                           value=self._setting("harnessStrength", 100.0),
+        w.harnessStrength = vanilla.Slider((x, 28, 58, 22), minValue=0.0, maxValue=100.0,
+                                           value=min(100.0, max(0.0, self._setting("harnessStrength", 100.0))),
                                            callback=self.harnessChanged)
         w.harnessStrength.getNSSlider().setToolTip_("How much of the harness to apply (100 % = what the data say).")
+        w.harnessStrengthField = vanilla.EditText((x + 62, 28, 34, 21), "", callback=self.harnessStrengthFieldChanged,
+                                                  continuous=False, sizeStyle="small")
+        w.harnessStrengthField.getNSTextField().setToolTip_("How much of the harness to apply, in percent.")
         w.harnessButton = vanilla.Button((-96, 26, -14, 22), "Harness…", callback=self.openHarness,
                                          sizeStyle="small")
         w.harnessButton.getNSButton().setToolTip_("The pairs the harness changes most, drawn with and without it.")
@@ -444,25 +491,21 @@ class KK3Window(object):
         w.master.getNSPopUpButton().setToolTip_(
             "The open font to work on. The masters of a family are separate UFOs: choose each in turn.")
         self._fill_fonts()
-        w.sizeLabel = vanilla.TextBox((246, 69, 30, 17), "Size", sizeStyle="small")
-        w.size = vanilla.PopUpButton((278, 66, 64, 20), SIZES, callback=self.sizeChanged, sizeStyle="small")
-        size = str(self._setting("size", "48", str))
-        w.size.set(SIZES.index(size) if size in SIZES else SIZES.index("48"))
-        w.threadsLabel = vanilla.TextBox((358, 69, 52, 17), "Threads", sizeStyle="small")
+        w.threadsLabel = vanilla.TextBox((246, 69, 52, 17), "Threads", sizeStyle="small")
         cores = self.engine.cpu_count
         w.threads = vanilla.PopUpButton(
-            (410, 66, 160, 20), ["Auto (%d of %d cores)" % (self.engine.default_threads, cores)] +
+            (298, 66, 160, 20), ["Auto (%d of %d cores)" % (self.engine.default_threads, cores)] +
             [str(n) for n in range(1, cores + 1)], callback=self.threadsChanged, sizeStyle="small")
         threads = int(self._setting("threads", 0, int))
         w.threads.set(threads if 0 <= threads <= cores else 0)
-        w.maxPairsLabel = vanilla.TextBox((586, 69, 64, 17), "Max pairs", sizeStyle="small")
+        w.maxPairsLabel = vanilla.TextBox((474, 69, 64, 17), "Max pairs", sizeStyle="small")
         max_pairs = self._setting("maxPairs", DEFAULT_MAX_PAIRS, int)
-        w.maxPairs = vanilla.EditText((652, 66, 72, 21), str(max_pairs) if max_pairs > 0 else "",
+        w.maxPairs = vanilla.EditText((540, 66, 72, 21), str(max_pairs) if max_pairs > 0 else "",
                                       callback=self.maxPairsChanged, placeholder="unlimited", sizeStyle="small")
         w.maxPairs.getNSTextField().setToolTip_(
             "Most kerning entries a whole-font Apply writes (the least important are left out). Empty or 0: "
             "no limit.")
-        w.maxPairsNote = vanilla.TextBox((732, 70, 112, 14), "", sizeStyle="mini")
+        w.maxPairsNote = vanilla.TextBox((620, 70, 112, 14), "", sizeStyle="mini")
         w.connected = vanilla.CheckBox((850, 67, 128, 18), "Connected script", sizeStyle="small",
                                        value=self._setting("connected", True, bool), callback=self.connectedChanged)
         w.connected.getNSButton().setToolTip_(
@@ -530,9 +573,46 @@ class KK3Window(object):
         w.line = vanilla.HorizontalLine((0, 152, -0, 1))
         w.status = vanilla.TextBox((14, -22, -14, 16), "", sizeStyle="mini")
 
+        # row 5: how the panes show the two, and the text size
+        w.viewLabel = vanilla.TextBox((14, 162, 36, 17), "View", sizeStyle="small")
+        w.viewMode = vanilla.SegmentedButton((50, 159, 270, 22), [dict(title=t) for t in VIEWS],
+                                             callback=self.viewModeChanged, sizeStyle="small")
+        view = int(self._setting("view", VIEW_SIDE, int))
+        w.viewMode.set(view if 0 <= view < len(VIEWS) else VIEW_SIDE)
+        w.viewMode.getNSSegmentedButton().setToolTip_(
+            "Side by side: the font as it is beside Kinetikern3. Toggle: one at a time in one pane — click the "
+            "preview or press the space bar to switch, so the change shows as a jump. Overlay: the font as it is "
+            "laid over Kinetikern3, line by line with the same line breaks.")
+        w.showing = vanilla.SegmentedButton((334, 159, 230, 22), [dict(title="Font as it is"), dict(title="Kinetikern3")],
+                                            callback=self.showingChanged, sizeStyle="small")
+        style = int(self._setting("overlayStyle", OVERLAY_RED, int))
+        w.overlayStyle = vanilla.PopUpButton((334, 160, 170, 20), OVERLAY_STYLES, callback=self.overlayStyleChanged,
+                                             sizeStyle="small")
+        w.overlayStyle.set(style if 0 <= style < len(OVERLAY_STYLES) else OVERLAY_RED)
+        w.overlayStyle.getNSPopUpButton().setToolTip_(
+            "Font in red: the font as it is in translucent red over Kinetikern3 in the text colour. Both "
+            "translucent: both in the text colour at half strength, so where they differ a glyph shows twice.")
+        w.alignWords = vanilla.CheckBox((512, 160, 110, 18), "Align words", sizeStyle="small",
+                                        value=self._setting("alignWords", True, bool), callback=self.alignWordsChanged)
+        w.alignWords.getNSButton().setToolTip_(
+            "Each word of the font as it is starts where the same word starts in Kinetikern3's, so the two "
+            "spacings show word by word instead of drifting apart along the line (Toggle shows the drift).")
+        w.viewHint = vanilla.TextBox((630, 163, -330, 14), "", sizeStyle="mini")
+        size = min(MAX_SIZE, max(MIN_SIZE, self._setting("size", DEFAULT_SIZE)))
+        self._size = size
+        w.sizeLabel = vanilla.TextBox((-318, 162, 58, 17), "Text size", sizeStyle="small")
+        w.size = vanilla.Slider((-256, 159, 166, 22), minValue=math.log(MIN_SIZE), maxValue=math.log(MAX_SIZE),
+                                value=math.log(size), callback=self.sizeChanged)
+        w.size.getNSSlider().setToolTip_("The text size of the preview (a pinch on the preview changes it too).")
+        w.sizeField = vanilla.EditText((-84, 159, 48, 21), "", callback=self.sizeFieldChanged, continuous=False,
+                                       sizeStyle="small")
+        w.sizeUnit = vanilla.TextBox((-32, 163, 20, 14), "pt", sizeStyle="mini")
+
         # proofing panes side by side
         self.left = kp.ProofPane("Font")
         self.right = kp.ProofPane("Kinetikern3")
+        # Toggle and Overlay: the font as it is, laid over Kinetikern3's pane with its line breaks
+        self.overlay = kp.ProofPane("Font over Kinetikern3", overlay=True)
         left_group = vanilla.Group((0, 0, -0, -0))
         left_group.caption = vanilla.TextBox((10, 4, -10, 16), "Font as it is — current spacing and kerning",
                                              sizeStyle="small")
@@ -543,7 +623,7 @@ class KK3Window(object):
                                               sizeStyle="small")
         right_group.scroll = vanilla.ScrollView((0, 22, -0, -0), self.right.view, hasHorizontalScroller=False,
                                                 autohidesScrollers=True)
-        proofs = vanilla.SplitView((0, 0, -0, -0), [
+        self.proofs = proofs = vanilla.SplitView((0, 0, -0, -0), [
             dict(view=left_group, identifier="font", minSize=250),
             dict(view=right_group, identifier="kinetikern3", minSize=250),
         ], isVertical=True, dividerStyle="thin")
@@ -561,7 +641,7 @@ class KK3Window(object):
         tv.setAutomaticDashSubstitutionEnabled_(False)
         tv.setAutomaticTextReplacementEnabled_(False)
 
-        w.split = vanilla.SplitView((0, 154, -0, -26), [
+        w.split = vanilla.SplitView((0, 186, -0, -26), [
             dict(view=proofs, identifier="proofs", minSize=220),
             dict(view=input_group, identifier="input", size=190, minSize=90),
         ], isVertical=False, dividerStyle="thin")
@@ -572,6 +652,12 @@ class KK3Window(object):
         w.open()
         panes = [left_group.scroll.getNSScrollView(), right_group.scroll.getNSScrollView()]
         self.sync.attach(panes + [self.editor.getNSScrollView()], fit_width=panes)
+        self.overlay.view.setFrame_(self.right.view.bounds())
+        self.right.view.addSubview_(self.overlay.view)
+        for pane in (self.left, self.right, self.overlay):
+            pane.view.kk3_on_magnify = self._magnify
+        self._show_slider_values()
+        self._apply_view()
         self._update_labels()
         self._update_max_pairs_note()
 
@@ -592,10 +678,27 @@ class KK3Window(object):
         return self._fonts[k] if 0 <= k < len(self._fonts) else self.font
 
     def _physics(self):
-        return physics_from_sliders(self.w.tightness.get(), self.w.intensity.get())
+        return physics_from_sliders(self.w.tightness.get(), self._intensity())
+
+    def _kerning_on(self):
+        return self.w is None or getattr(self.w, "kerning", None) is None or bool(self.w.kerning.get())
+
+    def _intensity(self):
+        """The kerning intensity the solves use, in percent: 0 while the kerning switch is off."""
+        return float(self.w.intensity.get()) if self._kerning_on() else 0.0
+
+    def _show_slider_values(self):
+        """The fields show their sliders' values (after a slider moved, or a field took a value)."""
+        w = self.w
+        if w is None:
+            return
+        w.tightField.set("%+.2f" % float(w.tightness.get()))
+        w.sizeField.set("%g" % round(self._size, 1))
+        w.intensityField.set("%g" % round(float(w.intensity.get()), 1))
+        w.harnessStrengthField.set("%g" % round(float(w.harnessStrength.get()), 1))
 
     def _point_size(self):
-        return float(SIZES[self.w.size.get()])
+        return float(self._size)
 
     def _threads(self):
         return int(self.w.threads.get())  # item 0 is Auto (0), item n is n threads
@@ -684,7 +787,10 @@ class KK3Window(object):
             else:
                 fitted = " · matched to the %s: %+.2f" % (what, self._fitted)
         self.w.tightValue.set("spring %.2f · repulsion %.2f%s%s" % (spring, repulsion, gap, fitted))
-        self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
+        if not self._kerning_on():
+            self.w.sdfValue.set("kerning off: Kinetikern3's spacing alone")
+        else:
+            self.w.sdfValue.set("contour field coupling β = %.2f%s" % (coupling, " (no kerning)" if coupling == 0 else ""))
         t = self._threshold()
         upm = self._upm()
         if t > 0:
@@ -741,7 +847,9 @@ class KK3Window(object):
         self.w.punctuation.enable(self.punctuation_available())
         self.w.figures.enable(self.punctuation_available() and kpu.has_figures())
         self.w.smallCaps.enable(self.punctuation_available() and kpu.has_small_caps())
-        self.w.harnessStrength.enable(bool(self.w.harness.get()) and self.harness_available())
+        strength = bool(self.w.harness.get()) and self.harness_available()
+        self.w.harnessStrength.enable(strength)
+        self.w.harnessStrengthField.enable(strength)
 
     def _update_max_pairs_note(self):
         n = self._budget()
@@ -762,9 +870,11 @@ class KK3Window(object):
             return
         solving = self._job is not None and self._job_kind == "whole"
         busy = solving or self._stepper is not None or self.state == "applying"
-        for control in (w.tightness, w.intensity, w.threshold, w.thresholdField, w.maxPairs, w.threads, w.master,
-                        w.scope, w.replace, w.reload):
+        for control in (w.tightness, w.tightField, w.kerning, w.threshold, w.thresholdField, w.maxPairs, w.threads,
+                        w.master, w.scope, w.replace, w.reload):
             control.enable(not busy)
+        for control in (w.intensity, w.intensityField):
+            control.enable(not busy and self._kerning_on())
         w.connected.enable(not busy and bool(self.engine.features & kb.FEATURE_JOINS))
         w.joinMode.enable(not busy and bool(w.connected.get()) and bool(self.engine.features & kb.FEATURE_JOIN_CHECK))
         snap = self.snapshot
@@ -850,20 +960,23 @@ class KK3Window(object):
                 what = "%s: %s" % (self._stepper_kind, self._stepper.phase)
                 self._step_stepper()
                 return
-            if (self._left_due or self._right_due) and time.time() >= self._render_at:
+            if (self._left_due or self._right_due or self._overlay_due) and time.time() >= self._render_at:
                 # one pane per tick: each lays out in its own display pass;
                 # what a long sample needs for the first time is made first,
-                # a slice per tick
-                pane = self.left if self._left_due else self.right
-                what = "left pane" if self._left_due else "right pane"
-                if self.snapshot is not None and not pane.warm(self.tokens, self.snapshot, self._point_size(),
-                                                               READ_SLICE):
+                # a slice per tick. The overlay comes after the right pane
+                # (it breaks its lines where the right pane does).
+                if self._left_due:
+                    pane, what, render = self.left, "left pane", self._render_left
+                elif self._right_due:
+                    pane, what, render = self.right, "right pane", self._render_right
+                else:
+                    pane, what, render = self.overlay, "overlay", self._render_overlay
+                if (self.snapshot is not None and pane.view.window() is not None and not (
+                        pane is self.left and self._view() != VIEW_SIDE) and
+                        not pane.warm(self.tokens, self.snapshot, self._point_size(), READ_SLICE)):
                     what += " (warming)"
                     return
-                if self._left_due:
-                    self._render_left()
-                else:
-                    self._render_right()
+                render()
                 return
             if self._job is not None:
                 what = "poll " + (self._job_kind or "")
@@ -876,7 +989,7 @@ class KK3Window(object):
                 self._step_slant_probe()
             if (self._reader is None and self._job is None and not self._preview_pending and
                     self._join_finder is None and self._stepper is None and not self._left_due and
-                    not self._right_due and self._slant_probe is None):
+                    not self._right_due and not self._overlay_due and self._slant_probe is None):
                 self._stop_timer()
         except Exception:
             self._fail("Kinetikern3 stopped on an error — see %s." % host.OUTPUT_NAME, traceback.format_exc())
@@ -1706,7 +1819,7 @@ class KK3Window(object):
         self._preview_pending = False
         self._apply_when_done = self._apply_after_preview = self._whole_after_preview = False
         self._stop_timer()
-        if self._left_due or self._right_due:
+        if self._left_due or self._right_due or self._overlay_due:
             self._run_timer(POLL_INTERVAL)
         if stopped is None:
             return False
@@ -1765,7 +1878,7 @@ class KK3Window(object):
     @property
     def panes_due(self):
         """True while a proof pane waits to be laid out again (tests)."""
-        return self._left_due or self._right_due
+        return self._left_due or self._right_due or self._overlay_due
 
     def _panes_due(self, left=False, right=False, delay=0.0):
         """Lays out the panes again on the coming ticks, one pane per tick
@@ -1777,11 +1890,8 @@ class KK3Window(object):
         if self._timer is None:
             self._run_timer(POLL_INTERVAL)
 
-    def _render_left(self):
-        self._left_due = False
-        snap = self.snapshot
-        if snap is None or self.w is None:
-            return
+    def _font_kern(self, snap):
+        """kern(left, right) of the master's kerning as it is, for the panes that show the font."""
         table = self._kerning.table(snap.master_id)
         kerning = self._kerning
 
@@ -1790,8 +1900,61 @@ class KK3Window(object):
                 return kerning.value(table, left, right)
             except Exception:
                 return 0.0
+        return kern
 
-        self.left.render(self.tokens, snap, metrics=self._metrics_in_font, kern=kern, point_size=self._point_size())
+    def _render_left(self):
+        self._left_due = False
+        snap = self.snapshot
+        if snap is None or self.w is None:
+            return
+        if self._view() != VIEW_SIDE:
+            # hidden: laid out when it shows again; the font laid over Kinetikern3 shows the change now
+            self._left_stale = True
+            self._overlay_due = True
+            return
+        self._left_stale = False
+        self.left.render(self.tokens, snap, metrics=self._metrics_in_font, kern=self._font_kern(snap),
+                         point_size=self._point_size())
+
+    def _render_overlay(self):
+        """The font as it is, over Kinetikern3's pane, its lines broken where that pane's are."""
+        self._overlay_due = False
+        snap = self.snapshot
+        if snap is None or self.w is None or self._view() == VIEW_SIDE:
+            return
+        self.overlay.render(self.tokens, snap, metrics=self._metrics_in_font, kern=self._font_kern(snap),
+                            point_size=self._point_size(), color=self._overlay_color(), breaks=self.right.line_starts())
+        if self._view() == VIEW_OVERLAY and self.w.alignWords.get():
+            self.overlay.align_words(self.right)
+
+    def _right_color(self):
+        """Kinetikern3's colour: the text colour, at half strength under a translucent overlay."""
+        if self._view() == VIEW_OVERLAY and self.w.overlayStyle.get() == OVERLAY_TRANSLUCENT:
+            return NSColor.textColor().colorWithAlphaComponent_(0.5)
+        return None
+
+    def _overlay_color(self):
+        if self._view() == VIEW_TOGGLE:
+            return None  # the text colour: it covers Kinetikern3's pane
+        if self.w.overlayStyle.get() == OVERLAY_TRANSLUCENT:
+            return NSColor.textColor().colorWithAlphaComponent_(0.5)
+        return NSColor.systemRedColor().colorWithAlphaComponent_(0.7)
+
+    def _right_caption(self, res=None):
+        mode = self._view()
+        if mode == VIEW_TOGGLE:
+            caption = ("Showing the font as it is — current spacing and kerning" if self._showing_font
+                       else "Showing Kinetikern3 — live sidebearings + kerning")
+        elif mode == VIEW_OVERLAY:
+            caption = ("The font as it is (red) over Kinetikern3 — live sidebearings + kerning"
+                       if self.w.overlayStyle.get() == OVERLAY_RED
+                       else "The font as it is over Kinetikern3, both translucent")
+        else:
+            caption = "Kinetikern3 — live sidebearings + kerning"
+        if res is not None and res.ptr is not None and self._result_kind == "whole" and not (
+                mode == VIEW_TOGGLE and self._showing_font):
+            caption += " (whole-font result: %s entries)" % _count(res.entry_count)
+        return caption
 
     def _render_right(self):
         self._right_due = False
@@ -1799,10 +1962,12 @@ class KK3Window(object):
         if snap is None or self.w is None:
             return
         res = self.result
-        caption = "Kinetikern3 — live sidebearings + kerning"
+        if self._view() != VIEW_SIDE:
+            self._overlay_due = True  # its line breaks follow this pane's
         if res is None or res.ptr is None:
-            self.right.render(self.tokens, snap, metrics=None, kern=None, point_size=self._point_size())
-            self.right_group.caption.set(caption)
+            self.right.render(self.tokens, snap, metrics=None, kern=None, point_size=self._point_size(),
+                              color=self._right_color())
+            self.right_group.caption.set(self._right_caption())
             return
         index = snap.index
         view = res.metrics
@@ -1826,10 +1991,9 @@ class KK3Window(object):
                 kerning[(left, right)] = k
             return k
 
-        self.right.render(self.tokens, snap, metrics=metrics, kern=kern, point_size=self._point_size())
-        if self._result_kind == "whole":
-            caption += " (whole-font result: %s entries)" % _count(res.entry_count)
-        self.right_group.caption.set(caption)
+        self.right.render(self.tokens, snap, metrics=metrics, kern=kern, point_size=self._point_size(),
+                          color=self._right_color())
+        self.right_group.caption.set(self._right_caption(res))
 
     def _font_changed(self, names):
         """Apply or Revert wrote to the font: the left pane re-reads the
@@ -2024,6 +2188,7 @@ class KK3Window(object):
     def physicsChanged(self, sender):
         self._save("tightness", float(self.w.tightness.get()))
         self._save("intensity", float(self.w.intensity.get()))
+        self._show_slider_values()
         self._update_labels()
         self._request_preview()
         if self.harness_window is not None:
@@ -2145,9 +2310,40 @@ class KK3Window(object):
     def conventionsChanged(self, sender):
         self.set_harness_style(self.styles[max(0, self.w.conventions.get())][0])
 
+    def kerningChanged(self, sender):
+        self._save("kerning", bool(self.w.kerning.get()))
+        self._update_controls()
+        self._update_labels()
+        self._request_preview()
+
+    def tightFieldChanged(self, sender):
+        v = _number(self.w.tightField.get())
+        if v is None:
+            self._show_slider_values()  # not a number: the slider's value again
+            return
+        self.w.tightness.set(min(LOOSE_MAX, max(TIGHT_MIN, v)))
+        self.physicsChanged(sender)
+
+    def intensityFieldChanged(self, sender):
+        v = _number(self.w.intensityField.get())
+        if v is None:
+            self._show_slider_values()
+            return
+        self.w.intensity.set(min(MAX_INTENSITY, max(0.0, v)))
+        self.physicsChanged(sender)
+
+    def harnessStrengthFieldChanged(self, sender):
+        v = _number(self.w.harnessStrengthField.get())
+        if v is None:
+            self._show_slider_values()
+            return
+        self.w.harnessStrength.set(min(100.0, max(0.0, v)))
+        self.harnessChanged(sender)
+
     def harnessChanged(self, sender):
         self._save("harness", bool(self.w.harness.get()))
         self._save("harnessStrength", float(self.w.harnessStrength.get()))
+        self._show_slider_values()
         self._update_labels()
         self._request_preview()
         if self.harness_window is not None:
@@ -2216,9 +2412,116 @@ class KK3Window(object):
     def replaceChanged(self, sender):
         self._save("replace", bool(self.w.replace.get()))
 
-    def sizeChanged(self, sender):
-        self._save("size", SIZES[self.w.size.get()])
+    def _set_size(self, size):
+        size = min(MAX_SIZE, max(MIN_SIZE, float(size)))
+        if abs(size - self._size) < 1.0e-6:
+            self._show_slider_values()
+            return
+        self._size = size
+        self.w.size.set(math.log(size))
+        self._show_slider_values()
+        self._save("size", "%g" % round(size, 1))
         self._panes_due(left=True, right=True)
+
+    def sizeChanged(self, sender):
+        self._set_size(round(math.exp(float(self.w.size.get()))))  # whole points from the slider
+
+    def sizeFieldChanged(self, sender):
+        v = _number(self.w.sizeField.get())
+        if v is None:
+            self._show_slider_values()
+            return
+        self._set_size(v)
+
+    def _magnify(self, magnification):
+        """A pinch on a preview pane."""
+        if self.w is not None:
+            self._set_size(round(self._size * (1.0 + magnification), 1))
+
+    # ---------------------------------------------------------------- view
+    def _view(self):
+        if self.w is None or getattr(self.w, "viewMode", None) is None:
+            return VIEW_SIDE
+        mode = int(self.w.viewMode.get())
+        return mode if 0 <= mode < len(VIEWS) else VIEW_SIDE
+
+    def _apply_view(self):
+        """Shows the panes the View asks for and lays out what that needs."""
+        w = self.w
+        mode = self._view()
+        toggle, over = mode == VIEW_TOGGLE, mode == VIEW_OVERLAY
+        self._show_font_pane(mode == VIEW_SIDE)
+        w.showing.show(toggle)
+        w.showing.set(0 if self._showing_font else 1)
+        w.overlayStyle.show(over)
+        w.alignWords.show(over)
+        covering = toggle and self._showing_font
+        view = self.overlay.view
+        view.setFrame_(self.right.view.bounds())
+        view.setDrawsBackground_(covering)  # Toggle: the font as it is covers Kinetikern3's pane
+        view.setHidden_(not (over or covering))
+        click = self.flip if toggle else None
+        for pane in (self.right, self.overlay):
+            pane.view.kk3_on_click = click
+        w.viewHint.set("Click the preview or press the space bar to switch." if toggle else
+                       "Where a glyph shows twice, the two spacings differ." if over else "")
+        w.viewHint.setPosSize((630 if over else 576, 163, -330, 14))
+        self.right_group.caption.set(self._right_caption(self.result))
+        if mode == VIEW_SIDE:
+            if self._left_stale:
+                self._panes_due(left=True)
+        else:
+            self._panes_due(right=True)  # its colour, then the overlay with its line breaks
+
+    def _show_font_pane(self, show):
+        """Shows or hides the left pane, giving its width to Kinetikern3's. vanilla's showPane has its on
+        and off the other way round in the Glyphs repositories' vanilla (it reads a view's isHidden as
+        "visible"): whichever sense it takes, the pane ends up as asked."""
+        view = self.font_pane_view()
+        for on_off in (show, not show):
+            if bool(view.isHidden()) != bool(show):
+                return
+            self.proofs.showPane("font", on_off)
+
+    def font_pane_view(self):
+        """The split view's subview that holds the left pane (vanilla hides that one, not the group)."""
+        inner = self.left_group.getNSView()
+        for sub in self.proofs.getNSSplitView().subviews():
+            if inner.isDescendantOf_(sub):
+                return sub
+        return inner
+
+    def viewModeChanged(self, sender):
+        self._save("view", self._view())
+        self._apply_view()
+
+    def overlayStyleChanged(self, sender):
+        self._save("overlayStyle", int(self.w.overlayStyle.get()))
+        self._apply_view()
+
+    def alignWordsChanged(self, sender):
+        self._save("alignWords", bool(self.w.alignWords.get()))
+        self._overlay_due = True
+        self._panes_due()
+
+    def showingChanged(self, sender):
+        self._showing_font = int(self.w.showing.get()) == 0
+        self._apply_view_toggle()
+
+    def flip(self):
+        """Toggle: the font as it is, or Kinetikern3 (a click on the preview, the space bar)."""
+        self._showing_font = not self._showing_font
+        self._apply_view_toggle()
+
+    def _apply_view_toggle(self):
+        """What Toggle shows changed: nothing is laid out again, the font's pane covers Kinetikern3's or not."""
+        if self.w is None:
+            return
+        self.w.showing.set(0 if self._showing_font else 1)
+        view = self.overlay.view
+        view.setDrawsBackground_(self._showing_font)
+        view.setHidden_(not self._showing_font)
+        self.right_group.caption.set(self._right_caption(self.result))
 
     def textChanged(self, sender):
         self._save("sample", self.editor.get())
@@ -2395,7 +2698,11 @@ class KK3Window(object):
         self._release_engine()
         self.sync.detach()
         # nothing of the font stays reachable from a closed window
-        for pane in (self.left, self.right):
+        for pane in (self.right, self.overlay):
+            pane.view.kk3_on_click = None
+        for pane in (self.left, self.right, self.overlay):
+            pane.view.kk3_on_magnify = None
+        for pane in (self.left, self.right, self.overlay):
             pane.clear()
             pane._forget()
         self.snapshot = None

@@ -626,7 +626,8 @@ def ink_gap(context, snap, m, a, b, kern):
 CLICKABLE = ("tightness", "intensity", "threshold", "thresholdField", "harness", "harnessStrength", "harnessButton",
              "master", "size", "threads", "maxPairs", "connected", "joinMode", "reload", "scope", "replace",
              "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel", "punctuation",
-             "figures", "smallCaps", "conventions")
+             "figures", "smallCaps", "conventions", "tightField", "kerning", "intensityField",
+             "harnessStrengthField", "viewMode", "showing", "overlayStyle", "alignWords", "sizeField")
 
 
 def covered_controls(win):
