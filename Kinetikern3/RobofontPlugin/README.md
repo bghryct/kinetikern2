@@ -424,3 +424,9 @@ every composite moved as one piece, reverts and compares every outline
 coordinate, then the designer harness (and with `--groups` the spacing
 groups and the Pairs window, with `--connected` a connected script),
 measuring the longest main-thread stall throughout.
+
+## License
+
+Copyright 2026 Mirko Velimirovic. Licensed under the
+[Apache License, Version 2.0](../LICENSE) (the extension carries a copy as
+`license`); see also [NOTICE](../NOTICE).

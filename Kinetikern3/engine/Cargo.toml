@@ -4,7 +4,7 @@ version = "3.0.0"
 edition = "2021"
 rust-version = "1.74"
 description = "Kinetikern3 engine for Glyphs 3: whole-font spacing and class kerning (adaptive SDF profiles, DMAT disk packing, kinetic equilibrium) as asynchronous jobs behind a C ABI."
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [lib]

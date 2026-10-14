@@ -1478,3 +1478,9 @@ Result on the final build: **PASSED** in 33.2 s.
   are never aligned. The composite paths are tested on one italic `.glyphs`
   source with 324 composites: 14 aligned, about 160 aligned in part, the rest
   not aligned. A whole-font Apply there re-aligned only two of the 14.
+
+## License
+
+Copyright 2026 Mirko Velimirovic. Licensed under the
+[Apache License, Version 2.0](LICENSE); see also [NOTICE](NOTICE).
+Kinetikern2 was released under the MIT License, and its releases keep it.
