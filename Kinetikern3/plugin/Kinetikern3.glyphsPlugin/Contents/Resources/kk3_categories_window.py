@@ -15,6 +15,10 @@ main Looseness and the offsets move from there. Stay close to the font's
 spacing: every free sidebearing goes that far back to what it is in the font
 before Kinetikern3 kerns (100 %: the font's spacing, only kerned).
 
+Word space: as it is, in step with the n (its share of the n's advance),
+or as designers of the font's kind set it (kk3_punctuation.WORD_SPACE). The
+preview shows it; Apply sets it, and a no-break space as wide follows.
+
 The window holds no state of its own: the main window keeps the settings
 (saved with its others, and in Copy and Save Settings) and runs the preview.
 """
@@ -24,9 +28,11 @@ from __future__ import division, print_function, unicode_literals
 import vanilla
 
 import kk3_groups as kg
+import kk3_punctuation as kpu
 
 OFFSET_MIN, OFFSET_MAX = kg.OFFSET_RANGE  # a category's Looseness offset, slider units
 ROW_TOP, ROW_HEIGHT = 186, 30
+WORD_SPACE_HEIGHT = 96  # the word space's line, pop-up and note under the rows
 
 
 def _number(text):
@@ -53,7 +59,7 @@ class CategoriesWindow(object):
         main = self.main
         counts = main.category_counts()
         keys = [k for k in kg.CATEGORY_KEYS if counts is None or counts.get(k)]
-        height = ROW_TOP + ROW_HEIGHT * len(keys) + 50
+        height = ROW_TOP + ROW_HEIGHT * len(keys) + WORD_SPACE_HEIGHT + 50
         w = vanilla.Window((640, max(420, height)), self._title(), minSize=(560, 420))
         self.w = w
         w.keepFit = vanilla.CheckBox((14, 12, 300, 20), "Keep the font's fit", value=main.keep_fit,
@@ -97,6 +103,17 @@ class CategoriesWindow(object):
             setattr(w, "field_" + key, field)
             setattr(w, "reset_" + key, reset)
             self._rows.append((key, slider, field))
+        y = ROW_TOP + ROW_HEIGHT * len(keys) + 6
+        w.wordSpaceLine = vanilla.HorizontalLine((14, y, -14, 1))
+        w.wordSpaceLabel = vanilla.TextBox((14, y + 15, 110, 17), "Word space", sizeStyle="small")
+        w.wordSpace = vanilla.PopUpButton((124, y + 12, 200, 22), list(kpu.WORD_SPACE_LABELS),
+                                          callback=self.wordSpaceChanged, sizeStyle="small")
+        w.wordSpace.getNSPopUpButton().setToolTip_(
+            "The word space has no outline for Kinetikern3 to read. As it is: left alone. In step with the n: it "
+            "keeps its share of the n's advance as the n is spaced again. As designers set it: the share that "
+            "designers of well-rated fonts of its kind give it. The preview shows it; Apply sets it, and a "
+            "no-break space as wide follows it.")
+        w.wordSpaceNote = vanilla.TextBox((14, y + 42, -14, 44), "", sizeStyle="small")
         w.resetAll = vanilla.Button((14, -34, 150, 22), "All categories to 0", callback=self.resetAll)
         w.bind("close", self.closed)
         w.open()
@@ -118,11 +135,21 @@ class CategoriesWindow(object):
             slider.set(v)
             field.set("%+.2f" % v)
         w.keepFitNote.set(main.font_fit_note())
+        w.wordSpace.set(kpu.WORD_SPACE_MODES.index(main.word_space))
+        w.wordSpaceNote.set(self._word_space_text())
+
+    def _word_space_text(self):
+        note = self.main._word_space_note()
+        if note is None:
+            return ("The font has no blank word space or no n to measure it by: the word space stays as it is."
+                    if self.main.snapshot is not None else "")
+        return note[0].upper() + note[1:] + "."
 
     def result_ready(self):
-        """The main window has a new result (its fitted values)."""
+        """The main window has a new result (its fitted values), or a word space setting."""
         if not self._closed:
             self.w.keepFitNote.set(self.main.font_fit_note())
+            self.w.wordSpaceNote.set(self._word_space_text())
 
     # ----------------------------------------------------------- controls
     def keepFitChanged(self, sender):
@@ -137,6 +164,10 @@ class CategoriesWindow(object):
         v = _number(self.w.stayCloseField.get())
         if v is not None:
             self.main.set_stay_close(v)
+        self.refresh()
+
+    def wordSpaceChanged(self, sender):
+        self.main.set_word_space(kpu.WORD_SPACE_MODES[max(0, int(self.w.wordSpace.get()))])
         self.refresh()
 
     def _row(self, key):

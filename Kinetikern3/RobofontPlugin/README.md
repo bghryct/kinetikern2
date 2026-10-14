@@ -31,8 +31,11 @@ window, the same controls and the same tools:
 - **Small caps** by convention (on by default, a switch of its own): small
   caps (`.sc`, `.smcp`, `.c2sc`, accented ones by their letter) spaced as
   designers space them beside the capitals they follow;
-- after a whole-font run, where the word space sits against what designers
-  of the font's kind set for its n (Kinetikern3 does not set it);
+- the **word space**, in the Categories window: in step with the n (the
+  default: it keeps its share of the n's advance), as designers of
+  well-rated fonts of its kind set it, or as it is; the preview shows it,
+  Apply sets it and a blank no-break space as wide, and the note (and the
+  status line after a whole-font run) says where it sits;
 - the punctuation and figure spaces kept in step: Apply gives a blank
   punctuation space exactly as wide as the period the period's new advance,
   and a blank figure space as wide as a proportional zero the zero's (with
@@ -69,6 +72,13 @@ window, the same controls and the same tools:
   where Spacing QA's rule says so (**Along the 21.5° slant of its stems**);
 - the Pairs window (the font's pairs, loosest to tightest, against
   Kinetikern3);
+- what Kinetikern3 adds to Kinetikern2 (see
+  [New in Kinetikern3](../README.md#new-in-kinetikern3)): a window that does
+  not float, a field beside each slider, the Looseness from −3 to +2, a
+  kerning switch, a text size slider (and pinch to zoom), the Toggle and
+  Overlay views, settings copied, pasted, saved and loaded as JSON, and
+  **Categories…** (a Looseness for each category, Keep the font's fit, Stay
+  close to the font's spacing, the word space);
 - an unattended self-test inside RoboFont (`build.sh --verify`).
 
 ## Install
@@ -145,6 +155,8 @@ own means:
 - The window's settings are kept in RoboFont's extension defaults; the
   spacing groups in the font's lib
   (`com.mirkovelimirovic.Kinetikern3.spacingGroups`), saved with the UFO.
+  Each setting starts from Kinetikern2's until it is changed, and a font
+  with Kinetikern2's groups and none of Kinetikern3's starts from those.
 
 ## Build
 

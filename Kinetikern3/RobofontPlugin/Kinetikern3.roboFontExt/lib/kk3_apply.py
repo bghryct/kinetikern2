@@ -53,6 +53,7 @@ import traceback
 
 import kk3_bridge as kb
 import kk3_host as host
+import kk3_punctuation as kpu
 from kk3_snapshot import ink_metrics
 
 # KK3Metrics.flags: the side follows a rule (a metrics key, an aligned
@@ -178,6 +179,55 @@ def _spaces_in_step(layer, char_map, metrics, keep_width, fixed=()):
         if abs(float(s_glyph.width) - float(t_glyph.width)) < 0.5:
             out[space] = target
     return out
+
+
+def _word_spaces(layer, word_space, n_after, frozen=()):
+    """{space glyph: (n glyph, share)} and their notes for the word space
+    setting (`word_space`, the window's: space, nbsp, n, mode, style, before,
+    n_before) when the n's advance becomes `n_after`: the word space when it
+    is blank and changes, and a blank no-break space as wide as it."""
+    out, notes = {}, {}
+    if not word_space:
+        return out, notes
+    space, nbsp, n = word_space.get("space"), word_space.get("nbsp"), word_space.get("n")
+    before = word_space.get("before")
+    target = kpu.word_space_target(word_space.get("mode"), before, word_space.get("n_before"), n_after,
+                                   word_space.get("style"))
+    if not space or not n or space in frozen or target is None:
+        return out, notes
+    share, after = target
+    if abs(after - before) < 0.5:
+        return out, notes
+    glyph = _glyph(layer, space)
+    if glyph is None or not _blank(glyph) or abs(float(glyph.width) - before) >= 0.5:
+        return out, notes
+    out[space] = (n, share)
+    if word_space.get("mode") == "convention":
+        who = kpu.WORD_SPACE_WHO.get(word_space.get("style"), kpu.WORD_SPACE_WHO["text"])
+        notes[space] = ("The word space becomes %.2f of the n's advance, as %s designers set it: %d → about %d."
+                        % (share, who, round(before), round(after)), "the word space as designers set it")
+    else:
+        notes[space] = ("The word space keeps its share of the n's advance (%.2f): %d → about %d."
+                        % (share, round(before), round(after)), "the word space follows the n")
+    nb = _glyph(layer, nbsp) if nbsp and nbsp != space and nbsp not in frozen else None
+    if nb is not None and _blank(nb) and abs(float(nb.width) - float(glyph.width)) < 0.5:
+        out[nbsp] = (n, share)
+        notes[nbsp] = ("The no-break space keeps the word space's width.", "the no-break space with it")
+    return out, notes
+
+
+def _space_target(target):
+    """(glyph, share of its advance or None) of a plan.spaces target: a glyph
+    (the space takes its advance) or (glyph, share)."""
+    if isinstance(target, tuple):
+        return target[0], target[1]
+    return target, None
+
+
+def _space_width_for(width, share):
+    """The advance of a space whose target glyph is `width` wide (its own
+    value, int or float, without a share; whole units with one)."""
+    return width if share is None else int(math.floor(share * float(width) + 0.5))
 
 
 def _move_glyph(glyph, dx):
@@ -585,8 +635,10 @@ class ApplyPlan(object):
                    moves, the width is put back
     followers      glyphs re-spaced because a side follows a re-spaced glyph
     removals       [(left key, right key)] existing pairs Replace removes
-    spaces         {blank space: glyph}: spaces that keep their glyph's
-                   advance (SPACES_IN_STEP), written after the sidebearings;
+    spaces         {blank space: glyph or (glyph, share)}: spaces that keep
+                   their glyph's advance (SPACES_IN_STEP) or a share of it
+                   (the word space and the no-break space: the n's), written
+                   after the sidebearings;
                    space_notes {blank space: (the dialog's line, the status
                    line's words)}
     groups_to_move {glyph: (left group or None, right group or None)}: sides
@@ -685,10 +737,11 @@ class Planner(_Stepper):
     engine never saw. The result must stay open until the planner is done.
     """
 
-    def __init__(self, snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None):
+    def __init__(self, snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None,
+                 word_space=None):
         _Stepper.__init__(self)
         self.plan = None
-        self._args = (snapshot, result, replace, metrics_names, scope_scripts, frozen)
+        self._args = (snapshot, result, replace, metrics_names, scope_scripts, frozen, word_space)
         self.text = "Planning"
 
     def _finished(self, value):
@@ -696,7 +749,7 @@ class Planner(_Stepper):
         value.ms = self.busy_ms
 
     def _work(self):
-        snapshot, result, replace, metrics_names, scope_scripts, frozen_names = self._args
+        snapshot, result, replace, metrics_names, scope_scripts, frozen_names, word_space = self._args
         self._args = None
         names = list(snapshot.names)
         n = len(names)
@@ -1015,6 +1068,16 @@ class Planner(_Stepper):
         spaces = _spaces_in_step(_layer(dfont, snapshot.master_id), char_map, metrics, keep_width,
                                  getattr(snapshot, "fixed", ()))
         notes = dict((char_map.get(space_ch), (line, words)) for space_ch, _g, line, words in SPACES_IN_STEP)
+        # the word space (and a no-break space as wide): a share of the n's advance as this Apply leaves it
+        n_after = None
+        if word_space and word_space.get("n"):
+            i = snapshot.index.get(word_space["n"])
+            m = result.metrics[i] if i is not None else None
+            n_after = (float(m.advance) if word_space["n"] in metrics and m is not None and m.valid
+                       else word_space.get("n_before"))
+        words, word_notes = _word_spaces(_layer(dfont, snapshot.master_id), word_space, n_after, frozen_names)
+        spaces.update(words)
+        notes.update(word_notes)
 
         # big temporaries go a slice at a time (freeing them at once would
         # take as long as building them)
@@ -1073,9 +1136,9 @@ def _release(*containers):
                 yield
 
 
-def plan(snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None):
+def plan(snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None, word_space=None):
     """The ApplyPlan of applying `result` (see Planner), in one call."""
-    return Planner(snapshot, result, replace, metrics_names, scope_scripts, frozen).run().plan
+    return Planner(snapshot, result, replace, metrics_names, scope_scripts, frozen, word_space).run().plan
 
 
 # --------------------------------------------------------------- revert
@@ -1735,8 +1798,9 @@ class Applier(_Stepper):
                 if len(self._examples) < EXAMPLES:
                     self._examples.append(("removal", lk, rk, None, have))
         for name, target in getattr(p, "spaces", {}).items():
-            have, t_glyph = revert.space_width(name), _glyph(layer, target)
-            want = t_glyph.width if t_glyph is not None else None
+            follow, share = _space_target(target)
+            have, t_glyph = revert.space_width(name), _glyph(layer, follow)
+            want = _space_width_for(t_glyph.width, share) if t_glyph is not None else None
             detail["readback_metrics"] += 1
             if have is None or want is None or abs(float(have) - float(want)) > 1e-6:
                 self._bad[0] += 1
@@ -1745,11 +1809,13 @@ class Applier(_Stepper):
 
     def _space_in_step(self, layer, name, target, revert):
         """Gives a blank space its glyph's advance, as the font has it (an
-        int stays an int; plan.spaces). True if it changed."""
-        glyph, t_glyph = _glyph(layer, name), _glyph(layer, target)
+        int stays an int), or its share of it in whole units (plan.spaces).
+        True if it changed."""
+        follow, share = _space_target(target)
+        glyph, t_glyph = _glyph(layer, name), _glyph(layer, follow)
         if glyph is None or t_glyph is None or name not in revert.spaces:
             return False
-        width = t_glyph.width
+        width = _space_width_for(t_glyph.width, share)
         if glyph.width == width and type(glyph.width) is type(width):
             return False
         self._held.hold(glyph)

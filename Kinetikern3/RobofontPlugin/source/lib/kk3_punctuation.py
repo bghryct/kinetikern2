@@ -31,6 +31,7 @@ from Spacing QA's measurements; Spacing QA uses the same table.
 from __future__ import division, print_function, unicode_literals
 
 import json
+import math
 import os
 import unicodedata
 
@@ -319,26 +320,66 @@ def engine_arg(snap, style, punctuation=True, figures=True, small_caps=True):
     return arg
 
 
-# The word space designers set for an n of a given advance: the median and middle half of space / n advance at
-# Regular, measured on Google Fonts (2026-10-11; text faces 1,040 families, display 405, handwriting 148).
-# Kinetikern3 does not set the space (it has no outline): the window only says where the font's sits.
-WORD_SPACE = {"text": (0.421, 0.395, 0.467), "display": (0.442, 0.361, 0.508), "handwriting": (0.573, 0.474, 0.699)}
+# The word space as a share of the n's advance in the Google Fonts families whose word space people rate 80 or
+# more (google/fonts tags/all/families.csv, /Quality/Wordspace, October 2026; one upright style per family: 729
+# text faces, sans serif and serif, 277 display faces, 139 handwriting): the median, the middle half, and the
+# share past which a word space is wider than 9 in 10 of theirs. Past it 28 % of the text faces are rated under
+# 70 (5 % within), 44 % of the display faces (12 %) and 56 % of handwriting (13 %); a narrower space is not
+# rated lower.
+WORD_SPACE = {"text": (0.421, 0.390, 0.452, 0.513), "display": (0.409, 0.330, 0.485, 0.569),
+              "handwriting": (0.544, 0.483, 0.609, 0.745)}
 WORD_SPACE_WHO = {"text": "text faces'", "display": "display faces'", "handwriting": "handwriting's"}
+WORD_SPACE_KIND = {"text": "text faces", "display": "display faces", "handwriting": "handwriting"}
+# What Kinetikern3 does with the word space (it has no outline to read): leave it as it is, keep it in step
+# with the n (the share of the n's advance it has now), or set it as designers of the font's kind do
+# (WORD_SPACE's median). A blank no-break space as wide as the word space follows it (it is as wide in 96 % of
+# 1,517 Google Fonts families).
+WORD_SPACE_MODES = ("keep", "step", "convention")
+WORD_SPACE_LABELS = ("As it is", "In step with the n", "As designers set it")
+WORD_SPACE_DEFAULT = "step"
 
 
-def word_space_note(space, n_advance, style):
-    """A line for the window: the font's word space (font units) against
-    what designers of its kind set for an n of `n_advance`; None without
-    either."""
-    if not space or not n_advance or space <= 0 or n_advance <= 0:
+def _positive(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return False
+    return v - v == 0.0 and v > 0.0
+
+
+def word_space_target(mode, space, n_before, n_after, style):
+    """(share of the n's advance, the word space) that `mode` gives a word
+    space of `space` when the n's advance goes from `n_before` to `n_after`
+    (font units, whole); None: the space stays as it is (mode "keep", or no
+    space or n to measure)."""
+    if mode not in ("step", "convention") or not (_positive(space) and _positive(n_before) and _positive(n_after)):
         return None
-    k, lo, hi = WORD_SPACE.get(style, WORD_SPACE["text"])
+    share = float(space) / float(n_before) if mode == "step" else WORD_SPACE.get(style, WORD_SPACE["text"])[0]
+    return share, float(math.floor(share * float(n_after) + 0.5))
+
+
+def word_space_note(space, n_advance, style, new_space=None, mode="keep"):
+    """A line for the window: the font's word space (font units) against
+    what designers of its kind set for an n of `n_advance` (the n as the
+    result spaces it), and what the word space setting makes of it
+    (`new_space`, by `mode`); None without a space or an n."""
+    if not (_positive(space) and _positive(n_advance)):
+        return None
+    k, lo, hi, top = WORD_SPACE.get(style, WORD_SPACE["text"])
     who = WORD_SPACE_WHO.get(style, WORD_SPACE_WHO["text"])
-    span = "most %d–%d" % (round(lo * n_advance), round(hi * n_advance))
-    if lo * n_advance <= space <= hi * n_advance:
-        return "word space %d, as %s designers set it for an n this wide (%s)" % (round(space), who, span)
-    return "word space %d: %s designers set about %d for an n this wide (%s)" % (
-        round(space), who, round(k * n_advance), span)
+    n = float(n_advance)
+    span = "most %d–%d" % (round(lo * n), round(hi * n))
+    text = "word space %d" % round(space)
+    shown = float(space)
+    if new_space is not None and _positive(new_space) and abs(new_space - space) >= 0.5:
+        text += " → %d%s" % (round(new_space), " in step with the n" if mode == "step" else "")
+        shown = float(new_space)
+    if lo * n - 0.5 <= shown <= hi * n + 0.5:
+        return "%s, as %s designers set it for an n this wide (%s)" % (text, who, span)
+    if shown > top * n:
+        return "%s: wider than 9 in 10 well-rated %s for an n this wide (they set about %d, %s)" % (
+            text, WORD_SPACE_KIND.get(style, WORD_SPACE_KIND["text"]), round(k * n), span)
+    return "%s: %s designers set about %d for an n this wide (%s)" % (text, who, round(k * n), span)
 
 
 STYLE_PHRASES = {"text": "text faces' conventions", "display": "display faces' conventions",

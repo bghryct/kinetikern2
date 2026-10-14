@@ -760,22 +760,35 @@ def build_mock_font(path, count):
     rows = [(name, cp, True) for name, cp in zip(names, lf.cps)]
     if cmap.get(0x20):
         rows.append((cmap[0x20], 0x20, True))
-    for cp in (0x2008, 0x2007):  # the punctuation and figure spaces (Arial's: the period's and the zero's advance)
-        if cmap.get(cp) and cmap[cp] not in in_set:
-            rows.append((cmap[cp], cp, True))
+    # the no-break space (as wide as the word space), the punctuation and figure spaces (Arial's: the period's
+    # and the zero's advance)
+    added = set(name for name, _cp, _export in rows)
+    source = {}  # a mock glyph drawn from another glyph of the font
+    for cp in (0x00A0, 0x2008, 0x2007):
+        name = cmap.get(cp)
+        if not name or name in in_set:
+            continue
+        if name in added:
+            # one glyph with two code points (Arial's space is its no-break space too): a glyph of its own, as
+            # most fonts have it, so that Apply's no-break space is tested
+            source["nbspace" if cp == 0x00A0 else "uni%04X" % cp] = name
+            name = "nbspace" if cp == 0x00A0 else "uni%04X" % cp
+        rows.append((name, cp, True))
+        added.add(name)
     marks = [cp for cp in range(0x0300, 0x0370) if cp in cmap and cmap[cp] not in in_set][:6]
     rows.extend((cmap[cp], cp, True) for cp in marks)
     for name, cp, export in rows:
         category, sub, case, script = glyph_properties(cp)
         glyph = MockGlyph(font, name, cp, export, category, sub, case, script)
         font.add_glyph(glyph)
-        shape = outline(name)
-        comps = components(name)
+        drawn = source.get(name, name)
+        shape = outline(drawn)
+        comps = components(drawn)
         # an imported composite is not auto-aligned; those whose other
         # components are marks (not spacing glyphs) are made so here
         aligned = bool(comps) and comps[0] in in_set and all(c not in in_set for c in comps[1:])
         for master in masters:
-            glyph.layers.append(MockLayer(glyph, master, shape, hmtx[name][0], comps, aligned))
+            glyph.layers.append(MockLayer(glyph, master, shape, hmtx[drawn][0], comps, aligned))
     if names and names[0] in font.glyphs._by_name:
         base = font.glyphs[names[0]]
         alt = MockGlyph(font, names[0] + ".alt", None, False, base.category, base.subCategory, base.case,
@@ -2093,6 +2106,61 @@ class SmokeTest(object):
                   and abs(slider.doubleValue()) < 1e-9,
                   "All categories to 0 clears every offset", "%d offsets before, %r after" % (n, win.category_offsets))
 
+        # the word space: as designers set it shows in Kinetikern3's pane at once and counts on the button; as it
+        # is leaves it alone
+        import kk3_punctuation as kpu
+        popup = cw.w.wordSpace.getNSPopUpButton()
+        rep.check([str(t) for t in popup.itemTitles()] == list(kpu.WORD_SPACE_LABELS)
+                  and win.word_space == kpu.WORD_SPACE_DEFAULT
+                  and str(popup.titleOfSelectedItem()) == kpu.WORD_SPACE_LABELS[kpu.WORD_SPACE_MODES.index(win.word_space)],
+                  "the word space pop-up lists its three settings and shows the one in use",
+                  "%s; in use %r" % ([str(t) for t in popup.itemTitles()], win.word_space))
+        # a sample with word spaces (the one typed before has none)
+        text_before = str(ui.editor().string())
+
+        def shown(text):
+            # the glyphs are solved already: the panes are laid out again, with no new preview
+            return lambda: (win.state == "ready" and not self.engines.live and not win.panes_due
+                            and win.result is not None and len(win.right.chars) == len(win.tokens)
+                            and (" " in win.right.chars) == (" " in text))
+
+        self.act("sample text with word spaces", edit_text, ui.editor(), SAMPLE)
+        self.wait_for("the panes of a sample with word spaces", shown(SAMPLE), timeout,
+                      stage="preview after a category change")
+        before = win.result
+        self.act("the word space: as designers set it", choose, popup, kpu.WORD_SPACE_LABELS[2])
+        self.wait_for("Kinetikern3's pane with the word space", lambda: not win.panes_due, timeout,
+                      stage="the word space")
+        ws = win.word_space_for()
+        cells = None
+        if ws is not None:
+            storage = win.right.view.textStorage()
+            k = next((i for i, c in enumerate(win.right.chars) if c == " "), None)
+            got = storage.attribute_atIndex_effectiveRange_(AppKit.NSKernAttributeName, k, None) if k is not None \
+                else None
+            got = got[0] if isinstance(got, tuple) else got
+            kp = sys.modules[type(win.right).__module__]
+            scale = float(win._point_size()) / snap.upm
+            cells = (float(got) + kp._SPACE_ADVANCE) / scale if got is not None else None
+        saved = MockGlyphs.defaults.get(PREFIX + "wordSpace")
+        rep.check(ws is not None and cells is not None and abs(cells - ws[3]) < 0.01 and win.result is before
+                  and saved == "convention" and str(main_button.title()) == "Categories (1)…"
+                  and str(cw.w.wordSpaceNote.get()).startswith("Word space"),
+                  "as designers set it: Kinetikern3's pane shows the word space at once, without solving again",
+                  "%s; the pane's space %s; saved %r; button %r; note %r"
+                  % (ws and "%s %s → %s (%.3f of the n)" % (ws[0], ws[2], ws[3], ws[4]), cells, saved,
+                     str(main_button.title()), str(cw.w.wordSpaceNote.get())[:80]))
+        self.act("the word space: as it is", choose, popup, kpu.WORD_SPACE_LABELS[0])
+        self.wait_for("Kinetikern3's pane with the word space as it is", lambda: not win.panes_due, timeout,
+                      stage="the word space")
+        rep.check(win.word_space == "keep" and win.word_space_for() is None and win._word_space_apply_arg() is None,
+                  "as it is: the word space stays as the font has it")
+        self.act("the word space: in step with the n", choose, popup, kpu.WORD_SPACE_LABELS[1])
+        rep.check(win.word_space == "step", "in step with the n again")
+        self.act("the sample text as it was", edit_text, ui.editor(), text_before)
+        self.wait_for("the panes of the sample as it was", shown(text_before), timeout,
+                      stage="preview after a category change")
+
         self.act("close the Categories window", nsw.performClose_, None)
         rep.check(win.categories_window is None and not nsw.isVisible(), "the Categories window closes")
 
@@ -2225,7 +2293,8 @@ class SmokeTest(object):
             # between the window's plan and its first write: the same plan, for the read-back
             held["alert"] = alert
             held["result"] = win.result
-            held["plan"] = self.ka.plan(win.snapshot, win.result, replace, metrics_names=win.plan_names(win.result))
+            held["plan"] = self.ka.plan(win.snapshot, win.result, replace, metrics_names=win.plan_names(win.result),
+                                        word_space=win._word_space_apply_arg())
             held["writes_before"] = len(font.writes())
             held["t"] = time.perf_counter()
             held["applying"] = []
@@ -2409,6 +2478,33 @@ class SmokeTest(object):
             rep.check(fspace not in getattr(plan, "spaces", {}) and was is not None and abs(now - was[2]) < 1e-9,
                       "the figure space keeps its advance with the tabular figures (%s)" % what,
                       "before %s, after %s; planned %s" % (was and was[2], now, getattr(plan, "spaces", None)))
+
+        # the word space keeps its share of the n's advance (the default word space setting), and the no-break
+        # space as wide goes with it
+        ws, wn, wb = snap.char_map.get(" "), snap.char_map.get("n"), snap.char_map.get("\u00a0")
+        if ws is not None and wn is not None and self.win.word_space == "step":
+            was_s, was_n = before["metrics"].get((ws, mid)), before["metrics"].get((wn, mid))
+            now_s, now_n = font.glyphs[ws].layers[mid].width, font.glyphs[wn].layers[mid].width
+            share = was_s[2] / was_n[2]
+            want = math.floor(share * now_n + 0.5)
+            target = getattr(plan, "spaces", {}).get(ws)
+            if abs(want - was_s[2]) >= 0.5:
+                ok = (isinstance(target, tuple) and target[0] == wn and abs(target[1] - share) < 1e-9
+                      and abs(now_s - want) < 1e-9)
+            else:
+                ok = target is None and abs(now_s - was_s[2]) < 1e-9
+            rep.check(ok, "the word space keeps its share of the n's advance (%s)" % what,
+                      "space %s → %s, n %s → %s (share %.4f: %s); planned %r" % (was_s[2], now_s, was_n[2], now_n,
+                                                                              share, want, target))
+            if wb is not None:
+                was_b = before["metrics"].get((wb, mid))
+                now_b = font.glyphs[wb].layers[mid].width
+                follows = was_b is not None and abs(was_b[2] - was_s[2]) < 0.5
+                rep.check((abs(now_b - now_s) < 1e-9) if follows else abs(now_b - was_b[2]) < 1e-9,
+                          "the no-break space goes with the word space (%s)" % what,
+                          "no-break space %s → %s, word space %s → %s; the window's %r; planned %r"
+                          % (was_b and was_b[2], now_b, was_s[2], now_s, self.win._word_space_info(),
+                             getattr(plan, "spaces", {}).get(wb)))
 
         # sidebearings: as planned, and never on a side Glyphs drives
         mbad = []

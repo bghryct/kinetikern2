@@ -77,7 +77,8 @@ import kk3_snapshot as ks
 PREFIX = host.PREFIX
 # preferences the window remembers between sessions (keys under PREFIX)
 PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "view",
-             "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "sample", "replace")
+             "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "wordSpace", "sample",
+             "replace")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -180,6 +181,16 @@ def _as_bool(value):
 
 def _count(n):
     return "{:,}".format(int(n))
+
+
+def _blank_info(info):
+    """Nothing drawn in a glyph as the snapshot read it: no outline, or one of
+    no size (a one-point dummy contour, as older TrueType fonts give their
+    spaces), as Apply's blank test has it."""
+    if getattr(info, "empty", False):
+        return True
+    b = getattr(info, "bounds", None)
+    return b is not None and len(b) == 4 and b[2] == 0 and b[3] == 0
 
 
 def _number(text):
@@ -327,6 +338,7 @@ class KK3Window(object):
         self.category_offsets = self._offsets_setting()
         self.keep_fit = self._setting("keepFit", False, bool)
         self.stay_close = min(100.0, max(0.0, self._setting("stayClose", 0.0)))
+        self.word_space = self._word_space_setting()
         self.categories_window = None
         self._categories = None  # (snapshot, the category of each of its glyphs)
         self._category_fits = {}  # the last result's fitted Looseness per engine fit group
@@ -847,9 +859,95 @@ class KK3Window(object):
             self.harness_window.settings_changed()
 
     def _categories_active(self):
-        """How many adjustments the Categories window makes (offsets, the fit, staying close)."""
+        """How many adjustments the Categories window makes (offsets, the fit, staying close, the word space as
+        designers set it)."""
         return len([v for v in self.category_offsets.values() if v]) + int(self._keep_fit_on()) + int(
-            self.stay_close > 0)
+            self.stay_close > 0) + int(self.word_space == "convention")
+
+    # ---------------------------------------------------------- word space
+    def _word_space_setting(self):
+        mode = self._setting("wordSpace", kpu.WORD_SPACE_DEFAULT, str)
+        return mode if mode in kpu.WORD_SPACE_MODES else kpu.WORD_SPACE_DEFAULT
+
+    def set_word_space(self, mode):
+        """As it is, in step with the n, or as designers set it (kk3_punctuation.WORD_SPACE_MODES): the preview
+        shows it at once (nothing is solved again), Apply writes it."""
+        if mode not in kpu.WORD_SPACE_MODES:
+            return
+        self.word_space = mode
+        self._save("wordSpace", mode)
+        self._update_labels()
+        self._panes_due(right=True)
+        if self.categories_window is not None:
+            self.categories_window.result_ready()
+
+    def _word_space_info(self):
+        """(the word space, its advance, a blank no-break space as wide or None, the n, its advance) as the font
+        was read; None without a blank word space and an n."""
+        snap = self.snapshot
+        if snap is None:
+            return None
+        space, n = snap.char_map.get(" "), snap.char_map.get("n")
+        # glyph_info: a space is outside the spacing set, read when asked for
+        si = snap.glyph_info(space) if space else None
+        ni = snap.glyph_info(n) if n else None
+        if si is None or ni is None or not _blank_info(si):
+            return None
+        try:
+            width, n_width = float(si.width), float(ni.width)
+        except (TypeError, ValueError):
+            return None
+        if not (width > 0.0 and n_width > 0.0):
+            return None
+        nbsp = snap.char_map.get("\u00a0")
+        bi = snap.glyph_info(nbsp) if nbsp and nbsp != space else None
+        if bi is None or not _blank_info(bi) or abs(float(bi.width) - width) >= 0.5:
+            nbsp = None
+        return space, width, nbsp, n, n_width
+
+    def _n_advance(self, res, n, n_width):
+        i = self.snapshot.index.get(n) if self.snapshot is not None else None
+        m = res.metrics[i] if res is not None and res.ptr is not None and i is not None else None
+        return float(m.advance) if m is not None and m.valid else n_width
+
+    def word_space_for(self, res=None):
+        """What the word space setting makes of the word space with result `res` (the one shown): (the word
+        space, a no-break space that follows it or None, its advance now, the new advance, its share of the n's
+        advance); None: it stays as it is."""
+        info = self._word_space_info()
+        res = self.result if res is None else res
+        if info is None or res is None or res.ptr is None:
+            return None
+        space, width, nbsp, n, n_width = info
+        t = kpu.word_space_target(self.word_space, width, n_width, self._n_advance(res, n, n_width), self._style())
+        if t is None:
+            return None
+        return space, nbsp, width, t[1], t[0]
+
+    def _word_space_apply_arg(self):
+        """The word space setting for Apply (kk3_apply.Planner's word_space), or None."""
+        info = self._word_space_info()
+        if info is None or self.word_space not in ("step", "convention"):
+            return None
+        space, width, nbsp, n, n_width = info
+        return {"space": space, "nbsp": nbsp, "n": n, "mode": self.word_space, "style": self._style(),
+                "before": width, "n_before": n_width}
+
+    def _word_space_note(self):
+        """The font's word space against what designers of its kind set for its n as the result spaces it, and
+        what the word space setting makes of it (kk3_punctuation.word_space_note), or None."""
+        try:
+            info = self._word_space_info()
+            res = self.result
+            if info is None or res is None or res.ptr is None:
+                return None
+            space, width, _nbsp, n, n_width = info
+            ws = self.word_space_for(res)
+            return kpu.word_space_note(width, self._n_advance(res, n, n_width), self._style(),
+                                       ws[3] if ws is not None else None, self.word_space)
+        except Exception:
+            print(traceback.format_exc())
+            return None
 
     def _update_categories_button(self):
         if self.w is None or getattr(self.w, "categoriesButton", None) is None:
@@ -857,7 +955,8 @@ class KK3Window(object):
         n = self._categories_active()
         self.w.categoriesButton.setTitle("Categories (%d)…" % n if n else "Categories…")
         lines = ["Tightness by category: a Looseness for capitals, lowercase, figures, quotes, brackets and the "
-                 "rest on top of the main one; Keep the font's fit; Stay close to the font's spacing."]
+                 "rest on top of the main one; Keep the font's fit; Stay close to the font's spacing; the word "
+                 "space."]
         if self._keep_fit_on():
             lines.append(self.font_fit_note())
         if self.stay_close > 0:
@@ -866,6 +965,7 @@ class KK3Window(object):
             labels = dict(kg.CATEGORIES)
             lines.append("Offsets: " + ", ".join("%s %+.2f" % (labels[k], v)
                                                 for k, v in sorted(self.category_offsets.items())))
+        lines.append("Word space: %s." % kpu.WORD_SPACE_LABELS[kpu.WORD_SPACE_MODES.index(self.word_space)].lower())
         self.w.categoriesButton.getNSButton().setToolTip_("\n".join(lines))
 
     def font_fit_note(self):
@@ -1893,19 +1993,6 @@ class KK3Window(object):
             print(traceback.format_exc())
             self.join_check = None
 
-    def _word_space_note(self):
-        """The font's word space against what designers of its kind set for
-        its n as the result spaces it (kk3_punctuation.word_space_note), or
-        None."""
-        try:
-            snap, res = self.snapshot, self.result
-            i = snap.index.get("n") if snap is not None else None
-            if i is None or res is None or self.font is None or "space" not in self.font:
-                return None
-            return kpu.word_space_note(float(self.font["space"].width), float(res.metrics[i].advance), self._style())
-        except Exception:
-            return None
-
     def _result_status(self):
         res, snap = self.result, self.snapshot
         st = res.stats
@@ -2153,8 +2240,16 @@ class KK3Window(object):
         view = res.metrics
         value = res.value
         kerning = {}
+        # the word space (and a no-break space as wide) as the word space setting makes it
+        spaces = {}
+        ws = self.word_space_for(res)
+        if ws is not None and abs(ws[3] - ws[2]) >= 0.5:
+            spaces = dict((name, ws[3]) for name in (ws[0], ws[1]) if name)
+        nan = float("nan")
 
         def metrics(name):
+            if name in spaces:
+                return (nan, nan, spaces[name])
             i = index.get(name)
             if i is None:
                 return None
@@ -2275,7 +2370,8 @@ class KK3Window(object):
         try:
             opts = self._glyph_opts()
             frozen = self.groups.frozen_names() if opts else None
-            planner = ka.Planner(snap, result, replace, metrics_names=self.plan_names(result), frozen=frozen)
+            planner = ka.Planner(snap, result, replace, metrics_names=self.plan_names(result), frozen=frozen,
+                                 word_space=self._word_space_apply_arg())
         except Exception as e:
             self._fail("Apply could not be planned: %s" % e, traceback.format_exc())
             return False
@@ -2396,6 +2492,7 @@ class KK3Window(object):
             "keepFit": bool(self.keep_fit),
             "stayClose": round(self.stay_close, 1),
             "categories": dict(sorted(self.category_offsets.items())),
+            "wordSpace": self.word_space,
         }
 
     @staticmethod
@@ -2406,7 +2503,8 @@ class KK3Window(object):
                 "punctuation": True, "figures": True, "smallCaps": True, "connected": True, "joinMode": "keep",
                 "alongSlant": True, "maxPairs": DEFAULT_MAX_PAIRS, "threads": 0, "applyTo": "sample",
                 "replaceKerning": True, "textSize": DEFAULT_SIZE, "view": "side", "overlay": "red",
-                "alignWords": True, "keepFit": False, "stayClose": 0.0, "categories": {}}
+                "alignWords": True, "keepFit": False, "stayClose": 0.0, "categories": {},
+                "wordSpace": kpu.WORD_SPACE_DEFAULT}
 
     def apply_settings(self, d):
         """Sets the controls from a settings dict (settings()) the way a user would: each change goes through
@@ -2524,6 +2622,9 @@ class KK3Window(object):
         v = number("stayClose", 0.0, 100.0)
         if v is not None:
             self.set_stay_close(v)
+        v = choice("wordSpace", kpu.WORD_SPACE_MODES)
+        if v is not None:
+            self.set_word_space(kpu.WORD_SPACE_MODES[v])
         if self.categories_window is not None:
             self.categories_window.refresh()
         # the ones that start the engine again, only when they change

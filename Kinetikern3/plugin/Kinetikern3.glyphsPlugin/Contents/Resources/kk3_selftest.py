@@ -96,8 +96,8 @@ from contextlib import contextmanager
 
 import Foundation
 import objc
-from AppKit import (NSApp, NSBitmapImageFileTypePNG, NSBitmapImageRep, NSObject, NSPanel, NSProgressIndicator,
-                    NSTextField)
+from AppKit import (NSApp, NSBitmapImageFileTypePNG, NSBitmapImageRep, NSKernAttributeName, NSObject, NSPanel,
+                    NSProgressIndicator, NSTextField)
 from Foundation import NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from PyObjCTools import AppHelper
 
@@ -393,6 +393,18 @@ def diff_glyphs(before, after):
             if not same:
                 out.append([name, field, va, vb])
     return out
+
+
+def _space_glyph(target):
+    """The glyph a plan.spaces target follows (a glyph, or (glyph, share))."""
+    return target[0] if isinstance(target, tuple) else target
+
+
+def _space_width(width, target):
+    """The advance a space with this target has when its glyph is `width` wide."""
+    if width is None:
+        return None
+    return float(width) if not isinstance(target, tuple) else float(math.floor(target[1] * float(width) + 0.5))
 
 
 class Heartbeat(object):
@@ -1234,12 +1246,14 @@ class SelfTest(object):
         # The plan the window is about to carry out, for the read-back: the
         # same snapshot, the same result, the font as it is now.
         t = time.time()
-        self.plan = kk3_apply.plan(snap, res, True)
+        word_space = win._word_space_apply_arg() if hasattr(win, "_word_space_apply_arg") else None
+        self.plan = kk3_apply.plan(snap, res, True, word_space=word_space)
         plan_s = time.time() - t
         # a blank space that has its glyph's advance keeps it (the punctuation space the period's, the figure
-        # space the zero's where the figures are proportional); the other spaces Apply leaves alone
-        self.spaces_before = dict((space, (self._width(space, mid), self._width(glyph, mid)))
-                                  for space, glyph in getattr(self.plan, "spaces", {}).items())
+        # space the zero's where the figures are proportional), the word space and a no-break space as wide
+        # their share of the n's (the word space setting); the other spaces Apply leaves alone
+        self.spaces_before = dict((space, (self._width(space, mid), self._width(_space_glyph(target), mid)))
+                                  for space, target in getattr(self.plan, "spaces", {}).items())
         others = [snap.char_map.get(row[0]) for row in getattr(kk3_apply, "SPACES_IN_STEP", ())]
         self.spaces_left = dict((name, self._width(name, mid)) for name in others
                                 if name is not None and name not in self.spaces_before)
@@ -1270,13 +1284,15 @@ class SelfTest(object):
 
         # blank spaces kept in step with their glyph
         space_bad = []
-        for space, glyph in getattr(plan, "spaces", {}).items():
-            have, want = self._width(space, mid), self._width(glyph, mid)
+        for space, target in getattr(plan, "spaces", {}).items():
+            glyph = _space_glyph(target)
+            have, now = self._width(space, mid), self._width(glyph, mid)
+            want = _space_width(now, target)
             before = self.spaces_before.get(space, (None, None))
             words = getattr(plan, "space_notes", {}).get(space, (None, "%s follows %s" % (space, glyph)))[1]
-            self.log("space in step", space=space, glyph=glyph, before=before, after=(have, want))
+            self.log("space in step", space=space, glyph=glyph, before=before, after=(have, now), want=want)
             self.note("%s: %s %s → %s, %s %s → %s" % (words, space, _num(before[0]), _num(have), glyph,
-                                                       _num(before[1]), _num(want)))
+                                                       _num(before[1]), _num(now)))
             if have is None or want is None or abs(have - want) > 1e-6:
                 space_bad.append([space, have, glyph, want])
         for space, was in getattr(self, "spaces_left", {}).items():
@@ -2153,7 +2169,7 @@ class SelfTest(object):
         win = self.win
         if not win.font_fit_available():
             self.feat_notes.append("keeping the font's fit: this build of the engine cannot")
-            self.features_done()
+            self.features_word_space()
             return
         # at Looseness 0 every kind of letter sits at the font's own tightness (the slider moves from there)
         win.w.tightness.set(0.0)
@@ -2205,6 +2221,46 @@ class SelfTest(object):
                        % (len(off), n, off[:5]))
         self.feat_notes.append("staying close at 100 %%: %d glyphs keep the font's sidebearings, %d pairs of the "
                                "sample kerned" % (n - len(off), win.right.kerned_pairs))
+        self.call_window(FEATURES, win.set_stay_close, 0.0)
+        self.wait(self._features_ready, self.features_word_space, 120.0, "the preview no longer staying close")
+
+    def features_word_space(self):
+        """The word space as designers set it: Kinetikern3's pane shows it at once (nothing is solved again)."""
+        win = self.win
+        if not hasattr(win, "set_word_space"):
+            self.features_done()
+            return
+        self.call_window(FEATURES, win.set_word_space, "convention")
+        self.wait(self._features_ready, self.features_word_space_ready, 120.0,
+                  "the preview with the word space as designers set it")
+
+    def features_word_space_ready(self):
+        win = self.win
+        ws = win.word_space_for()
+        chars = list(getattr(win.right, "chars", None) or ())
+        k = next((i for i, c in enumerate(chars) if c == " "), None)
+        if ws is None or k is None:
+            self.feat_notes.append("the word space: no blank word space and n in the font, or no space in the "
+                                   "sample; not tested")
+        else:
+            space, nbsp, before, after, share = ws
+            got = win.right.view.textStorage().attribute_atIndex_effectiveRange_(NSKernAttributeName, k, None)
+            got = got[0] if isinstance(got, tuple) else got
+            kp = sys.modules[type(win.right).__module__]
+            scale = float(win._point_size()) / win.snapshot.upm
+            shown = (float(got) + kp._SPACE_ADVANCE) / scale if got is not None else None
+            per = 1000.0 / win.snapshot.upm
+            if shown is None or abs(shown - after) > 0.01:
+                self.error("the word space as designers set it: Kinetikern3's pane shows a space of %s, not %s"
+                           % (_num(shown), _num(after)))
+            if nbsp:
+                with_it = "the no-break space with it"
+            elif win.snapshot.char_map.get("\u00a0") == space:
+                with_it = "the no-break space is the same glyph"
+            else:
+                with_it = "no blank no-break space as wide"
+            self.feat_notes.append("the word space as designers set it: %s %s → %s in Kinetikern3's pane (%.2f of "
+                                   "the n), %s" % (space, _num(before), _num(after), share, with_it))
         self.features_done()
 
     def features_done(self):

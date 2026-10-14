@@ -82,6 +82,7 @@ import kk3_apply as ka  # noqa: E402
 import kk3_bridge as kb  # noqa: E402
 import kk3_groups as kg  # noqa: E402
 import kk3_harness as kh  # noqa: E402
+import kk3_punctuation as kpu  # noqa: E402
 import kk3_snapshot as ks  # noqa: E402
 
 FAILURES = []
@@ -545,6 +546,65 @@ def test_slant(engine):
     apply_and_revert(engine, italic_font(12.0), "the synthetic font at 12°")
 
 
+def blank_info(info):
+    """As the window's _blank_info: no outline, or one of no size."""
+    b = info.bounds
+    return info.empty or (b is not None and b[2] == 0 and b[3] == 0)
+
+
+def word_space_arg(snap, mode="step"):
+    """The word space setting for Apply as the window builds it (kk3_window._word_space_apply_arg): the blank
+    word space, a blank no-break space as wide, the n; None without them."""
+    space, n = snap.char_map.get(" "), snap.char_map.get("n")
+    si, ni = (snap.glyph_info(space) if space else None), (snap.glyph_info(n) if n else None)
+    if si is None or ni is None or not blank_info(si) or not (si.width > 0 and ni.width > 0):
+        return None
+    nbsp = snap.char_map.get("\u00a0")
+    bi = snap.glyph_info(nbsp) if nbsp and nbsp != space else None
+    if bi is None or not blank_info(bi) or abs(bi.width - si.width) >= 0.5:
+        nbsp = None
+    return {"space": space, "nbsp": nbsp, "n": n, "mode": mode, "style": "text", "before": float(si.width),
+            "n_before": float(ni.width)}
+
+
+def test_word_spaces():
+    """kk3_apply._word_spaces: which spaces the word space setting sets, and to what."""
+    print("\n== the word space")
+    f = fontshell.RFont()
+    f.info.unitsPerEm = 1000
+    for name, cp, width in (("space", 0x20, 250), ("nbspace", 0xA0, 250), ("n", 0x6E, 500), ("thin", 0x2009, 250)):
+        g = f.newGlyph(name)
+        g.unicodes = [cp]
+        g.width = width
+    pen = f["n"].getPen()
+    _box(pen, 50, 0, 450, 500)
+    layer = f.naked().layers.defaultLayer
+    arg = {"space": "space", "nbsp": "nbspace", "n": "n", "mode": "step", "style": "text", "before": 250.0,
+           "n_before": 500.0}
+    out, notes = ka._word_spaces(layer, arg, 520.0)
+    check(out == {"space": ("n", 0.5), "nbspace": ("n", 0.5)} and "260" in notes["space"][0],
+          "in step with the n: the word space keeps half the n's advance, the no-break space with it (%s; %s)"
+          % (out, notes.get("space", ("",))[0]))
+    out, _notes = ka._word_spaces(layer, arg, 500.0)
+    check(out == {}, "in step with an n that keeps its advance: nothing to set (%s)" % out)
+    out, notes = ka._word_spaces(layer, dict(arg, mode="convention"), 500.0)
+    share = kpu.WORD_SPACE["text"][0]
+    check(out.get("space") == ("n", share) and "%d" % math.floor(share * 500 + 0.5) in notes["space"][0],
+          "as designers set it: %.3f of the n's advance (%s; %s)" % (share, out, notes.get("space", ("",))[0]))
+    check(ka._word_spaces(layer, dict(arg, mode="keep"), 520.0) == ({}, {}), "as it is: nothing to set")
+    check(ka._word_spaces(layer, arg, 520.0, frozen=set(["space"])) == ({}, {}),
+          "a frozen word space keeps its advance")
+    f["nbspace"].width = 300
+    out, _notes = ka._word_spaces(layer, arg, 520.0)
+    check(out == {"space": ("n", 0.5)}, "a no-break space of another width keeps it (%s)" % out)
+    f["nbspace"].width = 250
+    _box(f["space"].getPen(), 0, 0, 10, 10)
+    check(ka._word_spaces(layer, arg, 520.0) == ({}, {}), "a word space with an outline is left alone")
+    check(ka._space_width_for(520, 0.5) == 260 and ka._space_width_for(521, 0.5) == 261
+          and ka._space_width_for(300, None) == 300 and isinstance(ka._space_width_for(521.0, 0.5), int),
+          "a share of an advance is set in whole units")
+
+
 def apply_and_revert(engine, f, label, harness=False, groups=None):
     print("\n== %s: whole font, Apply, read back, Revert" % label)
     before = copy.deepcopy(font_state(f))
@@ -561,8 +621,13 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
     composites = [n for n in layer.keys() if len(layer[n].components)]
     shapes = dict((n, outline(layer, n)) for n in composites)
     t = time.perf_counter()
-    p = ka.plan(snap, result, True, frozen=frozen)
+    word_space = word_space_arg(snap)
+    p = ka.plan(snap, result, True, frozen=frozen, word_space=word_space)
     plan_ms = (time.perf_counter() - t) * 1000.0
+    word_was = None
+    if word_space is not None:
+        nb = word_space["nbsp"]
+        word_was = (f[word_space["space"]].width, f[word_space["n"]].width, f[nb].width if nb else None)
     space, period = snap.char_map.get("\u2008"), snap.char_map.get(".")
     space_was = (f[space].width, f[period].width) if space is not None and period is not None else None
     fspace, zero = snap.char_map.get("\u2007"), snap.char_map.get("0")
@@ -590,6 +655,20 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
             check(p.spaces.get(fspace) == zero and abs(f[fspace].width - f[zero].width) < 1e-6,
                   "%s: the figure space keeps the zero's advance (before %s and %s, after %s and %s)"
                   % (label, figure_was[0], figure_was[1], f[fspace].width, f[zero].width))
+    # the word space keeps its share of the n's advance (the window's default), a no-break space as wide with it
+    if word_was is not None:
+        ws, wn, nb = word_space["space"], word_space["n"], word_space["nbsp"]
+        share = word_was[0] / word_was[1]
+        want = int(math.floor(share * f[wn].width + 0.5))
+        moved = abs(want - word_was[0]) >= 0.5
+        target = p.spaces.get(ws)
+        check((target is not None and target[0] == wn and abs(f[ws].width - want) < 1e-9) if moved
+              else (target is None and f[ws].width == word_was[0]),
+              "%s: the word space keeps its share of the n's advance (space %s → %s, n %s → %s)"
+              % (label, word_was[0], f[ws].width, word_was[1], f[wn].width))
+        if nb:
+            check(f[nb].width == f[ws].width and type(f[nb].width) is type(f[ws].width),
+                  "%s: the no-break space goes with it (%s → %s)" % (label, word_was[2], f[nb].width))
     check(summary["ok"] and not summary.get("error"),
           "%s: Apply reads back as planned (%d kerning pairs, %d removed, %d group sides, %d glyphs re-spaced; "
           "examples %s)" % (label, summary["kerning_entries"], summary["entries_removed"], summary["group_sides_set"],
@@ -1276,6 +1355,7 @@ def main():
         apply_and_revert(engine, f, "synthetic font")
         apply_and_revert(engine, synthetic_font(), "synthetic font with the designer harness", harness=True)
         test_figure_space(engine)
+        test_word_spaces()
         test_groups(engine)
         test_by_category(engine)
         test_conflict(engine)
