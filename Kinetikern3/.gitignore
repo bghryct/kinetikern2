@@ -1,0 +1,5 @@
+# build outputs (build.sh puts the library into the bundle; that copy is kept)
+engine/target/
+__pycache__/
+*.pyc
+.DS_Store

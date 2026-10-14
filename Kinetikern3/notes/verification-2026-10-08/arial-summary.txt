@@ -1,0 +1,18 @@
+Kinetikern2 self-test PASSED — /System/Library/Fonts/Supplemental/Arial.ttf, Glyphs 3.5.1 (3534.0), engine kinetikern2 2.0.0
+  preview ready after 5.2 s: 2674 spacing glyphs (outlines read in 1201 ms), 42 kerned in the sample, 494 entries
+  cancelled the whole-font run at Phase 2/3: Evaluating pairs [31%] · 2 s; the window stopped it in 2 ms
+  whole-font run 18.6 s on 7 threads: 1951 kerned glyphs, 2336295 pairs in scope, 548858 class pairs, 29988 entries (332560 before the budget)
+  Apply 2.50 s: 29988 kerning entries, 3398 group sides, 4002 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches
+  Revert 2.16 s: kerning (908 entries), groups and sidebearings of 2674 glyphs are as before Apply
+  Spacing Groups window, driven like a user: 19 of 19 steps as expected (click, Shift-click, Command-click, drag, All/None/Invert, filter, sections, New Group, name, Freeze, sliders, no group, take out and put back)
+  spacing groups: 354 Latin capitals frozen, 26 figures at Looseness +0.4 and 50% force; the Spacing Groups window opened in 178 ms, the Pairs window in 56 ms
+  spacing groups: whole font 14.0 s, Looseness fitted to the frozen capitals -0.17, 29945 entries, 0 between frozen glyphs, 0 frozen glyphs moved
+  pairs window (the font as it is): 2336295 pairs in 19.8 s; loosest ldot florin +233, questiondown florin +229, uni02D3 florin +212; tightest fraction uniA721 -461, fraction uniA720 -461, uniA718 uniA721 -447
+  spacing groups Apply: 0 frozen glyphs and 0 kerning entries between frozen glyphs changed; 10 figures re-spaced
+  pairs window after Apply (read again): mean difference 0.1 units per 1000 em
+  spacing groups Revert: the font is as before
+  longest main-thread stall while the window worked: 228 ms (spacing groups); limit 500 ms
+  main thread held by open window: up to 353 ms
+  main thread held by apply: up to 65 ms
+  main thread held by revert: up to 27 ms
+exit 0

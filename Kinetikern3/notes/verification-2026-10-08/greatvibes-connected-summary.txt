@@ -1,0 +1,23 @@
+    Finished `release` profile [optimized] target(s) in 0.04s
+Kinetikern2 self-test PASSED — /private/tmp/claude-501/-Users-mirkovelimirovic-Desktop-KinetiKern/e47597b3-a4df-43ba-9d26-d6f84eb668cd/scratchpad/fonts/GreatVibes-Regular.ttf, Glyphs 3.5.1 (3534.0), engine kinetikern2 2.0.0
+  preview ready after 11.9 s: 1839 spacing glyphs (outlines read in 1225 ms), 42 kerned in the sample, 799 entries
+  cancelled the whole-font run at Phase 2/3: Evaluating pairs [30%] · 11 s; the window stopped it in 2 ms
+  whole-font run 143.5 s on 7 threads: 1821 kerned glyphs, 2469079 pairs in scope, 474308 class pairs, 29727 entries (601743 before the budget)
+  Apply 3.70 s: 29727 kerning entries, 3231 group sides, 3678 sidebearings; read back 200 entries and all groups and sidebearings: 0 mismatches
+  Revert 2.70 s: kerning (1215 entries), groups and sidebearings of 1839 glyphs are as before Apply
+  designer harness: 607 glyph sides and 2005 pairs corrected (stem 61, largest side shift 68 per 1000 em); the preview moved every side and pair exactly as planned; the Designer Harness window lists 80 pairs, e.g. L bullet +79, L bracketright +77, G bracketright +76, z bracketright +75; opened in 107 ms
+  Designer Harness window, Letters: 80 pairs, e.g. AA, Yq, Yo, ET, Ye, Yc
+  designer harness, Display conventions picked in its window: 607 glyph sides and 2590 pairs corrected, the preview moved every side as planned (period -9/-6, comma -8/+2, hyphen -15/-12, question +18/+4)
+  designer harness Apply: 49 glyphs the harness shifted written as the preview showed them (left/right shift per 1000 em, e.g. A -9/-9, B +2/-7, C -5/+11, E +2/+20, F +2/+13, G -5/+8)
+  designer harness Revert: the font is as before
+  designer harness off: every glyph back to Kinetikern2's own spacing
+  connected script: 1,615 of 1,630 letters join (found in 63 ms on the main thread); 884 of 902 lowercase letters join on the right
+  connected script: 1368 join pairs in the sample, 0 kerned (should be 0), 761 overlapping as drawn
+  connected script: a period after a joining letter keeps its distance (closest Y +20 per 1000 em between the inks, 38 pairs)
+  connected script Apply: 42 glyphs written as the preview showed them
+  connected script Revert: the font is as before
+  connected script off: every glyph back to the spacing without joins
+  longest main-thread stall while the window worked: 107 ms (designer harness); limit 500 ms
+  main thread held by open window: up to 376 ms
+  main thread held by apply: up to 74 ms
+  main thread held by revert: up to 46 ms

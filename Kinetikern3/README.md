@@ -1,0 +1,1480 @@
+# Kinetikern3
+
+A Glyphs 3 plugin that spaces and kerns a whole font with a multi-threaded
+Rust engine. It is the rebuild of *Kinetic SDF Kerning* (v1, in the folder
+above this one) and keeps v1's model unchanged:
+
+* **Pass 1, macro rhythm:** every glyph's sidebearings come from a kinetic
+  equilibrium over all glyph triplets: spring tension against bounding
+  repulsion, with margin white measured by DMAT disk packing.
+* **Pass 2, micro SDF kerning:** every pair relaxes in a signed-distance
+  contour field sampled by adaptive rays. The pair-specific part becomes
+  kerning, held back by collision and crevice floors.
+
+What is new is everything around the model:
+
+* **Whole-font runs** are background jobs with a progress bar and Cancel.
+  Glyphs never waits on the engine.
+* **Class kerning:** the output is class pairs plus exceptions, sized by an
+  ignore threshold and a pair budget, instead of millions of glyph pairs.
+* **Apply** writes in slices, with undo registration off, and keeps its own
+  **Revert Last Apply**.
+* **Live preview:** the sample text stays live while all of this happens.
+
+*Verification* below measures it against v1: output, speed and memory.
+
+**RoboFont:** [RobofontPlugin](RobofontPlugin/README.md) is a port to
+RoboFont 4 with the same engine, window and tools.
+
+All lengths below are in **units per 1000 em** unless a font's own units are
+named. Arial has 2048 UPM, so its default threshold of 5/1000 em is 10.24
+font units.
+
+```
+Kinetikern3/
+├── build.sh                          build, test, install, verify (below)
+├── engine/                           Rust crate (cdylib) → libkinetikern3.dylib
+│   └── src/
+│       ├── lib.rs                    C ABI: #[repr(C)] structs, kk3_* functions
+│       ├── api.rs                    Rust API for tools (Spacing QA, tests)
+│       ├── job.rs                    asynchronous jobs, progress atomics, cancel
+│       ├── engine.rs                 Phase 1: profiles, DMAT, per-side rules; Pass 1
+│       ├── run.rs                    a solve: pair scope, glyph pairs or classes, budget
+│       ├── classes.rs                side classes, member differences
+│       ├── pass2.rs                  the pair kernel and the window solver
+│       ├── measure.rs                the font's pairs against a solve (Pairs window)
+│       ├── slant.rs                  the slant a design's stems show, and when to measure
+│       │                             along it (Spacing QA's detector and rule)
+│       ├── joins.rs                  connected scripts: the detector, join bands
+│       ├── contact.rs                ink contact: touch sets, windows, crossings
+│       ├── checker.rs                the join checker, Keep joins, the decoration test
+│       ├── clock.rs                  timings (a stand-in on WebAssembly)
+│       └── geometry.rs, profile.rs,  v1's model (adaptive SDF profiles, DMAT,
+│           dmat.rs, physics.rs       Pass 1 / Pass 2 physics)
+├── plugin/Kinetikern3.glyphsPlugin/Contents/Resources/
+│   ├── plugin.py                     GeneralPlugin: Filter ▸ Kinetikern3…, test hooks
+│   ├── kk3_window.py                 the window; one timer drives everything
+│   ├── kk3_snapshot.py               reads a master into engine input, in slices
+│   ├── kk3_proof.py                  the two TextKit proofing panes
+│   ├── kk3_apply.py                  plan, apply and revert, in slices
+│   ├── kk3_bridge.py                 ctypes mirror of the C ABI (no Glyphs imports)
+│   ├── kk3_groups.py,                spacing groups and their window
+│   │   kk3_groups_window.py
+│   ├── kk3_pairs_window.py           the Pairs window
+│   ├── kk3_harness.py,               the designer harness, its learned table
+│   │   kk3_harness.json,             and its window
+│   │   kk3_harness_window.py
+│   ├── kk3_punctuation.py,           punctuation by convention and its learned
+│   │   kk3_punctuation.json          table
+│   ├── kk3_joins_window.py           the Joins window (shared with RoboFont)
+│   ├── kk3_args.py                   launch arguments of unattended test runs
+│   ├── kk3_selftest.py               the in-Glyphs self-test (build.sh --verify)
+│   └── libkinetikern3.dylib          built by build.sh
+├── notes/                            design notes and verification reports
+├── tools/                            equivalence gates, benchmark, timings, UI test,
+│                                     the harness's data and learner, the punctuation
+│                                     conventions' learner
+└── results/benchmark.json            the 73-font benchmark
+```
+
+## Install
+
+Requirements:
+- macOS 11 or later.
+- Glyphs 3, with the *Python* and *Vanilla* modules from Plugin Manager ▸ Modules.
+- Rust 1.74 or later, for building the engine.
+
+```bash
+cd Kinetikern3
+./build.sh --test --install
+```
+
+Then restart Glyphs, open a font and choose **Filter ▸ Kinetikern3…**.
+Kinetikern3 can be installed next to v1: every module, Objective-C class and
+preference key has a name of its own.
+
+| `build.sh` option | What it does |
+|---|---|
+| *(none)* | Builds the native library (arm64 on Apple Silicon) and puts it into the bundle. |
+| `--test` | Runs the engine's unit tests first (`cargo test --release`). |
+| `--universal` | Builds arm64 + x86_64. Needs `rustup target add x86_64-apple-darwin`. |
+| `--install` | Links the bundle into `~/Library/Application Support/Glyphs 3/Plugins/`. |
+| `--verify [font]` | Runs the in-Glyphs self-test in a temporary second Glyphs 3 (default font: Arial). |
+
+The library is replaced **atomically**: the script builds into a staging file
+of its own, sets the install name to `@rpath/libkinetikern3.dylib`, signs it
+ad hoc and renames it over the old one. A Glyphs or a tool that still has the
+old library loaded keeps the old file, and nothing ever loads a half-written
+one. An identical build reports `unchanged` and leaves the file alone.
+
+`--install` refuses to replace a real folder in the Plugins folder (an
+installed copy rather than a link). Move that copy to the Trash and run it
+again. `--verify` refuses unless the Plugins entry is a link to this bundle,
+so the test never runs an old copy.
+
+`--verify` never touches a Glyphs you have open. It starts its own instance
+(`open -n`) with the test's parameters on the command line, in the argument
+domain, so nothing is written to your preferences. It waits up to 10 minutes
+for `selftest.json`, prints the summary, and exits non-zero unless the test
+passed. The test quits its instance when it is done.
+
+## Using it
+
+Open a font and choose **Filter ▸ Kinetikern3…**. Choosing it again brings
+that font's window to the front.
+
+The window reads the selected master in slices, runs Phase 1 in the
+background, and then shows two panes over the sample text:
+- **Left:** the font as it is, with its own spacing and kerning.
+- **Right:** Kinetikern3's live result.
+
+The sample text takes several paragraphs and Glyphs' `/glyphname` escapes
+(`/T/o /f/parenright`). Scrolling any of the three text areas scrolls the
+other two.
+
+### Controls
+
+| Control | What it does |
+|---|---|
+| **Looseness / Tightness** | The ratio of Pass 1's spring tension to its bounding repulsion, which sets the rest gap of each rhythm group. The middle position (ratio 3.86) is v1's tuned median over 30 Google Fonts families. The label shows the resulting spring, repulsion and rest gaps. |
+| **SDF Kerning Intensity** | The coupling β of Pass 2's contour field, 0–200 %. 0 % switches kerning off; 100 % is v1's calibration against designers' kerning. |
+| **Ignore threshold** | 0–20 units per 1000 em (slider or field; default 5). Kerning values smaller than this are left out of the preview and of Apply. It applies to the final value, *after* the engine's own calibrated dead zone (1.5 % of the UPM on the raw contrast, from v1), not instead of it. The label also gives the value in the font's units. |
+| **Master** | The master that is read, solved and written. |
+| **Size** | Point size of the proofs. |
+| **Threads** | *Auto* uses all cores but one (7 of 8 on an M1), or pick 1 to all. Takes effect from the next job. |
+| **Max pairs** | The budget of a whole-font run: at most this many kerning entries, plus the kept joins' and the designer harness's entries, which come on top of it; the least important are left out (see *Budget* below). Default 30,000; empty or 0 means no limit. The note beside it warns when there is no limit and above 100,000 (large source files, slow exports). The sample-text preview has no budget. |
+| **↻** | Reads the master again, after you edit outlines in Glyphs. |
+| **Apply to** | *Glyphs in sample text* applies the preview. *Whole font* runs every glyph with progress and Cancel, then applies. |
+| **Replace existing kerning** | On by default. Removes the master's existing entries between the glyphs and groups that get new kerning. Existing pairs across scripts, which the engine never evaluates, are kept. Off: existing glyph pairs stay and keep overriding new class pairs (the dialog counts them). |
+| **Apply to Font** | Plans the writes, asks once in a dialog that lists what will change, then writes in slices with a progress bar. |
+| **Revert Last Apply** | Puts the kerning, groups and sidebearings back as they were before the last Apply. |
+| **Spacing Groups…** | Opens the group picker (see *Spacing groups* below): freeze parts of the font, or space them with their own Looseness and kerning force. |
+| **Pairs…** | Opens the Pairs window (see *Pairs, loosest to tightest* below). |
+| **Joins…** | Opens the Joins window of a connected script (see *Connected scripts* below): joins broken, nearly touching, fragile or crossing as drawn, what the preview does to the joins, drawing advice for the kept sides, proofs in an Edit tab. Its title gives the checker's count: *650 joins kept…*, or *121 joins break…*. |
+| **Designer harness** | On: corrections toward what designers of well-spaced fonts do, applied after the solve, in the preview, the whole-font run and Apply (see *Designer harness* below). The slider sets the strength, 0–100 % of what the data say. Off by default; the label says what it corrects for this master. |
+| **Harness…** | Opens the Designer Harness window: the pairs the harness changes most, drawn with and without it. |
+| **Punctuation** | Punctuation by convention (see below), on by default: each punctuation mark's sides set the way designers of well-spaced fonts set them, and each mark kerned with its own share of what its shape suggests: every mark Latin text uses (guillemets, low quotes, ¡ ¿, § ¶ † ‡…) and the symbols that sit with figures ($ € £ # + × …). A mark's case form takes its base mark's sides. Off: punctuation is spaced and kerned from its shape alone, and the designer harness leaves it alone too. |
+| **Small caps** | Small caps by convention (see *Figures by convention*), on by default: small caps (`a.sc`, `a.smcp`, `A.c2sc`, accented ones by their letter) spaced the way designers space them beside the capitals they follow. The model is already about as close to them as to the lowercase, so the gain is small. |
+| **Figures** | Figures by convention (see below), on by default: proportional figures (the default ones, or `.lf` / `.pnum` forms) spaced the way designers space them. From their shapes alone the model sets them 6–26 units per side too tight. Tabular figures keep their widths either way. Also what goes with figures: old-style figures, fractions (precomposed, and the numerators and denominators of a typed one), superscripts, subscripts and ordinals. |
+| **Conventions** | **Automatic** (default), **Text faces**, **Display** or **Handwriting**. Sets the punctuation's conventions, the harness's punctuation, and how far a capital reaches over its neighbour (see *Conventions and Pass 2's pair classes* below). Automatic follows handwriting for a connected script or a master whose stems lean without an italic angle, else text faces. |
+| **Connected script** | For scripts whose letters join (see *Connected scripts* below): finds the joins in the master's own spacing and kerning. A font whose letters do not join is spaced as usual, so it is on by default. The menu beside it: **Keep joins** (default) keeps every joining side's sidebearing and the master's kerning between two joining sides, so every join stays as drawn and the rest of the font is spaced around the letters; **Space joined letters** spaces the letter bodies without their join strokes and lets two joining letters overlap with no kerning (joins can break; Joins… counts them). A design whose glyphs touch by construction (a line or a grid through every glyph) keeps every side that touches. |
+| **Along the italic angle** | On an italic master (italic angle 3° or more, under 60°), measures its spacing along the angle: see *Italics* below. On by default; the checkbox names the master's angle and is disabled for an upright master (and for an angle of 60° or more, an error in the font). On a master that declares no angle but whose stems lean, it reads **Along the N° slant of its stems**, and Spacing QA's rule sets it (*Designs that lean without an italic angle* below); a click overrides the rule for that master. |
+| **Progress bar, Cancel** | Shows the current step: *Reading outlines*, *Phase 1/3: Analyzing SDFs*, *Phase 2/3: Evaluating pairs* (with seconds elapsed in a whole-font run), *Phase 3/3: Grouping & pruning*, *Planning*, *Applying*, *Reverting*. Cancel stops reading, Phase 1, a preview, a whole-font run or the planning of an Apply. Once Apply or Revert has started writing, it runs to the end. |
+
+The status line under the panes reports the last result. For example:
+- glyphs spaced and kerned;
+- entries, split into class pairs and exceptions, and those that kept joins
+  and the designer harness add after the budget;
+- how many entries the budget dropped;
+- timings and the number of threads.
+
+During a whole-font run, the controls that would restart it are disabled. The
+sample text stays editable, and the panes keep rendering.
+
+### Spacing groups
+
+**Spacing Groups…** opens a picker that paints glyphs into colour-coded
+groups. A group either has its own spacing or is frozen:
+
+- **Space.** The group's glyphs are spaced with a **Looseness offset** from the
+  main slider (−1 to +1) and kerned with a **kerning force** (0–300 % of the
+  main intensity). Figures can be looser, Cyrillic a touch tighter, fractions
+  kerned more gently, all in one run.
+- **Freeze.** The group's glyphs keep their sidebearings and groups, and the
+  kerning *between* frozen glyphs stays exactly as it is. Only the rest of the
+  font is spaced and kerned, including against the frozen glyphs. Use it to
+  space only the new characters of a finished font.
+- **Glyphs in no group** follow the main window's settings.
+
+The window has three parts:
+
+- **Sections.** Lists the font's glyphs by script and case (Latin ·
+  Uppercase, Cyrillic · Lowercase…), then figures (tabular, old-style,
+  fractions, superiors), punctuation, symbols and marks. Click a section to
+  select its glyphs, or Command-click to combine sections. There are also
+  **All / None / Invert**, **Glyphs in no group** and a name filter.
+- **Grid.** Every glyph of the master as a tile, like Glyphs' font view, tinted
+  with its group's colour; frozen glyphs carry a snowflake. Select with click,
+  Shift-click for a range, Command-click to toggle, or drag a rectangle.
+- **Groups.** **New Group**, then name it, pick a colour, choose **Space** or
+  **Freeze** and set its sliders. **Put Selected Glyphs into This Group**
+  assigns the selection, and **Take Selected Glyphs out of Their Groups** frees
+  it. Keep picking until every part of the font has the values you want.
+  **By Category** does the picking for the usual cases: the glyphs in no group
+  yet go into **Figures**, **Punctuation**, **Symbols** and one group for the
+  letters of each script but Latin (**Cyrillic**, **Greek**…), so each kind
+  has a Looseness and kerning force of its own. New groups start at the main
+  settings (nothing changes until a slider moves); a group of one of those
+  names that is there already is used, its settings kept; glyphs already in
+  a group stay where they are. Latin letters keep the main sliders.
+
+**Match the frozen spacing** (on by default) first fits the Looseness to the
+frozen glyphs' own sidebearings, so new glyphs come out as tight or loose as
+the spacing already in the font. The main slider is then an offset from that
+fit, and the window shows the fitted value.
+
+Every change previews at once. The groups are saved in the font
+(`font.userData["com.mirkovelimirovic.Kinetikern3.spacingGroups"]`), so they
+come back with the .glyphs file.
+
+How the engine handles groups:
+
+- **Pass 1:** each glyph's rest gap is shifted by its group's Looseness
+  offset, half on each side. Frozen glyphs are fixed at their current
+  sidebearings.
+- **Pass 2:** a pair's force is the coupling times the mean of the two
+  glyphs' forces. Classes never mix frozen and free glyphs, and pairs between
+  two frozen glyphs or classes are not kerned.
+- **Apply:** frozen glyphs keep their sidebearings and groups, and existing
+  kerning between frozen keys is kept even with *Replace* on. A free glyph that
+  shared a kerning group with frozen glyphs leaves it for a group of its own.
+  The dialog says how many glyphs that affects.
+
+### Pairs, loosest to tightest
+
+**Pairs…** measures the font as it is now against Kinetikern3. For every pair
+in scope (the sample text, the whole font, or one section), it compares the
+white the eye sees now — right sidebearing + left sidebearing + kerning —
+with the white Kinetikern3 gives it. The font's overall tightness is taken
+out first, so the list shows what departs from the font's *own* rhythm:
+
+- **Loosest first / Tightest first**, the top 50 to 500 pairs, with Δ in units per
+  1000 em, the gap now and Kinetikern3's, and both kerning values.
+- A preview draws the selected pair as it is and as Kinetikern3 would set it.
+  Double-click a pair, or use **Open in Edit Tab**, to look at it in Glyphs.
+
+The engine measures all pairs of a whole font in seconds, off the main
+thread (Arial's 2.3 million: about 20 s); a whole-font scope runs the
+whole-font job first if it has no result yet.
+
+### Punctuation by convention
+
+Kinetikern3 reads every glyph by its shape, and punctuation is where that
+reading and designers part most. Measured against 1,594 Google Fonts
+families, pairs with a punctuation mark sit about 1.7 times as far from
+their designers as pairs of letters (sans serifs 1.9: 28.2 against 14.6 units
+per 1000 em; handwriting 1.3). Two things account for most of it:
+
+- **Each mark's sides.** Designers space a period, a hyphen, quotes or a
+  parenthesis by conventions of their own, relative to the letters around
+  them, that the shapes alone do not give.
+- **Kerning, mark by mark.** Designers tuck a period or a comma well under a
+  T, V, Y or r: about 0.7 of what the shapes suggest. They hardly kern a
+  hyphen, a dash or a quote (about a third), and two marks side by side
+  hardly at all.
+
+**Punctuation** (on by default) does both, for every mark Latin text uses
+and for the symbols that sit with figures:
+
+1. In Pass 1 each side of a mark moves by `c + m·s/50 + r·ρ/50` units per
+   1000 em. Here s is the side's own sidebearing as the model sets it, and ρ
+   is the font's letter rhythm (the median sidebearing of its lowercase).
+   This blends the model's reading of the mark with the font's own rhythm,
+   in the proportion designers follow for that mark. c depends on the
+   conventions (text faces, display, handwriting); m and r are shared. The
+   shift comes before the per-side rules, so metrics keys, auto-aligned
+   composites, frozen glyphs and kept joins keep theirs.
+2. In Pass 2 each side of a mark keeps its own share of the kerning its
+   shape suggests, and a pair takes the product of its two facing sides'
+   shares (a letter's is 1):
+
+   | Mark | Left, right | Mark | Left, right |
+   |---|---|---|---|
+   | period | 0.70, 0.55 | hyphen | 0.35, 0.35 |
+   | comma | 0.65, 0.55 | en, em dash | 0.30, 0.35 |
+   | colon, semicolon | 0.60, 0.45; 0.55, 0.40 | quotes ‘ ’ “ ” | 0.30–0.40, 0.50 |
+   | ellipsis | 0.60, 0.35 | ' " | 0.40, 0.40–0.45 |
+   | parenleft, parenright | 0.65, 0.55; 0.50, 0.50 | degree, bullet, · | 0.05, 0.20–0.25 |
+
+   Marks and symbols without a share of their own keep 0.3 on each side.
+3. A mark's case form (`parenleft.case`, `guillemetleft.case`) takes its base
+   mark's sides. Designers raise it for capitals and do not space it again:
+   in the 145–182 Google Fonts families whose `case` feature maps a mark
+   (( ) [ ] { } - – — « » ‹ › ¡ ¿ @ · •), 7 case forms in 10 have exactly
+   the base mark's sidebearings, and most of the rest are a few units looser
+   (median +2 on the left, +4 on the right). The median difference is 0.
+
+Which marks:
+
+- **The GF Latin Kernel's 36** (`. , : ; ! ? - ' " ( ) / & ’ % * @ [ \ ]` and
+  `` ` { | } © ® ° · – — ‘ “ ” • … ™``), learned against the letters.
+- **36 more** that Latin text uses: ¡ ¿ « » ‹ › ‚ „ ‛ ‟ § ¶ † ‡ ‰ ‱ ′ ″ ‴ ¦,
+  the other hyphens and dashes (‐ ‑ ‒ ―), the leaders ․ ‥ and ‧, ‣ ‼ ‽ ‾ ※
+  ⁂, the fraction slash ⁄, the modifier apostrophe ʼ of Ukrainian and
+  Belarusian, and №. A side that faces figures in text (‰ after 5, № before
+  it, ⁄ between) is learned against the figures; every other against the
+  letters.
+- **15 symbols that sit with figures**: # $ + < = > ^ ~ ¢ £ ¥ × ÷ € −,
+  learned against the figures.
+- **Two canonical twins**: the Greek question mark ; and ano teleia · take
+  the semicolon's and the middle dot's conventions. Unicode makes them the
+  same characters.
+
+Each gets its own conventions, those of its twin (a non-breaking hyphen the
+hyphen's, ‽ the question mark's), or none (the model's reading, kerned at
+0.3), whichever leaves its pairs closest to the designers held out. Eight
+take their twin's. The primes ′ ″ ‴, = ¥ − and the one-dot leader take none:
+learning did not bring them closer. Held out, the mean difference over each
+mark's pairs with the letters or figures it faces, with the switch off /
+with no convention (kerned at 0.3) / with its own:
+
+| Mark | Families | Off / none / its own | Mark | Families | Off / none / its own |
+|---|---|---|---|---|---|
+| ¿ | 1,153 | 40.9 / 36.5 / 23.3 | + | 1,189 | 59.3 / 48.1 / 26.1 |
+| ¡ | 1,152 | 21.7 / 20.7 / 19.9 | < > | 1,189 | 50.8, 55.0 / 44.8, 46.0 / 27.7, 27.8 |
+| « » | 1,154 | 24.7, 24.2 / 20.5, 20.6 / 19.1, 19.1 | × ÷ | 1,172 | 49.9, 44.8 / 45.6, 34.2 / 29.6, 26.2 |
+| ‚ „ | 1,137 | 26.3, 24.9 / 26.4, 25.2 / 23.8, 22.0 | # | 1,188 | 34.9 / 31.0 / 24.3 |
+| § ¶ | 1,142 | 25.2, 28.1 / 24.3, 25.7 / 22.8, 23.6 | $ | 1,187 | 31.8 / 30.6 / 23.0 |
+| † ‡ | 820 | 43.4, 37.0 / 35.7, 34.0 / 29.1, 29.5 | ¢ £ € | 1,148–1,165 | 29.6–38.3 / 27.0–35.7 / 24.7–26.1 |
+| ‰ | 818 | 24.9 / 21.3 / 19.3 | ⁄ | 851 | 87.3 / 92.2 / 84.8 |
+| ― | 283 | 47.7 / 51.8 / 35.1 | ʼ | 427 | 44.2 / 42.6 / 40.5 |
+
+Off: punctuation and these symbols are spaced and kerned from their shapes
+alone, like the letters, and the designer harness (learned on top of these
+conventions) leaves them alone too.
+
+The table (`kk3_punctuation.json`, id `2026-10-12-3d6a0b43`) is learned by
+`tools/kk3_punctuation_learn.py` from Spacing QA's measurements. Those are
+the bare model at each family's best-fit Looseness, and every pair of the GF
+Latin Kernel's 88 scored glyphs; for the rest, `punctuation-data
+--all-punctuation` reads every font with the marks beyond the kernel too, and
+`--small-forms` with the superscripts, subscripts and ordinals and
+`--feature-forms` with what features reach (added with `--small-data` or
+`--feature-data … --base`, which leave every other entry as it was; what
+Spacing QA applies keeps the id `2026-10-11-f9fe7de3`, its `qa_id`).
+The learner uses the 1,191 families that Google Fonts' reviewers rate well
+spaced (`/Quality/Spacing` ≥ 70). It fits the side shifts and the shares in
+turn. Both are held out by family (five folds) and checked on 30 macOS
+system fonts that it never saw. The kernel's 36 marks are learned first and
+kept as they were (`kernel_id` `2026-10-11-9f6bcf92`).
+
+Shape error (units per 1000 em) for all pairs / pairs with punctuation /
+letter pairs / a period or comma under T, V, W, Y, P, F, r, v, w or y, on
+the kernel's glyphs:
+
+| Fonts | v1 | Pass 2's pair classes (text faces') | + Punctuation (held out) |
+|---|---|---|---|
+| Sans serif (693) | 22.95 / 28.23 / 14.52 / 30.8 | 22.96 / 28.23 / 14.56 / 30.8 | 18.15 / 20.13 / 14.20 / 30.5 |
+| Serif (348) | 26.66 / 31.53 / 19.04 / 37.9 | 26.68 / 31.53 / 19.01 / 37.8 | 21.27 / 23.24 / 17.14 / 38.5 |
+| Display (405) | 24.13 / 26.85 / 19.61 / 32.1 | 24.13 / 26.85 / 19.46 / 32.1 | 19.77 / 20.93 / 16.83 / 32.3 |
+| Handwriting (148) | 33.91 / 36.68 / 29.94 / 43.6 | 33.79 / 36.68 / 28.56 / 43.5 | 29.93 / 31.58 / 25.49 / 43.1 |
+| macOS system fonts (30, never used) | 32.21 / 35.76 / 23.53 / 54.0 | 32.27 / 35.76 / 23.48 / 54.0 | 24.80 / 28.36 / 20.68 / 53.1 |
+
+The first version kerned every pair with punctuation at one share, 0.3. It
+gave nearly the same totals. But it put a period or comma under an overhang
+further from the designers than the switch off did: 39.1, 43.9 and 79.0
+against 30.8, 37.8 and 54.0 for sans serifs, serifs and the system fonts. A
+total over all pairs weighs a T. as much as a `]@`; the shares per mark fix
+the pairs readers see. On Arial in the self-test, T. goes from −72 to −58
+and V. from −77 to −63 (Arial's own: −111 and −92), while n. o, n) stay
+unkerned; + gains 34 and 36 units on its sides, ¿ 7 and 47. The study
+behind it, partner by partner and mark by mark, is in
+`notes/punctuation-by-convention.md`.
+
+### Figures by convention
+
+From their shapes alone the model sets figures tighter than designers do.
+Across the 1,151 Google Fonts families with proportional figures, the
+designers' figures sit a median 6–26 units per side looser than the model's,
+the right sides more than the left, the 1 most:
+
+| Figure | Left, right | Figure | Left, right |
+|---|---|---|---|
+| 0 | +7.0, +12.0 | 5 | +11.7, +15.4 |
+| 1 | +16.5, +25.5 | 6 | +8.2, +14.9 |
+| 2 | +11.9, +18.0 | 7 | +15.6, +11.5 |
+| 3 | +13.6, +14.9 | 8 | +8.6, +14.1 |
+| 4 | +6.5, +15.1 | 9 | +9.2, +13.5 |
+
+**Figures** (on by default) moves each side of each proportional figure the
+same way as punctuation (`c + m·s/50 + r·ρ/50`). That means the default figures,
+and the proportional lining forms under a suffix (`one.lf`, `one.pnum`,
+`one.plf`) that a font has when its default figures are tabular or old-style.
+Old-style forms (`.osf`) keep their sides, because they were not measured.
+The conventions are learned against the figures in
+the families with proportional figures (their reports say whether a family's
+figures share one width) and kerned as the model kerns them. Held out, over
+each figure's pairs with figures: the 1 from 37.5 to 26.8, the 2 from 29.1
+to 22.0, the 3 from 28.1 to 21.5, the 7 from 29.5 to 24.4, the 0 from 24.5 to
+21.1. Tabular figures (default figures that share one width, and `.tf`,
+`.tosf` and `.tnum` forms) keep their widths either way: the engine never
+moves a glyph whose advance it keeps. On Tangerine in the self-test the 1
+gains 16 and 21 units, the 3 25 and 11.
+
+**Superscripts, subscripts and ordinals** go with the figures, so the
+Figures switch covers them too. They were measured the same way, over the
+same 1,625 families (`punctuation-data --small-forms`). That means the
+superscript figures ⁰–⁹, the subscripts ₀–₉ and the ordinals ª º, and each
+glyph's advance, so that a set sharing one width can be told apart.
+Designers keep superscripts about 0.8 times their figure's sidebearings at
+0.59 times its size, more openly than the model reads the small shapes. They
+set the ordinals closer to the figure before them (1º, 2ª). Held out, over
+each form's pairs:
+
+| Form | Families | Model / with its conventions |
+|---|---:|---|
+| ¹ | 899 | 28.4 / 25.1 |
+| ² ³ | 901 | 22.2, 22.7 / 21.6, 21.9 |
+| ⁷ | 377 | 34.3 / 23.7 |
+| the other superscripts | 376–624 | 18.4–23.5 / 18.2–23.1 |
+| ₁ ₄ | 379, 385 | 31.4, 27.5 / 25.1, 24.4 |
+| the other subscripts | 352–384 | 20.2–23.3 / 20.0–21.2 |
+| ª º | 1,130, 1,127 | 25.1, 25.0 / 22.3, 22.1 |
+
+₂ and ₉ take their superscripts' conventions, which leave them closer held
+out. On the 30 macOS fonts never used for fitting, ¹ goes from 42.0 to 32.1
+and ª º from 32.6 and 31.8 to 27.0 and 24.3. ² and ³ come out about a unit
+further (25.3 to 26.5, 26.2 to 27.1). They keep the model's full kerning, as
+figures do. A figure's `.sups` or `.sinf` form takes its encoded form's
+conventions. A set of superscripts or subscripts that shares one width
+(Arial's ¹ ² ³: 682 each) is a tabular design and is left as the model
+spaces it. The table records them under `small_forms`. Spacing QA does not
+measure them, so its reports keep their stamp (`qa_id`).
+
+**Old-style figures, fractions and small caps** were measured the same way,
+over the same families. Most fonts reach these glyphs only through OpenType
+features, so `punctuation-data --feature-forms` shapes text with HarfBuzz the
+way a reader gets it:
+- `0123456789` with `onum` gives the old-style figures, paired with each
+  other and with letters (in 1987, 10am);
+- `a–z` with `smcp` gives the small caps, paired with each other and with
+  capitals (Caps and Small Caps);
+- `1⁄2` gives the numerator, slash and denominator, which HarfBuzz sets by
+  itself around U+2044;
+- ½ ¼ ¾ ⅓ ⅔ ⅛ ⅜ ⅝ ⅞ come by character, after a figure (1½).
+
+Each pair is kerned as shaping kerns it. What came of it:
+- **Old-style figures** (151 reference families with a separate set) take
+  conventions of their own under the Figures switch. Designers space them
+  more openly than the model, as they do lining figures. Held out, over
+  their pairs with letters, the 1 comes from 26.7 to 23.2 units off, the 3
+  from 22.6 to 20.1, the 5 from 21.9 to 19.3; the others gain up to a unit
+  and a half. A `.osf`, `.onum` or `.oldstyle` form takes them. An old-style
+  set that shares one width keeps it, and `.tosf` is tabular anyway.
+- **Precomposed fractions** (905 families with ½) take conventions of their
+  own under the Figures switch: ½ 29.6 → 24.9, ¼ 28.2 → 24.1, ⅓ 24.2 → 20.6,
+  ⅛ 23.2 → 20.3. ¾ ⅔ ⅜ ⅝ ⅞ take their twins'.
+- **The slash in a fraction.** Designers tuck the numerator and the
+  denominator well under the slash: in 318 reference families the model's
+  pairs there are 108.7 units off the designers on average. The slash's
+  conventions learned beside full-size figures already bring that to 66.2.
+  Its own conventions in a fraction ("fraction.frac", about −130 to −140
+  units a side, kerned at 0.45 and 0.5) bring it to 52.8; on the macOS fonts
+  124.3 → 24.9. A master with numerators and denominators (`.numr` or
+  `.numerator`, `.dnom` or `.denominator`) gives its U+2044 these, under the
+  Punctuation switch. None of 120 fonts checked substitutes the slash itself
+  in a fraction.
+- **Numerators and denominators** take conventions of their own under the
+  Figures switch. They are learned on the slash's: each side keeps what is
+  left once the slash has its conventions. Over every pair of a fraction
+  (numerator–numerator, numerator–slash, slash–denominator,
+  denominator–denominator), held out, the model is 36.3 units off the
+  designers, the slash's conventions bring that to 31.2, and the numerators'
+  and denominators' to 25.0 (318 reference families; macOS fonts 42.1 → 21.2).
+  `.numr` / `.numerator` and `.dnom` / `.denominator` forms take them, and a
+  set that shares one width keeps it.
+- **Small caps** (128–131 reference families) take conventions of their own,
+  under a switch of their own, **Small caps**. They were learned against the
+  capitals they follow (Caps and Small Caps). The model is already about as
+  close to their designers as it is to the lowercase (17–21 units held out),
+  so the gain is small: about half a unit for most letters, and a 23.4 → 21.3
+  and x 20.4 → 18.7. j, s and u keep the model's spacing, because their own
+  conventions did not bring them closer. `.sc`, `.smcp` and `.c2sc` forms
+  take them, and accented small caps take their letter's (`aacute.sc` a's).
+  Some designers put a capital and its small cap in one kerning class
+  (Barlow's T and t.sc). That class's value then follows the small caps'
+  conventions, which differ by style.
+
+The table records these under `feature_forms` (id `2026-10-12-3d6a0b43`, its
+`qa_id` unchanged).
+
+### The word space
+
+Kinetikern3 does not set the word space: the space has no outline to read.
+Designers keep it in step with the lowercase. Across Google Fonts, text
+faces set it at a median 0.42 times the advance of the n (the middle half
+0.40–0.47), display faces 0.44 and handwriting 0.57 (freer: 0.47–0.70).
+After a whole-font run the status line says where the master's word space
+sits against that, for the n as Kinetikern3 spaces it. On Arial: *word
+space 569: text faces' designers set about 480 for an n this wide (most
+450–532)*. Nothing is written.
+
+**The punctuation space follows the period, the figure space the zero.**
+Unicode defines them as the width of a period and the width of a digit, and
+designers keep them that way. Across 1,852 Google Fonts, the punctuation
+space equals the period in 70 % of the 299 fonts that have one. The figure
+space equals a tabular figure in 67 % of 208. In fonts whose figures are all
+proportional it equals the zero in 42 %. (The no-break space equals the word
+space in 96 %.) Kinetikern3 moves the period's sides and the proportional
+figures' sides, but a space has no outline for it to read. So Apply keeps the
+master's spaces in step:
+- **The punctuation space** gets the period's new advance whenever it is
+  blank and exactly as wide as the period.
+- **The figure space** gets the zero's new advance whenever it is blank and
+  exactly as wide as the zero, and no figure keeps its advance. With tabular
+  figures (default figures that share one width, or `.tf` forms) it stands
+  for them; they keep their widths, and it keeps its own.
+
+Blank means no outline at all, or only a one-point dummy contour, which older
+TrueType fonts give their spaces; Arial's has one. Apply sets the spaces after
+the sidebearings, reads them back, and Revert Last Apply puts them back. The
+confirmation dialog names each space it sets. A space of another width is
+left as it is. The word space and the no-break space need nothing: neither is
+changed.
+
+### Conventions and Pass 2's pair classes
+
+The **Conventions** menu (Automatic, Text faces, Display, Handwriting) sets
+three things together: the punctuation's conventions, the harness's
+punctuation, and how far Pass 2 lets a capital reach over its neighbour.
+**Automatic** (the default) follows handwriting for a connected script (its
+letters join; a line drawn through every glyph does not count) or a master
+whose stems lean without an italic angle, and text faces otherwise. The label
+beside the harness names the conventions in use.
+
+Designers kern each kind of pair differently, and Pass 2 now does too
+(`pair_class`, `style_response` in `engine.rs`):
+- **Lowercase pairs and a capital before a lowercase letter** go without v1's
+  crevice floor, which kept a letter out of its neighbour's hollows. Across
+  the library the floor put these pairs further from their designers; pairs
+  with punctuation, which it brings closer, keep it, and so do pairs of
+  capitals and a lowercase letter before a capital. In Tangerine, v1 kerned fo +72, which pushed the
+  o out from under the f's hook. Now it is −8: the gap is −156 against the
+  designer's −196 (v1: −75).
+- **A lowercase letter before a capital** keeps growing past 20 units per
+  1000 em at half the rate, instead of saturating.
+- **Display** lets a capital reach further over the next lowercase letter
+  (past 20 units at 0.85 of the drive) and over the next capital (fully);
+  **handwriting** fully for both. In Tangerine, Ha goes from −59 to −87 with
+  handwriting's conventions (gap −67 against the designer's −125; the rest
+  is Pass 1, which reads the H's right side within its cap-height zone).
+
+Spacing QA uses the same classes, with each family's Google Fonts category
+choosing its conventions.
+
+### Designer harness
+
+Kinetikern3 spaces from the outlines alone. Measured against the text fonts
+on Google Fonts that people rate well spaced, it does some things
+consistently differently from their designers. **Designer harness** corrects
+those, after the solve and by as much as the data say (strength 100 %) or
+less. Without it the model is untouched.
+
+What the data say. Spacing QA has a report for every Google Fonts family:
+for every pair of the 88 scored glyphs of the GF Latin Kernel (letters,
+punctuation and the symbols spaced by their shape), the designer's gap minus
+the bare model's at the font's best-fit Looseness. The bare model has
+punctuation by convention on, so the harness learns what is left on top of
+it. The reference fonts are the sans serifs and serifs rated 70 or more on
+google/fonts' human `/Quality/Spacing` scale (472 families), checked at
+Regular and the variable ones also at 100–900 (1,685 observations). The
+median over them keeps the model's habits and averages out any one
+designer's taste. Units are per 1000 em, + = designers looser, at Regular and
+standard Looseness (fourth table, `2026-10-11-48ce3c68`):
+
+| Where | Correction | Notes |
+|---|---|---|
+| open sides of E, F, L, T | +15, +9, +5, +5 | E +31 at light weights, +22 when tight |
+| diagonals of A, V, W, Y, K | −7 to −11 | more when loose |
+| hyphen, dashes, quotes | +5 to +9 | what the conventions leave |
+| the bar | −22 to −26 | |
+| 473 pairs, beyond their two sides | | mostly quotes with a period, comma or A (−29 to −36), `//` −40 |
+
+On the families it was not learned from (half held out at a time) it brings
+the model 8 % closer to the designers (mean gap difference 20.3 → 18.6), and
+leaves no punctuation pair 10 units or more tighter than its designers (548 →
+0; looser 527 → 17). The bare model it starts from is already closer than
+the third table's (`2026-10-08-1b31cb2d`, 24.9 → 20.3 without the
+conventions): the conventions now do most of what that table did for
+punctuation.
+
+How it is applied (`kk3_harness.py`):
+- Each core glyph side gets `a + b·L + c·w + d·L·w`. L is the Looseness
+  slider (with any frozen-glyph fit). w is the weight: the log of the stem of
+  `I` (else `l`) per 1000 em, over 85. Both are clamped to the range the data
+  cover.
+- A side that follows another glyph (a metrics key, an auto-aligned
+  composite) gets that glyph's shift. Accented letters take their base
+  letter's; `.case` punctuation takes its base mark's.
+- Pair corrections go to the exact glyphs, as glyph–glyph kerning over
+  whatever class kerning the pair has. They are fitted after the side
+  corrections, on what those leave of each pair, where the median is 8 units
+  or more and 60 % of the observations agree on its sign. (The first table
+  fitted them before the sides with 70 % agreement. A pair the sides move a
+  lot then kept no correction when designers disagree on kerning it: a period
+  before v or w, which the sides tighten, came out 20–27 units tight.)
+- Frozen glyphs keep their sidebearings, and two frozen glyphs their kerning;
+  so do the sides and pairs that Keep joins keeps (*Connected scripts*).
+  Other scripts, figures and the symbols outside the GF Latin Kernel's 88
+  scored glyphs are left as the model spaces them (figures and symbols have
+  conventions of their own). With **Punctuation** off it leaves the
+  punctuation alone: it is learned on top of the conventions.
+- The engine applies all of it after the budget (`run::Harness`,
+  `kk3_solve_start3`), so the preview, the whole-font run, Apply and the
+  Pairs window see the same thing.
+
+**Conventions.** Display and handwriting faces space their punctuation more
+openly than text faces. The **Conventions** menu (in the main window and the
+Harness window) picks whose punctuation to follow; Display and Handwriting
+add, on top of the text faces' corrections, what the designers of that
+category do with punctuation alone: learned from the display and
+handwriting families rated 70 or more (227 and 172). Their letters keep the
+text faces' corrections.
+
+Does it help? The table was learned on half of the families and checked on
+the other half (mean distance between Kinetikern3 and the designers, units
+per 1000 em):
+
+| Pairs | Without → with the harness | Closer |
+|---|---|---|
+| All | 20.3 → 18.6 | 8 % |
+| With punctuation | 22.4 → 21.0 | 6 % |
+| Letters | 16.4 → 14.0 | 14 % |
+| Tight fonts (Looseness below −0.2) | 22.7 → 20.4 | 10 % |
+| Light weights (stem under 50) | 24.1 → 21.6 | 11 % |
+| Light weights, E and F before a letter | 37.7 → 22.2 | 41 % |
+| Punctuation pairs ≥ 10 units tighter / looser than the designers | 548 / 527 → 0 / 17 | |
+| Display: punctuation pairs ≥ 10 tighter / looser (on top of the text table) | 328 / 238 → 11 / 4 | |
+| Handwriting: the same | 1,255 / 1,460 → 126 / 343 | |
+
+What is left is mostly each designer's own taste, which no correction common
+to all fonts can know.
+
+**Harness…** lists the pairs the harness changes most at the current
+settings and conventions: in running text (no lowercase before a capital, no
+two punctuation marks; the default), letters only, punctuation with letters,
+or all pairs.
+For each it shows the change and its parts: the first glyph's right side, the
+second glyph's left side, a pair correction. The selected pair is drawn three
+ways: as in the font, as Kinetikern3 sets it, and with the harness. The window
+follows the sliders live. While it is open, the preview also kerns its pairs.
+
+The table ships in the bundle (`kk3_harness.json`), so the plugin needs
+nothing else. Learning it again takes the reports of a Spacing QA library
+scan (Spacing QA is a project of its own): run `tools/kk3_harness_data.sh`
+and then `tools/kk3_harness_learn.py`. The commands are at the top of the
+script.
+
+### Connected scripts
+
+Kinetikern3 never lets two glyphs' ink overlap. Connected scripts are drawn
+to overlap where the letters join, and a join fixes where the next letter
+sits: the exit stroke of one letter has to meet the entry stroke of the
+next, within a window of a median 22 units per 1000 em on Google Fonts'
+scripts. A sidebearing serves every partner of its side, so a change to a
+joining side moves all its joins, and two moved sides add up on their pair:
+spacing the letters by their bodies broke a median 11 % of a script's joins,
+in whole rows and columns of the pair table (`notes/connected-scripts-deep-dive.md`).
+**Connected script** therefore keeps the joins by default.
+
+- **Is the font connected?** When at least half its lowercase a–z overlap at
+  least half of their a–z partners at some height, as the master is spaced
+  and kerned. Failing that, when at least half the a–z touch at least half
+  of the a–z set after them: strokes that meet flush, without overlapping,
+  join too. Failing both, a hand that joins only in part: when at least 1 in
+  6 of the a–z pairs join above the baseline zone (0.15 of the x-height) and
+  at least 1 in 5 of the pairs of two stem letters (a d h i l m n u before
+  b h i j k l m n p r u: n n, m i, u n …), which print and display faces
+  never join. On Google Fonts that adds 26 scripts whose exit strokes reach
+  some partners but not others (Ephesis, Beau Rivage, Ruthie …), while
+  display faces whose letters touch elsewhere (Metal Mania: 0.15 of its stem
+  pairs) and print hands whose a and d flick into the next letter (0.12 of
+  all pairs) stay unjoined. Text faces never are, nor are scripts and casual
+  hands whose strokes reach past the advance but stop short of the next
+  letter.
+- **Which sides join?** Every side with a join band (the heights where it
+  overlaps most of its a–z partners, or reaches past its advance), and every
+  side that touches an a–z letter in the master as spaced and kerned (the
+  join checker below): every letter is measured against the basic a–z, so
+  accented and alternate letters count like their bases.
+- **Keep joins** (the default). Every joining side keeps its sidebearing, and
+  every pair of two joining sides keeps the master's kerning, exactly (a
+  glyph–glyph exception where class kerning, the threshold or Max pairs would
+  give it another value, an exception of 0 included). A glyph whose advance
+  is fixed (tabular figures, a glyph with a width metrics key) keeps both
+  sides when either is kept, and a side that follows another glyph's (an
+  aligned composite, a metrics key) is kept together with it: when the tail
+  of an accent touches the next letter (Kolker Brush's Eogonek), its base
+  keeps that side too, so the composite stays on its base. Every join stays
+  as drawn. Kinetikern3 spaces
+  and kerns everything else — punctuation, figures, capitals that do not
+  join, a letter next to a period (it keeps clear of the exit stroke) — at
+  the tightness of the kept lowercase letters: the Looseness is fitted to
+  them (the label says *0 = the kept joins' Looseness*) and the slider moves
+  the rest of the font from there. The designer harness leaves the kept sides and pairs alone,
+  and the sides of any glyph that keeps its advance.
+  The kept pairs' entries come on top of Max pairs, as the harness's do; the
+  status line counts them apart.
+- **Space joined letters.** Each joining side's body — the side without its
+  join band — is spaced in Pass 1, so the join stroke overhangs like the hook
+  of a j, and a pair whose facing sides both join gets no kerning. Joins whose
+  strokes stop meeting break; the Joins… button counts them.
+- **Designs whose glyphs touch by construction.** A line, a grid, a
+  background or an effect through every glyph (underline, charted and
+  guide-line fonts) makes every glyph touch its neighbours, figures
+  included, while a script's figures stand apart from its letters. When at
+  least 60 % of the sides of the default figures 0–9 touch at least half the
+  a–z as the master sets them (with at least 5 of the figures and 13 of the
+  a–z present), every side that touches an a–z letter is kept, letter or
+  not, so the line stays whole. The test also runs when the overlap rule
+  finds no joins (an underline drawn exactly from edge to edge). The note
+  beside the setting then says *its glyphs touch by construction (a line, a
+  grid or an effect through every glyph): every side that touches is kept*,
+  and the Joins window says *the line does not meet* where it breaks.
+
+**The join checker** finds joins by ink contact, not boxes: each glyph's ink
+on scanlines one unit per 1000 em apart, so the offsets at which two glyphs
+touch, and the room a join has to close and to open, are read off in one
+pass (`engine/src/contact.rs`; against exact outline geometry on 118 Google
+Fonts scripts it agrees on 99.8 % of joins). It measures the ink of every
+glyph with an outline and finds the pairs of a letter and a basic a–z
+letter, either way round, that touch as the master sets them (in a design
+whose glyphs touch by construction, of any glyph and an a–z letter).
+**Joins…** lists:
+
+- *Findings*: the basic a–z pairs as the master sets them (as drawn, without
+  features), judged as Spacing QA judges them. A side joins when it joins at
+  least half its a–z partners, and two joining sides that do not meet make a
+  broken join when their strokes stay 3 units per 1000 em apart or more
+  along the shortest line between them (a stroke that ends above or below
+  its partner comes closer than the gap along the text); closer, they
+  *nearly touch: a hairline gap*. That holds in a script where fewer than 1 in 20
+  such pairs fail to meet. In a partly connected hand (1 in 20 or more) only
+  a pair whose sides both join at least 75 % of their partners is broken; its
+  other non-joins are listed as *not joined: partly connected* (style, not
+  flagged). A broken join shows the kerning that would join it, or why
+  kerning does not: *the kern that joins it makes the strokes cross*, *too
+  far for kerning* (more than 100 units per 1000 em; a longer stroke or an
+  alternate joins it), or *no small kern joins it*. Then fragile joins (less
+  than 5 units per 1000 em of room to open) and crossing strokes (white that
+  neither letter has alone, or a counter changed by more than 1 %);
+- *Under the preview*: what the result shown does to every join between a
+  letter and an a–z letter — Keep joins breaks none — and, with Space joined
+  letters, the sides that break the most and the a–z pairs that break;
+- *Drawing advice* (Keep joins): for each kept side, the sidebearing
+  Kinetikern3 would give its body, relative to the font's own body rhythm
+  (the median kept a–z side); sides within 5 units of it are not listed.
+  Negative: the body sits further from its neighbour than the other letters'
+  do (shorten the stroke that reaches out and the advance follows). Advice,
+  not edits.
+
+Select rows and **Open Proof** for an Edit tab of the pairs in context
+(n + pair + n). The joins are found on the main thread when the setting is
+turned on or the master is read, a step per timer tick: the master's kerning
+is read in slices of 8 ms and each of the four tests runs on a tick of its
+own, so even a big font that does not join (Lato 2.015: 62,000 kerning
+pairs, every test run) never holds Glyphs for more than about 75 ms at once
+(it was 0.6 s in one go). Every glyph with an outline is measured for the
+checker in Phase 1.
+Spacing QA uses the same detector, checker and decoration test, with two
+differences. It sets every a–z pair inside a word (n + pair + n, the default
+features), so it also sees joins made by contextual alternates and connector
+glyphs (TypeTogether's Playwrite), which the plugins cannot, and it applies
+the touching rule and the test for a hand that joins in part to those
+shaped pairs. And it skips a design whose glyphs
+touch by construction (`spacing/decorated`). It keeps the joins the same way.
+
+### Italics
+
+Kinetikern3's model is built on upright letters: it measures the white
+between letters with disks and a distance field, which a slanted design
+fools, so that it looks crammed. Measured upright, an italic comes out too
+loose and uneven. On a master that leans by its italic angle (3° or more,
+under 60°: a larger angle is an error in the font), **Along the italic
+angle** (on by default) gives the engine the outlines sheared upright about
+half the x-height, where the eye judges a leaning letter's sides and Glyphs
+measures italic sidebearings. Sidebearings and kerning are horizontal
+offsets, which a shear keeps, so the results apply to the slanted outlines
+as they are; Apply, Revert and the proofs work on the outlines as drawn.
+
+What it does, on the 171 italics of the Google Fonts library (Spacing QA,
+the declared italic angle, each italic against its designer's spacing, units
+per 1000 em, medians): the gaps of the GF Latin Kernel's pairs 29.8 → 21.3
+from the designer's (163 of 171 closer), sidebearings 29.9 → 13.4 (164 of
+171), kerning correlation 0.46 → 0.70, best-fit Looseness −0.39 → +0.05
+(measured upright, every italic looked too tight to the model). Uprights of
+the same families: 14.5 and 8.7. Worse: Molle and Kristi, scripts with a
+declared angle, and Josefin Slab Italic (+4.5); a script can switch it off.
+
+#### Designs that lean without an italic angle
+
+Many hands lean without declaring an italic angle (calligraphic italics,
+scripts drawn on a slant). The window reads the slant their stems show —
+the first ink run of l i h n m u r k b p between a quarter and three
+quarters of the x-height, the median of at least four near-straight stems
+that agree, 3° or more — with the same detector Spacing QA uses (the
+engine's `kk3_stem_slant`). Whether to measure along it is Spacing QA's
+rule too (`kk3_lean_wins`): after the master is read, a check in the
+background reads the GF Latin Kernel's glyphs upright and along the slant,
+fits each to the master's own spacing (a connected script to its kept
+joins), solves pair by pair with the designer harness and measures the
+master's spacing against it. The slant wins where that leaves at most 80 %
+of the shape error upright, or where upright the model cannot follow the
+master at all — its fit stops at the limit of the Looseness range, or lies
+beyond ±2.5, outside what fonts use (their 1st to 99th percentiles fall
+within about ±1.5) — and along the slant it can. Tangerine (no italic
+angle, its stems at 13.8°) fits at −2.92 upright and −0.57 along its slant,
+so it is measured along it. When the check says so, the window reads the
+master again along the slant; the checkbox's tooltip says what it found,
+and a click decides for that master instead. Explora (no italic angle, its
+stems at 21.5°): upright the fit stops at −6.00, along the slant it is
+−0.95, and the master is measured along it, as Spacing QA measures the
+family. Most leaning hands fit as well upright and stay upright: of the
+163 handwriting families on Google Fonts that Spacing QA measures upright
+although their stems lean, the shape error along the slant is a median
+11 % higher.
+In Glyphs, fitting the Looseness to Playfair Display Italic's own capitals
+gave −6.00 (the limit) measured upright and −0.06 along the angle.
+
+### What Apply writes
+
+* **Kerning:** in Glyphs' own keys, with Glyphs' precedence (glyph–glyph,
+  glyph–class, class–glyph, class–class).
+  * Class pairs use `@MMK_L_<group>` / `@MMK_R_<group>`.
+  * Exceptions are glyph–class, class–glyph or glyph–glyph entries.
+  * An exception of 0 is written as 0, because it cancels a class value.
+* **Groups:** your kerning groups are kept. A glyph without a group on a side
+  joins the engine's class for that side; a new group takes its key glyph's
+  name, with `.kk3` added if that name is already in use. Groups belong to the
+  glyph, not the master: in a multi-master font, the dialog says how many
+  glyphs join existing groups and so change kerning in the other masters.
+* **Sidebearings:** free sides move by whole units to the engine's values,
+  worked out on the ink of the outline, as the engine measures it. Glyphs
+  reports sidebearings rounded half away from zero, so a side that sits on a
+  half unit (a curve extreme at −144.5 reads −145, at 6.5 reads 7) would land
+  a unit off if the move were worked out from what Glyphs reports; Apply sets
+  `reported + move` instead, and checks the result on the ink.
+  * **Sides that Glyphs computes:** sides driven by a metrics key or an
+    auto-aligned component are refreshed by Glyphs (`syncMetrics`,
+    `alignComponents`). The engine solved with those same rules, so the
+    kerning fits the spacing the font really gets.
+  * **Keeping their advance:** tabular figures, glyphs with a width metrics
+    key, and the glyphs those keys follow. The designer harness leaves their
+    sides alone too.
+  * **Untouched:** right-to-left glyphs, glyphs of joining scripts (Mongolian,
+    Devanagari, Bengali, Gurmukhi and a few others) and box-drawing
+    characters keep their sidebearings, and none of them is kerned.
+* **The punctuation and figure spaces:** a blank punctuation space exactly as
+  wide as the period gets the period's new advance; a blank figure space as
+  wide as the zero gets the zero's, where the figures are proportional (see
+  *The word space*). Revert puts them back.
+* **Composites stay rigid:** when a base glyph's outline moves, the components
+  that draw it move back by the same amount, so an accent never slides off its
+  letter.
+  * **Which components Glyphs places itself.** Apply asks each component
+    (`isAligned()`), not its automatic-alignment flag. Glyphs 3 leaves that flag
+    on for components it cannot align, and those stay where they were put. A
+    mark without anchors, a part of a layer that also has paths, and the
+    second glyph of `;` are examples. Apply holds all of them in place.
+  * **Composites aligned in part.** Glyphs keeps the base at x 0 but places
+    nothing else; Aacute built without anchors is one. Such a composite
+    follows its base the way an aligned composite does: the accent, its own
+    paths and its advance move with the base.
+    * Its left side stays with the base, even under a left metrics key.
+      Glyphs cannot move that base, so meeting the key would slide the
+      accent off the letter.
+    * Its right side follows its right key (`syncRightMetrics`).
+  * **Scaled or turned components.** Glyphs keeps component positions on the
+    font's grid, so a scaled or rotated component can be held only to within
+    the grid: a rotated arrow may end up a fraction of a unit off. Revert puts
+    it back exactly.
+* **Sample-text scope:** Apply re-spaces the glyphs of the sample text, the
+  glyphs the preview kerned, and the glyphs their metrics keys and aligned
+  components follow. For example, Ñ in the sample also moves N, as the right
+  pane showed.
+
+**Undo and Revert.** Apply writes with undo registration off: 3.5 µs per
+kerning entry instead of 33. It clears the undo history of the kerning and of
+the glyphs it writes, and the dialog says so. **Revert Last Apply** is the
+undo; it moves every outline back to exactly where it was on the ink, half-unit
+sides included:
+- **Changes made after the Apply:** Revert puts back only what is still as
+  Apply left it. If something was changed since, it asks: *Keep Later
+  Changes*, *Revert Everything* or *Cancel*.
+- **Closing the window:** a window closed after an Apply hands its revert point
+  to the next window opened for the same document. Closing the document
+  discards it.
+- **Applying again:** after an Apply or a Revert, the next Apply reads the
+  master again and reruns Phase 1 first, because groups and sidebearings
+  changed.
+
+## Architecture
+
+```
+ Glyphs main thread (one NSTimer)                 libkinetikern3 (threads it owns)
+ ────────────────────────────────                 ─────────────────────────────────
+ SnapshotReader: master → GlyphSpecs,
+   ≤ 8 ms per tick ───────── packed input ──────▶ Phase 1/3  Analyzing SDFs → Context
+ poll at 15 Hz (a few atomic loads)  ◀─ progress ─ Phase 2/3  Evaluating pairs
+                                                  Phase 3/3  Grouping & pruning → Result
+ Result read in place (zero-copy views) ◀───────── metrics + kerning entries
+ Planner / Applier / Restorer,
+   ≤ 8 ms per tick ───────────────────────────────▶ GSFont (kerning, groups, metrics)
+```
+
+### Engine: jobs and phases
+
+`kk3_prepare_start` starts **Phase 1** on the library's own thread. It does
+the following:
+* builds every glyph's adaptive SDF profiles and DMAT white volumes;
+* records what the pair pipeline needs: script, kerning eligibility, existing
+  groups, composite base, ink heights;
+* resolves the per-side rules:
+  * *Free*: Pass 1 decides.
+  * *Fixed*: kept as it is.
+  * *Follow*: the same or the opposite side of another glyph, plus an offset.
+    This is how metrics keys and aligned composites reach the engine.
+
+Phase 1 returns a `Context`. `kk3_solve_start(context, params, mask)` then
+runs:
+- **Pass 1:** a few milliseconds.
+- **Phase 2/3**, the pair work.
+- **Phase 3/3**, exception compression and the budget.
+
+A solve returns a `Result`. The design rules for both jobs:
+
+* **Nothing calls back into Python.** Progress is a handful of atomics that
+  `kk3_job_poll` reads.
+* **Cancel is fast.** `kk3_job_cancel` sets a flag that every work item checks,
+  so a job stops within one pair's time.
+* **Freeing never blocks.** `kk3_job_free` never waits, and the context is
+  reference counted, so the window can drop a running preview at any moment.
+* **Panics never reach Glyphs.** Every export catches them; failures come back
+  as messages.
+* **Worker priority.** The job and worker threads run at user-initiated
+  priority, below the interface thread.
+* **Threads.** Each thread count has its own rayon pool.
+* **Results are read in place.** A result is a set of compact arrays (metrics
+  per glyph, kerning entries) that `kk3_bridge.Result` reads without copying.
+  `value(left, right)` and `values()` resolve glyph pairs on demand; Python
+  never builds an object per pair.
+
+### Spacing zones
+
+Pass 1 spaces each side by the extreme ink inside its group's zone: baseline
+to x-height for lowercase, to cap height for capitals, the median extents of
+the group. Ink outside it, the hook of an f, the tail of a j, an accent, may
+overhang the advance, as designers draw them. The median is taken over the
+base letters (a–z, A–Z, a Cyrillic or Greek letter without a mark: the
+plugin marks them, `GLYPH_ZONE`, engine feature 16); over every member of the
+group, accented letters, which outnumber the base letters in most fonts,
+lifted the lowercase zone to accent height (Arial: 1,466 against an x-height
+of 1,062), and an f's hook and the accents of î ï ĩ set those sides: f was
+spaced 25–60 units per 1000 em too loose (Arial fo +25.4 → −0.2, f row
++34.9 → +3.6; Georgia +61.6 → +19.5), î ï ĩ some 30 looser than i. Spacing
+QA, which reads only the GF Latin Kernel, always had the right zones.
+
+### Pair scope
+
+A glyph is kerned when all three hold:
+* it is a letter, figure, punctuation mark, or a symbol that sits in text;
+* it is not right-to-left;
+* it is in the job's mask (all glyphs for a whole-font run; the sample
+  text's glyphs for the preview).
+
+Arrows, box drawing, math operators and other technical symbols are spaced
+but not kerned. Marks and separators are neither. Pairs are formed only
+within one script, or with Common/Inherited glyphs such as punctuation and
+figures. On Arial this cuts the 5,890,329 ordered pairs of 2,427 spacing
+glyphs to 1,976,538.
+
+### Classes and exceptions (`classes.rs`, `run.rs`)
+
+A class is one side group: glyphs whose facing profile is the same, so one
+value serves all of them. Classes come from, in order:
+1. **Your kerning groups,** kept as they are.
+2. **The composite base's group:** an ungrouped glyph joins it when its profile
+   matches the base's wherever the base has ink. Á, À and Ä join A; Ą, Ľ and Ơ
+   do not.
+3. **A shape merge:** classes without a designer group merge when their
+   representatives match within 2 units per 1000 em over the spacing zone (n
+   and m on the right side, Latin H and Cyrillic Н). Ink outside the zone,
+   such as the ascender of h next to n, is recorded as a difference.
+
+For every member the class records where its rays differ from the
+representative's: an accent above the cap height, a tail below the baseline,
+a stem one unit wider. The representative pair of every class pair is solved
+in full. Each member pair then gets one of three treatments:
+
+* **Inherited** without evaluation, when no difference lies near the
+  partner's ink and its rays and probes are identical to the
+  representative's.
+* **Verified** otherwise. The verify replays the solver's sign steps and
+  accepts the class value only when the final bracket lies inside the target
+  window, so it agrees with the solver by construction.
+* **Solved** when the verify finds the pair really differs. If the result
+  differs from the class value by the threshold or more, it becomes an
+  exception.
+
+Exceptions that agree across every in-scope partner in a class are compressed
+into one glyph–class or class–glyph entry. On whole Arial, the 1,868 kerned
+glyphs collapse to 1,157 right and 1,105 left classes.
+
+### The window solver (`pass2.rs`)
+
+The physics is v1's. What changed is the cost of a pair.
+
+**Less work per force evaluation:**
+* The merged ray band is built into reusable buffers.
+* One-sided rays that provably contribute nothing are skipped.
+* The floors are skipped when exact bounds prove they cannot bind.
+* Distance queries are skipped, or reuse an earlier query's nearest chunk,
+  only where that provably gives the same value.
+
+**Fewer force evaluations per pair.** The solver decides force *signs* from
+per-ray bounds, refining only the most uncertain rays:
+1. **A threshold-window test.** A pair whose value lies inside the window is 0,
+   usually after two cheap decisions.
+2. **Doubling steps, then bisection** down to a narrow bracket.
+3. **Illinois regula falsi.**
+
+The result is 1.8–2.7 force evaluations per pair, against v1's 6.7–7.2.
+
+**Reference mode** (`Solver::Reference`, no threshold, no scope) performs v1's
+exact arithmetic, and the equivalence gate checks it bit for bit. In
+multi-equilibrium pairs the window solver can choose a different root than
+v1 (see *Known limitations*).
+
+### Threshold and budget
+
+**Threshold.** Values whose magnitude is below the threshold become 0. The
+engine never goes below v1's 0.5-unit rounding.
+
+**Budget.** It keeps the most important entries, by this measure:
+
+    importance = |value| / (mean white between the pair + 5 % of the UPM)
+
+* **Weighting:** class pairs are weighted by √(member pairs covered), and
+  compressed exceptions by √(pairs covered).
+* **Dropping:** an exception whose class pair is dropped goes with it.
+* **After the budget:** Keep joins sets the pairs of two kept sides to the
+  font's kerning, and the designer harness adds its corrections, after the
+  budget (`run.rs`), so neither is ever dropped.
+
+On whole Arial the budget of 30,000 keeps 29,991 of 298,918 entries: 4,825
+class pairs and 25,166 exceptions.
+
+### Plugin modules
+
+| Module | Role |
+|---|---|
+| `plugin.py` | Registers Filter ▸ Kinetikern3… (a GeneralPlugin) and, only when launched with test arguments, the unattended hook. |
+| `kk3_window.py` | The window. One NSTimer in the common run-loop modes drives reading, job polling, Apply/Revert slices and pane layout, so it keeps working during slider drags and open menus. At most one engine job runs at a time; for a preview, the newest request wins. |
+| `kk3_snapshot.py` | `SnapshotReader` copies a master in three passes of at most 8 ms per tick: list glyphs, read outlines and properties, resolve references (metrics keys, components, tabular figures). It builds the engine input as it goes. `stem_slant` reads the slant of a master's stems, and `SlantProbe` checks the kernel's glyphs upright and along it in the background (Spacing QA's rule). |
+| `kk3_proof.py` | TextKit 1 panes whose glyphs are attachment cells. Kerning goes into each cell's width, because TextKit ignores the kerning attribute on attachments. Right-to-left runs are set right to left. |
+| `kk3_apply.py` | `Planner` (what will be written), `Applier` (writes, read-back), `RevertPoint` and `Restorer`. All of them step in slices from the window's timer. `plan()`, `apply()` and `restore()` run them to the end for tools. |
+| `kk3_bridge.py` | ctypes structs, with their sizes checked against the library; `Engine`, `InputPacker`, `Job`, `Context`, `Result`. It has no Glyphs imports, so the tools use it too. |
+| `kk3_args.py` | Reads test parameters from the argument domain only, so a stray preference can never turn a normal launch into a test run. |
+| `kk3_groups.py` | The spacing-groups model (no AppKit): groups, members, per-glyph engine options, sections, saving in `font.userData`. |
+| `kk3_groups_window.py` | The Spacing Groups window: sections list, glyph grid (a custom NSView), group rows and settings. |
+| `kk3_pairs_window.py` | The Pairs window: measurement through the engine, the list and the pair preview. |
+| `kk3_harness.py` | The designer harness: the learned table (`kk3_harness.json`), the glyphs it applies to, the stem, and each glyph side's shift and the pair corrections for a master, Looseness and strength (`Plan`). |
+| `kk3_harness_window.py` | The Designer Harness window: the pairs it changes most, drawn as in the font, as Kinetikern3 sets them, and with the harness. |
+| `kk3_punctuation.py` | Punctuation by convention: the learned table (`kk3_punctuation.json`), each glyph's mark (by code point, canonical twins included; `.case` punctuation by its base mark; `one.lf` and `one.pnum` by their figure; `one.sups` and `one.sinf` by their superscript and subscript; `one.osf`, `one.numr` and `one.dnom` by their kind; a master's fraction slash as the slash in a fraction where it has numerators and denominators), and the engine's argument: 6 coefficients and 2 kerning shares per glyph. |
+| `kk3_joins_window.py` | The Joins window: the join checker's findings as drawn (Spacing QA's rule), what the result shown does to the joins, drawing advice for the kept sides, proofs. The RoboFont extension has the same file; a host object opens the proofs (an Edit tab here, the Space Center there). |
+| `kk3_selftest.py` | The unattended in-Glyphs test behind `build.sh --verify`. |
+
+## Verification
+
+Run the tools from the `KinetiKern` folder (the parent of this one) with
+Glyphs' own Python, which has PyObjC, vanilla and fontTools:
+
+```bash
+GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
+```
+
+The figures below were measured on an Apple M1 (4 performance and 4
+efficiency cores, 16 GB, macOS 14) on 6 October 2026, unless a later date
+is given. Gates and timings marked *final build* were run on the installed
+library after the last change of that day. The load average was 2–6 while
+they ran, and a run's own threads count towards it.
+
+### Engine unit tests
+
+`./build.sh --test` (or `cargo test --release` in `engine/`): **52 passed**
+(11 October). They cover:
+- v1's model (22): outline geometry, DMAT disk packing, the adaptive SDF
+  profiles, the Pass 1 and Pass 2 physics;
+- the window solver's bounds (5, the overhang tail's inverse among them) and
+  the spacing zones from the base letters (1);
+- the designer harness (3: the exact side shifts and pair corrections in
+  pair and class mode, an advance that is kept, frozen glyphs left alone) and
+  the bare model beside it (1);
+- punctuation by convention (1): each side of a mark kerned with its own
+  share in pair and class mode, a pair of two marks with the product,
+  letters untouched, the default share for marks without their own;
+- connected scripts (17): the detector and the 8 October join mode; the
+  contact geometry (touch sets and windows against brute force on boxes and
+  a diagonal entry, strokes that meet flush, crossings, a changed counter,
+  unions); Keep joins (every join and the font's kerning kept through a
+  10-unit threshold in pair and class mode, a period clear of the exit
+  stroke, the Looseness fitted to the kept sides and the slider as an offset
+  from it); Space joined letters' break counts; letters that join by
+  touching; hands that join in part, and letters that touch elsewhere that
+  do not; the decoration test, and tabular figures keeping their sides in a
+  decorated design; a kerning fix flagged when it would make the strokes
+  cross;
+- the slant a design's stems show, and when to measure along it (2).
+
+### Equivalence gates: `tools/kk3_equivalence.py`
+
+Each gate runs five system fonts (Arial, Times New Roman, Verdana, Georgia,
+Trebuchet MS) on their first 400 spacing glyphs. The reference gate also runs
+75 core glyphs. T is the threshold, 5/1000 em (10.24 units at 2048 UPM).
+
+| Gate | What it checks | Result (final build) |
+|---|---|---|
+| `reference` | Kinetikern3 in reference mode against v1, every pair. | **PASS:** sidebearings and kerning identical on all five fonts, core and 400 glyphs (Arial: 45,357 of 45,357 entries equal). |
+| `window` | Window solver against reference. | 1.79–2.72 force evaluations per pair against 6.66–7.22. Pairs that differ by T or more: 6 / 41 / 16 / 50 / 25 (0.004–0.031 %). |
+| `classes` | Class kerning expanded to glyph pairs against glyph-pair mode. | **0 pairs differ by T or more** on all five fonts (largest difference 10.2, just under T). 89.4–97.3 % within 1 unit. |
+
+Class compression at 400 glyphs, from the same `classes` run:
+
+| Font | Glyph-pair entries | Class entries (class pairs + exceptions) | Classes R / L |
+|---|---|---|---|
+| Arial | 35,360 | 23,668 (12,022 + 11,646) | 223 / 197 |
+| Times New Roman | 51,869 | 29,710 (17,532 + 12,178) | 235 / 223 |
+| Verdana | 35,904 | 21,240 (13,307 + 7,933) | 213 / 196 |
+| Georgia | 56,520 | 38,252 (21,804 + 16,448) | 246 / 234 |
+| Trebuchet MS | 36,815 | 23,269 (12,178 + 11,091) | 208 / 203 |
+
+### Quality: `tools/kk3_benchmark.py`
+
+v1's 73-font benchmark scores spacing against designers' own (v1's
+`tools/benchmark.py` loads and scores; this script imports it). The sets are
+30 Google Fonts families for tuning, 13 for validation, and 30 macOS system
+families as a held-out test. Results are in `results/benchmark.json`.
+
+The gate compares glyph-pair mode (`pairs`: window solver, script scope)
+against v1. It **passes on all three sets**: every gated median moves by
+0.003 or less, and sidebearings are bit-identical in all 73 fonts.
+
+| Set | Pair gaps, v1 → kk3 | Designer-kerned pairs, v1 → kk3 | Kern r | Sidebearings |
+|---|---|---|---|---|
+| Google 1–30 (tuning) | 15.7 → 15.7 | 19.3 → 19.4 | 0.71 → 0.71 | 30/30 identical |
+| Google 31–43 (validation) | 17.5 → 17.5 | 21.4 → 21.4 | 0.73 → 0.73 | 13/13 identical |
+| System (held-out) | 20.8 → 20.8 | 32.1 → 32.1 | 0.81 → 0.81 | 30/30 identical |
+
+**Large differences:** of 421,648 pairs, 6 differ from v1 by 5 units or more,
+all in pairs with several equilibria:
+- Roboto Slab: y and v next to ?
+- Georgia: T next to x
+- Palatino: v and y next to 7
+- Charter: v next to 7
+
+**Reference mode** is identical to v1 on all 73 fonts.
+
+**Threshold 5 (`pairs-t5`, `classes`):** the gated medians move by at most
+0.14. Sign agreement drops 2.5–5 points only because the benchmark counts a
+pair dropped below the threshold as a sign mismatch. Solve time per set falls
+from 9.8 / 2.9 / 7.4 s (v1) to 2.9 / 0.9 / 2.2 s (classes).
+
+The benchmark ran before the last two engine changes (memory accounting and
+thread priority), which leave the output unchanged; the reference and class
+gates above were re-run on the final build.
+
+### Speed: `tools/kk3_speed.py` and `tools/kk3_cpu.py`
+
+`kk3_speed.py` times a whole-font run with the plugin's defaults:
+- class mode;
+- threshold 5;
+- budget 30,000;
+- Auto threads (7).
+
+It prints the phases as the progress bar sees them, the work done, the
+entries produced and peak memory. Whole Arial (2,427 spacing glyphs from the
+TTF), final build; the v1 column comes from `kk3_speed.py --v1` and a split
+of the same run into engine and Python time:
+
+| | v1 | Kinetikern3, classes (default) | Kinetikern3, glyph pairs (`--pairs`) |
+|---|---|---|---|
+| Pairs | 5,890,329 (every ordered pair) | 1,976,538 in scope; 511,824 class pairs | 1,976,538 in scope |
+| Phase 1 | 2.31 s | 2.32–2.44 s | 2.28 s |
+| Pair work | 154.7 s (151.6 s engine, 2.0 s decoding the result into Python) | 15.5–15.7 s | 9.6 s |
+| **Total** | **157.0 s** | **18.0–18.1 s** (3 runs) | **12.0 s** |
+| CPU time of the pair work | 1,019 s | 49.5–50.1 s | 62.5 s |
+| Output | 2,055,690 non-zero glyph pairs | 29,991 entries (298,918 before the budget) | 30,000 entries (528,464 before the budget) |
+| Peak memory of the process | 1,053 MB | 225–226 MB | 193 MB |
+
+`kk3_cpu.py` gives CPU microseconds per pair on 400-glyph sets, which holds
+up better than wall time on a busy machine (final build). For comparison, the
+earlier measurement of v1-style solving on the Arial set was 189 µs.
+
+| | Reference mode | Window solver |
+|---|---|---|
+| Arial | 119.1 µs | 31.5 µs |
+| Georgia | 236.7 µs | 91.3 µs |
+
+### The window outside Glyphs: `tools/kk3_ui_smoke_test.py`
+
+This test opens the real window invisibly against a mock of the Glyphs API
+built from a TTF: two masters, groups, metrics keys, aligned composites,
+existing kerning. It drives the window through its controls the way a user
+does:
+* sliced reading, previews, slider changes during a running preview;
+* sample and whole-font Apply, Cancel at 30 %, Revert;
+* closing and reopening the window.
+
+On small made-up masters it also checks which glyphs punctuation and figures
+by convention reach (superscripts, ordinals, old-style figures and ½ under
+the Figures switch, a `.sups` or `.oldstyle` form by its encoded or
+old-style figure, a set of one width kept, the fraction slash as in a
+fraction where the master has numerators and denominators), and which blank
+spaces Apply keeps in step: the figure space follows the zero only without
+tabular figures. Small caps (`.sc`, `.smcp`, `.c2sc`, accented) follow the
+Small caps switch only. Canonical twins take their mark's conventions, and a
+case form follows its base mark. `.lf` and `.pnum` figures take their
+figure's conventions, old-style forms the old-style figures'. Tabular forms are left alone, and so is
+a `.lf` set whose figures share one width. A preview is compared with a
+direct engine solve under the window's conventions.
+
+Throughout, a 60 Hz heartbeat measures main-thread stalls. Result: **114
+passed, 0 failed** on 400 glyphs (11 October 2026; 92 on 3,000 glyphs
+before the conventions, `--glyphs 3000 --max-pairs 30000`).
+
+### Inside Glyphs: `./build.sh --verify`
+
+The self-test runs in a temporary Glyphs 3.5.1 on Arial (2,674 spacing glyphs
+in Glyphs' import):
+1. Opens the font and chooses Filter ▸ Kinetikern3… through the real menu,
+   then chooses it again: the same window must come to the front.
+2. Waits for the preview.
+3. Cancels a whole-font run at about 30 % and restarts it.
+4. Applies the whole-font result and reads every planned sidebearing and group
+   back, plus 200 kerning entries. It also compares every spacing glyph's ink
+   sidebearings with the result. Every composite of the master must have
+   moved as one piece: all its points by the same amount, so no accent slid
+   off its letter. Composites with a scaled or rotated part may be up to one
+   grid unit further off in both checks, the precision Glyphs keeps their
+   positions to. A blank punctuation space that was as wide as the period
+   must have the period's new advance (Arial's: 569 before). A figure space
+   as wide as a proportional zero must have the zero's; any other such space
+   must keep its advance (Arial's figure space, with tabular figures: 1139).
+5. Reverts, and compares the master's whole kerning table, groups and
+   sidebearings with the state before Apply. Every composite's outline must
+   be back exactly where it was, and the spaces Apply set back to their
+   advance.
+6. Tests the designer harness, when the engine build has it, the way a user
+   works with it, with Punctuation on (the harness is learned on top of it):
+   - opens the Designer Harness window;
+   - turns the harness on with its checkbox, and checks that the preview
+     moved every glyph side and every listed pair by exactly what was
+     planned;
+   - picks the Letters filter;
+   - picks the Display conventions in the window's menu, and checks that
+     the preview moved every glyph side by exactly the Display plan, against
+     the preview at Display without the harness (the menu moves the
+     punctuation's own conventions too); then picks Text faces again;
+   - applies the preview, reads back every glyph the harness shifted, and
+     reverts;
+   - turns the harness off with the main window's switch, and checks that
+     every glyph is back to Kinetikern3's own spacing.
+   It saves `harness.png` and `harness-letters.png`.
+7. Tests Punctuation by convention, when the engine build has it:
+   - turns **Punctuation** off and on again as a user clicks it. Off, every
+     letter keeps its sidebearings and every letter pair its kerning. On,
+     each side of each mark moved by exactly what its convention says (from
+     the sidebearings the engine measures, along the slant for a master
+     measured that way), and the same preview comes back exactly. A side
+     that follows another glyph (a metrics key, an aligned component) moves
+     with it instead;
+   - turns **Figures** and then **Small caps** off and on again the same way.
+     Only the figures and their forms, then only the small caps, may move,
+     each by its convention;
+   - picks **Handwriting** in the main window's Conventions menu. Pairs with
+     a capital first may only kern deeper, and some capital-lowercase pairs
+     must; pairs with a lowercase letter first and every letter's
+     sidebearings stay exactly as they were. Pairs whose kerning classes hold
+     small caps are left out: their class value follows the small caps'
+     conventions, which differ by style;
+   - picks **Automatic**, which must follow handwriting for a font that
+     joins or leans without an italic angle and text faces otherwise, with
+     the same preview exactly.
+8. Saves `window.png` and `selftest.json`, then quits.
+
+`./build.sh --verify FONT --connected` adds a connected-script stage after
+the harness (FONT must be a connected script; an OFL script from Google
+Fonts such as Great Vibes): with **Connected script** off, then on as a user
+turns it on, it waits for Phase 1 and the preview and checks, with Keep
+joins, that the join checker finds no join broken, that the kept sides keep
+the master's sidebearings and the sample's pairs of two kept sides the
+master's kerning, and that a period after a joining letter keeps its
+distance (the narrowest white between the inks, from the engine's own
+profiles). It applies the preview, checks the font against it, reads the
+master again and checks by ink contact that every join between the sample's
+letters still touches, reverts (exactly), counts what Space joined letters
+breaks, and turns the setting off: every glyph must be back to the spacing
+without joins. It saves `connected.png`.
+
+Results (Glyphs 3.5.1, M1, 9 October 2026):
+
+- **Great Vibes** (the 15:41 build): **PASSED**. 56,355 of 56,355 joins
+  kept, 3,147 kept sides, the Looseness matched to them −0.54; the 1,444
+  sample pairs of two kept sides kept the master's kerning; a period after a
+  joining letter keeps its distance (closest: A, +12 units per 1000 em
+  between the inks); all 999 joins between the sample's letters still touch
+  after Apply; Revert exact; Space joined letters breaks 26,531.
+- **Pacifico** (the 16:25 build): **PASSED**. 44,642 of 44,642 joins kept,
+  2,199 kept sides, the Looseness matched +0.21; the 1,406 sample pairs of
+  two kept sides kept the master's kerning; all 1,170 joins still touch
+  after Apply; Revert exact; Space joined letters breaks 5,436.
+- **10 October**, with composites that Glyphs aligns in part following
+  their base, the Looseness slider as an offset from the kept joins' own,
+  and the self-test's composite and slider checks: **PASSED** on Pacifico
+  (44,642 of 44,642 joins kept), Ephesis (8,815 of 8,815), Ruthie (5,320 of
+  5,320) and Great Vibes (56,355 of 56,355). After Apply every join between
+  the sample's letters still touched and every composite had moved as one
+  piece; Revert was exact. With Keep joins on, moving the Looseness slider
+  changed the spacing of everything that does not join.
+
+`./build.sh --verify [font] --groups` adds a spacing-groups stage after
+those:
+
+1. Sets up the groups in the Spacing Groups window the way a user does. It
+   uses the grid with real mouse events (click, Shift-click, Command-click, a
+   dragged rectangle), All / None / Invert and the name filter. It picks the
+   "Latin · Uppercase" section from the list, then uses New Group, the name
+   field and Freeze. Next it picks "Figures" and sets Looseness +0.4 and 50 %
+   force with the sliders. Then it checks "Glyphs in no group", takes a
+   glyph out of its group and puts it back. Each step is checked, and so is
+   what the engine receives. Finally it presses **By Category** (the glyphs
+   in no group go into groups of their kind at the main settings, the
+   painted groups kept) and deletes those groups again: 21 steps in all.
+2. Opens the Spacing Groups and Pairs windows and runs the whole font.
+3. Checks the result: the Looseness fitted to the capitals, frozen glyphs at
+   their own sidebearings, and no entries between frozen glyphs.
+4. Measures the font as it is in the Pairs window and saves `pairs.png`.
+5. Applies, and checks that the frozen glyphs, their groups and the kerning
+   between them did not change. Measures again: the Pairs window must read
+   the font again first, and then find it within 8 units per 1000 em of the
+   model on average. Saves `groups.png`.
+6. Reverts, and checks that the font is as before.
+
+Results (Glyphs 3.5.1, M1): **PASSED** on Lato and on Arial on 8 October
+2026, before By Category (19 steps), and on Arial again on 9 October
+(15:45) with it (21 steps). On 8 October Lato was run last, on the final
+plugin of that day (one label of the harness window was reworded after it).
+The 8 October reports are in `notes/verification-2026-10-08/`: Lato with
+its window, groups and pairs images, and Arial as text, so its outlines are
+not published.
+
+| Font | Groups window, driven like a user | Frozen / spaced | Whole-font run | Frozen glyphs and kerning between them after Apply | Pairs measured | Longest main-thread stall |
+|---|---|---|---|---|---|---|
+| Lato (245 glyphs), 8 October | 19 of 19 steps | 68 capitals / 10 figures | 0.4 s, Looseness fitted −0.00 | unchanged | 52,789 pairs in 0.9 s; after Apply, mean difference 1.0 | 120 ms (the harness stage) |
+| Arial (2,674 glyphs), 8 October | 19 of 19 steps | 354 capitals / 26 figures | 14.0 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.8 s, off the main thread; after Apply, mean difference 0.1 | 228 ms |
+| Arial, 9 October | 21 of 21 steps (By Category included) | 354 capitals / 26 figures | 15.1 s, Looseness fitted −0.17 | unchanged | 2,336,295 pairs in 19.3 s, off the main thread; after Apply, mean difference 0.1 | 291 ms (the spacing-groups stage) |
+
+The designer harness stage. Lato ran last, with the second table (416 pairs,
+the Display and Handwriting conventions); Arial ran with the first (294
+pairs):
+
+| Font | Corrected | Preview against the plan | Display conventions | Apply | Revert, then off |
+|---|---|---|---|---|---|
+| Lato | 128 glyph sides (stem 97), 416 pairs | every side and every listed pair exact | 554 pairs; every side exact (period −6/−3, hyphen −7/−4, question +14/+8) | 47 shifted glyphs written as previewed (E +2/+14, F +2/+9, A −11/−10) | font as before; every glyph back to the model |
+| Arial | 680 glyph sides (stem 95; accented letters and keyed sides follow), 294 pairs | every side and every listed pair exact | (not in that build) | 51 shifted glyphs written as previewed (E +2/+15) | font as before; every glyph back to the model |
+
+The Designer Harness window opened in about 120 ms on both. With the second
+table its list leads with F/ +55, E) +47, L) +46, h) +46 in running text, and
+with AA, YA, Yq, Fz among letters (`lato-harness.png`,
+`lato-harness-letters.png`).
+
+**The third table and connected scripts** (8 October, evening; Glyphs 3.5.1,
+M1). Lato with `--groups` and the third table, learned on the GF Latin
+Kernel: **PASSED**. The harness corrected 149 glyph sides and 1,925 pairs,
+every one as planned (the window leads with L• +77, L° +67, T• +67, L% +66);
+the Display conventions 2,506 pairs; Apply wrote the 48 shifted glyphs as
+previewed and Revert put the font back; the spacing-groups stage passed all
+19 steps; the longest main-thread stall was 124 ms (`lato-summary-kernel.txt`,
+`lato-selftest-kernel.json`, `lato-kernel-harness.png`). Great Vibes (OFL,
+1,839 spacing glyphs) with `--connected`: **PASSED**. Its connected-script
+stage tested the 8 October join mode (the body spacing that is now *Space
+joined letters*) and judged overlaps by boxes, not ink; the Keep joins
+stage above supersedes it. 1,615 of 1,630 letters joined, found in 63 ms;
+1,368 join pairs in the sample, none kerned, 761 overlapping as drawn; a
+period after a joining letter kept at least 20 units per 1000 em of white
+between the inks (Y);
+Apply as previewed, Revert exact, off restores the spacing without joins
+exactly. The harness stage corrected 607 sides and 2,005 pairs exactly as
+planned. The whole-font Apply read back 0 mismatches and Revert put all
+1,839 glyphs back exactly, after a fix this font prompted: its half-unit
+sides (curve extremes on half units, as Great Vibes' caron puts ccaron's
+right side at −144.5) read a unit off in Glyphs, which rounds them half away
+from zero, so Apply's read-back and Revert now work on the ink
+(`greatvibes-connected-summary.txt`, `greatvibes-connected.png`).
+
+A 60 Hz heartbeat measures how long the main thread is busy at a time.
+Result on the final build: **PASSED** in 33.2 s.
+
+| Step | Measured |
+|---|---|
+| Preview ready | 4.9 s after opening: outlines read in 1,125 ms of main-thread time, Phase 1 2.6 s |
+| Cancel at Phase 2, 30 % | stopped in 2.5 ms; the preview result was kept |
+| Whole-font run | 17.4 s on 7 threads: 1,951 kerned glyphs, 2,336,295 pairs in scope, 29,988 entries (332,560 before the budget) |
+| Apply | 2.42 s in slices: 29,988 kerning entries, 3,398 group sides, 4,002 sidebearings. 0 read-back mismatches; all 2,674 glyphs' ink sidebearings match the result. |
+| Revert | 2.07 s in slices: kerning (908 entries), groups and sidebearings of all 2,674 glyphs exactly as before |
+| Longest main-thread stall while the window works | 67.6 ms during Apply: one full Python garbage collection (60.3 ms) over the roughly 354,000 objects in Glyphs' shared interpreter. Other stages: preview 38.1, whole-font run 18.5, Revert 33.6 ms. |
+| Not judged | Opening the window 341 ms (building the vanilla window); closing 114 ms |
+
+## Known limitations
+
+* **Right-to-left scripts are not kerned yet.** Hebrew, Arabic and other
+  right-to-left glyphs are left out of kerning, and their sidebearings are
+  kept. v1 kerned right-to-left glyphs in left-to-right order, which is
+  wrong for them; leaving them alone is the safe choice until there is a
+  right-to-left pair order. The proofs do set right-to-left text right to
+  left. Joining scripts (Devanagari, Bengali, Gurmukhi, Mongolian and a few
+  others) keep their sidebearings too and are not kerned (their headlines and
+  strokes run through the advance edges, which the model's clearance would
+  open); box-drawing and block characters keep theirs and are not kerned.
+* **Connected scripts need some spacing first.** The joins are learned from
+  the master's own spacing and kerning: a script whose letters do not yet
+  meet where they join (a font just drawn, all sidebearings at their
+  defaults) has none to find, and is spaced as usual. Space at least half
+  the lowercase a–z so that each joins most of its partners, then read the
+  master again (↻). A script that declares an italic angle is measured
+  along it (*Italics*); one that declares none is measured along the slant
+  its stems show where Spacing QA's rule says so, else as drawn.
+* **Scripts that join through contextual alternates.** The plugin finds joins
+  between the glyphs as drawn, without features: a script whose letters join
+  only through calt alternates and connector glyphs (TypeTogether's
+  Playwrite) is not seen as connected here. Spacing QA, which sets the pairs
+  inside words with their features, sees and keeps those joins.
+* **Joins stay manual.** Keep joins keeps the joins as drawn and says where
+  the bodies sit (drawing advice); redrawing a join stroke, choosing
+  alternates and writing the calt that picks them stay with the designer.
+* **Multiple equilibria.** Some pairs have more than one equilibrium gap. The
+  window solver picks its root by force signs; v1 searched from the Pass 1
+  gap. Most of the time they agree, but on 0.004–0.031 % of pairs the values
+  differ by the threshold or more, sometimes by a lot (Georgia T next to x:
+  −28.2 against v1's −42.7). Reference mode reproduces v1 exactly if you need
+  it (tools only).
+* **Whole-font time.** Whole Arial takes about 18 s in the default class mode
+  and 12 s in glyph-pair mode. The planned 7–13 s is met only by glyph-pair
+  mode, which produces 528,464 entries before the budget, against 298,918.
+  Class mode does less work in total (64 CPU-seconds against 78), but it is
+  not spread evenly across threads.
+  * **The tail:** Phase 2 runs on about 6.8 cores until it is 92 % done, then
+    on a single core for its last 9 s. One thread is left finishing a run of
+    expensive class pairs, whose member pairs run one after another
+    (`run_classes`, member step).
+  * **The likely gain:** spreading that work over all cores would bring class
+    mode to roughly 10 s on this machine. That is an estimate, not a
+    measurement.
+* **The budget keeps mostly exceptions.** On whole Arial it keeps 25,166
+  exceptions and only 4,825 class pairs. Many exceptions belong to class pairs
+  whose own value is below the threshold. The importance ranking deserves a
+  review on fonts with designer groups.
+* **Apply and Revert are not instant.** On Arial they take about 2 s each in
+  Glyphs, in slices with progress. Glyphs' own sidebearing setter accounts
+  for most of it, and Cancel cannot stop them once writing has started.
+* **Undo.** Apply is not on Glyphs' undo stack; Revert Last Apply is. A revert
+  point does not survive closing the document.
+* **Other masters.** Joining an existing kerning group changes that glyph's
+  kerning in every master, because groups belong to the glyph. The dialog
+  says so, but cannot keep the other masters' old values.
+* **Long sample texts.** The panes' layout costs main-thread time: an
+  all-glyph sample of 3,000 glyphs stalled for 156 ms once in the smoke test.
+* **Aligned composites, little tested in Glyphs.** Arial's imported composites
+  are never aligned. The composite paths are tested on one italic `.glyphs`
+  source with 324 composites: 14 aligned, about 160 aligned in part, the rest
+  not aligned. A whole-font Apply there re-aligned only two of the 14.

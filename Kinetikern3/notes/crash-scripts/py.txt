@@ -1,0 +1,59 @@
+3.11.7 2026-10-06 17:54:26.00 -0400
+exception {'codes': '0x0000000000000000, 0x0000000000000000', 'rawCodes': [0, 0], 'type': 'EXC_CRASH', 'signal': 'SIGABRT'}
+termination {'flags': 0, 'code': 6, 'namespace': 'SIGNAL', 'indicator': 'Abort trap: 6', 'byProc': 'Python', 'byPid': 80504}
+vmregion None
+faultingThread 0
+--- thread 0  com.apple.main-thread TRIGGERED
+state {"x": [{"value": 0}, {"value": 0}, {"value": 0}, {"value": 0}, {"value": 4294967295}, {"value": 0}, {"value": 0}, {"value": 0}, {"value": 10519546813214834911}, {"value": 10519546804571394079}, {"value": 2}, {"value": 4294967293}, {"value": 1099511627776}, {"value": 0}, {"value": 0}, {"value": 0}, {"value": 328}, {"value": 8820714144}, {"value": 0}, {"value": 6}, {"value": 8645611712, "symbolLocation": 0, "symbol": "_main_thread"}, {"value": 259}, {"value": 8645611936, "symbolLocation": 224, "symbol": "_main_thread"}, {"value": 0}, {"value": 4414839984}, {"value": 4416376656}, {"value": 4595744592}, {"value": 0}, {"value": 4608058104, "symbolLocation": 0, "symbol": "PyInit_dmat_core"}], "flavor": "ARM_THREAD_STATE64", "lr": {"value": 6904523720}, "cpsr": {"value": 1073745920}, "fp": {"value": 6094572192}, "sp": {"value": 6094572160}, "esr": {"value": 1442840704, "description": " Address size fault"}, "pc": {"value": 6904292944, "matchesCrashFrame": 1}, "far": {"value": 0}}
+    libsystem_kernel.dylib                   __pthread_kill+8  off=0x9650
+    libsystem_pthread.dylib                  pthread_kill+288  off=0x6bc8
+    libsystem_c.dylib                        abort+180  off=0x76a00
+    libpython3.10.dylib                      fatal_error_exit+16  off=0x16ba60
+    libpython3.10.dylib                      fatal_error+924  off=0x16b960
+    libpython3.10.dylib                      _Py_FatalErrorFunc+56  off=0x16b2c0
+    libpython3.10.dylib                      _Py_FatalError_TstateNULL+20  off=0x121bac
+    libpython3.10.dylib                      PyInterpreterState_Get+52  off=0x16d908
+    dmat_core.so                             pyo3::impl_::pymodule::ModuleDef::make_module::h4a93b241a7c6dcbf+28  off=0x48e78
+    dmat_core.so                             PyInit_dmat_core+68  off=0x233c
+    Python                                   _imp_create_dynamic+712  off=0x170b74
+    Python                                   cfunction_vectorcall_FASTCALL+80  off=0xadcbc
+    Python                                   _PyEval_EvalFrameDefault+50008  off=0x1422c8
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   method_vectorcall+168  off=0x65810
+    Python                                   _PyEval_EvalFrameDefault+50008  off=0x1422c8
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   _PyObject_FastCallDictTstate+96  off=0x626b4
+    Python                                   slot_tp_call+188  off=0xcb43c
+    Python                                   _PyObject_MakeTpCall+128  off=0x62408
+    Python                                   _PyEval_EvalFrameDefault+42308  off=0x1404b4
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   method_vectorcall+168  off=0x65810
+    Python                                   _PyEval_EvalFrameDefault+50008  off=0x1422c8
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   _PyObject_FastCallDictTstate+96  off=0x626b4
+    Python                                   slot_tp_call+188  off=0xcb43c
+    Python                                   _PyObject_MakeTpCall+128  off=0x62408
+    Python                                   _PyEval_EvalFrameDefault+42308  off=0x1404b4
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   method_vectorcall+168  off=0x65810
+    Python                                   _PyEval_EvalFrameDefault+50008  off=0x1422c8
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   _PyObject_FastCallDictTstate+96  off=0x626b4
+    Python                                   slot_tp_call+188  off=0xcb43c
+    Python                                   _PyObject_MakeTpCall+128  off=0x62408
+    Python                                   _PyEval_EvalFrameDefault+42308  off=0x1404b4
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   _PyObject_FastCallDictTstate+208  off=0x62724
+    Python                                   slot_tp_init+188  off=0xcc618
+    Python                                   type_call+136  off=0xc4ac4
+    Python                                   _PyObject_MakeTpCall+128  off=0x62408
+    Python                                   _PyEval_EvalFrameDefault+42308  off=0x1404b4
+    Python                                   PyEval_EvalCode+168  off=0x13532c
+    Python                                   builtin_exec+428  off=0x1317d4
+    Python                                   cfunction_vectorcall_FASTCALL_KEYWORDS+76  off=0xadc14
+    Python                                   _PyEval_EvalFrameDefault+41968  off=0x140360
+    Python                                   _PyEval_Vector+116  off=0x144b34
+    Python                                   pymain_run_module+208  off=0x1a71f8
+    Python                                   Py_RunMain+668  off=0x1a6d54
+    Python                                   Py_BytesMain+40  off=0x1a7eb4
+    dyld                                     start+2476  off=0x6154
