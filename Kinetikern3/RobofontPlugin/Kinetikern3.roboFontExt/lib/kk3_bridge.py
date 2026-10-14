@@ -55,6 +55,13 @@ PARAM_V1_PASS2 = 32
 # (FEATURE_PUNCTUATION engines)
 PARAM_STYLE_DISPLAY = 64
 PARAM_STYLE_HANDWRITING = 128
+# keep the font's fit: each category of the glyph options (KK3GlyphOpt.fit_group)
+# at the Looseness that gives its own glyphs their sidebearings as they are, the
+# params' Looseness an offset from it (Result.category_fits); replaces PARAM_FIT_FROZEN
+PARAM_FIT_FONT = 256
+# KK3GlyphOpt.fit_group: the low byte names the category (1-255), FIT_FOLLOW spaces a
+# glyph at that category's fit without counting it toward the fit
+FIT_FOLLOW = 0x100
 
 GLYPHOPT_FROZEN = 1
 
@@ -88,6 +95,9 @@ FEATURE_PUNCTUATION = 2048
 # join is broken only when its strokes stay 3 units per 1000 em apart along
 # the shortest line between them, as Spacing QA judges it
 FEATURE_JOIN_CLEARANCE = 4096
+# keeping the font's fit (PARAM_FIT_FONT, KK3GlyphOpt.fit_group, kk3_result_category_fits), staying
+# close to its spacing (KK3Params.keep), a glyph's Looseness offset in full on punctuation by convention
+FEATURE_FONT_FIT = 8192
 
 # kk3_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
@@ -137,7 +147,8 @@ class KK3Params(Structure):
     _fields_ = [("struct_size", c_uint32), ("flags", c_uint32)] + [(n, c_double) for n in (
         "spring", "repulsion", "coupling", "white_credit", "depth_ratio", "rhythm_weight", "width_coupling",
         "min_clearance", "crevice_pressure", "max_negative_kern", "max_positive_kern", "min_kern", "field_cap",
-        "field_decay", "field_core", "threshold", "radius_ratio")] + [("budget", c_uint32), ("threads", c_uint32)]
+        "field_decay", "field_core", "threshold", "radius_ratio")] + [("budget", c_uint32), ("threads", c_uint32),
+                                                                      ("keep", c_double)]
 
 
 class KK3Progress(Structure):
@@ -201,7 +212,7 @@ class KK3HarnessPair(Structure):
 
 class KK3GlyphOpt(Structure):
     """Per-solve options of one glyph: its spacing group."""
-    _fields_ = [("flags", c_uint32), ("reserved", c_uint32), ("looseness", c_double), ("intensity", c_double)]
+    _fields_ = [("flags", c_uint32), ("fit_group", c_uint32), ("looseness", c_double), ("intensity", c_double)]
 
 
 class KK3KernIn(Structure):
@@ -243,7 +254,7 @@ class KK3MeasureStats(Structure):
                 ("loosest_count", c_uint32), ("tightest_count", c_uint32)]
 
 
-_SIZES = {KK3Point: 24, KK3Glyph: 104, KK3Params: 152, KK3Progress: 40, KK3Metrics: 64, KK3Entry: 24,
+_SIZES = {KK3Point: 24, KK3Glyph: 104, KK3Params: 160, KK3Progress: 40, KK3Metrics: 64, KK3Entry: 24,
           KK3Stats: 352, KK3Result: 464, KK3Ray: 24, KK3GlyphOpt: 24, KK3KernIn: 16, KK3PairOut: 24,
           KK3MeasureStats: 40, KK3Harness: 32, KK3HarnessPair: 16, KK3Joins: 32, KK3JoinStats: 64,
           KK3JoinSide: 24, KK3JoinPair: 64, KK3Punctuation: 40}
@@ -366,11 +377,12 @@ class InputPacker(object):
 
 
 def pack_glyph_opts(opts):
-    """[(frozen, looseness offset, intensity multiplier)] → a KK3GlyphOpt array."""
+    """[(frozen, looseness offset, intensity multiplier[, fit group])] → a KK3GlyphOpt array."""
     arr = (KK3GlyphOpt * max(len(opts), 1))()
     for k, o in enumerate(opts):
-        frozen, loose, inten = (tuple(o) + (False, 0.0, 1.0))[:3]
+        frozen, loose, inten, fit = (tuple(o) + (False, 0.0, 1.0, 0)[len(tuple(o)):])[:4]
         arr[k].flags = GLYPHOPT_FROZEN if frozen else 0
+        arr[k].fit_group = int(fit or 0)
         arr[k].looseness = float(loose or 0.0)
         arr[k].intensity = 1.0 if inten is None else float(inten)
     return arr
@@ -397,16 +409,17 @@ def pack_joins(joins, n):
 
 def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=True, scope_scripts=True,
                 threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False,
-                v1_pass2=False, style=None, **tuning):
+                v1_pass2=False, style=None, fit_font=False, keep=0.0, **tuning):
     """`style`: Pass 2's conventions, "display" or "handwriting" (None or
-    "text": text faces')."""
+    "text": text faces'). `fit_font`: keep the font's fit (the glyph options'
+    fit groups); `keep`: stay close to the font's spacing, 0 to 1."""
     p = KK3Params()
     p.struct_size = sizeof(KK3Params)
     p.flags = ((PARAM_CLASSES if classes else 0) | (PARAM_WINDOW if window else 0) |
                (PARAM_SCOPE_SCRIPTS if scope_scripts else 0) | (PARAM_SKIP_PASS2 if skip_pass2 else 0) |
                (PARAM_FIT_FROZEN if fit_frozen else 0) | (PARAM_V1_PASS2 if v1_pass2 else 0) |
                (PARAM_STYLE_DISPLAY if style == "display" else 0) |
-               (PARAM_STYLE_HANDWRITING if style == "handwriting" else 0))
+               (PARAM_STYLE_HANDWRITING if style == "handwriting" else 0) | (PARAM_FIT_FONT if fit_font else 0))
     p.spring, p.repulsion, p.coupling = float(spring), float(repulsion), float(coupling)
     for name in ("white_credit", "depth_ratio", "rhythm_weight", "width_coupling", "min_clearance",
                  "crevice_pressure", "max_negative_kern", "max_positive_kern", "min_kern", "field_cap",
@@ -417,6 +430,7 @@ def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=T
     p.radius_ratio = float(radius_ratio)
     p.budget = int(budget)
     p.threads = int(threads)
+    p.keep = max(0.0, min(1.0, float(keep or 0.0)))
     return p
 
 
@@ -464,6 +478,7 @@ class Engine(object):
             "kk3_solve_start3": ([c_void_p, POINTER(KK3Params), c_void_p, c_uint32, c_void_p, c_uint32,
                                   POINTER(KK3Harness)], c_void_p),
             "kk3_result_fitted_looseness": ([c_void_p], c_double),
+            "kk3_result_category_fits": ([c_void_p, POINTER(c_double), c_uint32], c_uint32),
             "kk3_fit_looseness": ([c_void_p, POINTER(KK3Params), c_void_p, c_uint32], c_double),
             "kk3_measure": ([c_void_p, c_void_p, c_void_p, c_uint32, c_void_p, c_uint32, c_uint32, c_void_p, c_void_p,
                              c_uint32, POINTER(KK3MeasureStats)], c_uint64),
@@ -1041,6 +1056,18 @@ class Result(object):
             return None
         v = fn(self.ptr)
         return None if v != v else float(v)
+
+    def category_fits(self):
+        """With PARAM_FIT_FONT, {category: fitted Looseness} of the categories that had enough sides, else {}."""
+        fn = getattr(self.engine.lib, "kk3_result_category_fits", None)
+        if fn is None or not self.ptr:
+            return {}
+        n = fn(self.ptr, None, 0)
+        if not n:
+            return {}
+        out = (c_double * n)()
+        fn(self.ptr, out, n)
+        return dict((k, float(v)) for k, v in enumerate(out) if v == v)
 
     def wanted(self):
         """Per glyph (lsb, rsb) Pass 1 wanted before rules, frozen glyphs and

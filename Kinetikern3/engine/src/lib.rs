@@ -143,6 +143,11 @@ pub const PARAM_V1_PASS2: u32 = 32;
 pub const PARAM_STYLE_DISPLAY: u32 = 64;
 /// The conventions of handwriting (`Style::Handwriting`).
 pub const PARAM_STYLE_HANDWRITING: u32 = 128;
+/// Keep the font's fit: each category of the glyph options
+/// (`KK3GlyphOpt.fit_group`) at the Looseness that gives its own glyphs their
+/// sidebearings as they are, the params' Looseness an offset from it
+/// (`kk3_result_category_fits`). It replaces `PARAM_FIT_FROZEN`.
+pub const PARAM_FIT_FONT: u32 = 256;
 
 /// `KK3GlyphOpt.flags`: keep the glyph's sidebearings, and never kern a pair
 /// of two frozen glyphs.
@@ -153,7 +158,10 @@ pub const GLYPHOPT_FROZEN: u32 = 1;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KK3GlyphOpt {
     pub flags: u32,
-    pub reserved: u32,
+    /// Its category for keeping the font's fit (`PARAM_FIT_FONT`): the low
+    /// byte names the category whose fit it is spaced at (0 none); with 0x100
+    /// it follows that category without counting toward its fit.
+    pub fit_group: u32,
     /// Looseness offset of the glyph's group, slider units (0 = none).
     pub looseness: f64,
     /// Kerning force as a multiple of the solve's intensity (1 = the same;
@@ -387,6 +395,10 @@ pub struct KK3Params {
     pub budget: u32,
     /// Worker threads (0 = all cores but one).
     pub threads: u32,
+    /// Stay close to the font's spacing: each free side moved this fraction
+    /// (0 to 1) of the way back to its sidebearing as it is, before Pass 2
+    /// (NaN or negative: 0).
+    pub keep: f64,
 }
 
 #[repr(C)]
@@ -517,7 +529,7 @@ pub struct KK3Ray {
 const _: () = {
     assert!(size_of::<KK3Point>() == 24);
     assert!(size_of::<KK3Glyph>() == 104);
-    assert!(size_of::<KK3Params>() == 152);
+    assert!(size_of::<KK3Params>() == 160);
     assert!(size_of::<KK3Progress>() == 40);
     assert!(size_of::<KK3Metrics>() == 64);
     assert!(size_of::<KK3Entry>() == 24);
@@ -553,6 +565,8 @@ struct ResultBox {
     kern: Vec<u8>,
     lookup: Lookup,
     fitted: f64,
+    /// With `PARAM_FIT_FONT`, the fitted Looseness of each category.
+    category_fits: Vec<f64>,
     /// Pass 1's wanted (lsb, rsb) per glyph.
     wanted: Vec<f64>,
 }
@@ -737,6 +751,8 @@ unsafe fn read_params(upm: f64, p: *const KK3Params) -> Result<Params, String> {
         glyph_opts: None,
         fit_frozen: c.flags & PARAM_FIT_FROZEN != 0,
         looseness,
+        fit_font: c.flags & PARAM_FIT_FONT != 0,
+        keep: if c.keep.is_finite() && c.keep > 0.0 { c.keep.min(1.0) } else { 0.0 },
         harness: None,
         keep_bare: false,
         conventions: None,
@@ -862,6 +878,7 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         kern: out.kern.iter().map(|&k| k as u8).collect(),
         lookup,
         fitted: out.fitted,
+        category_fits: out.category_fits.clone(),
         wanted: p1.wanted_lsb.iter().zip(&p1.wanted_rsb).flat_map(|(&l, &r)| [l, r]).collect(),
     });
     let ptr = |v: &[u32]| if v.is_empty() { std::ptr::null() } else { v.as_ptr() };
@@ -1266,6 +1283,7 @@ pub unsafe extern "C" fn kk3_solve_start2(
                     frozen: o.flags & GLYPHOPT_FROZEN != 0,
                     looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
                     intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
+                    fit_group: o.fit_group,
                 })
                 .collect();
             p.glyph_opts = Some(Arc::new(v));
@@ -1322,6 +1340,7 @@ pub unsafe extern "C" fn kk3_solve_start4(
                     frozen: o.flags & GLYPHOPT_FROZEN != 0,
                     looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
                     intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
+                    fit_group: o.fit_group,
                 })
                 .collect();
             p.glyph_opts = Some(Arc::new(v));
@@ -1384,6 +1403,24 @@ pub unsafe extern "C" fn kk3_result_fitted_looseness(res: *const KK3Result) -> f
         return f64::NAN;
     }
     (*(res as *const ResultBox)).fitted
+}
+
+/// With `PARAM_FIT_FONT`, the fitted Looseness (slider units, from 0) of
+/// each category of the glyph options: index = category, NaN for one without
+/// enough sides. Copies up to `n` values to `out` (NULL: none) and returns
+/// how many there are (0 without `PARAM_FIT_FONT`).
+#[no_mangle]
+pub unsafe extern "C" fn kk3_result_category_fits(res: *const KK3Result, out: *mut f64, n: u32) -> u32 {
+    if res.is_null() {
+        return 0;
+    }
+    let fits = &(*(res as *const ResultBox)).category_fits;
+    if !out.is_null() {
+        for (k, v) in fits.iter().take(n as usize).enumerate() {
+            *out.add(k) = *v;
+        }
+    }
+    fits.len() as u32
 }
 
 /// The Looseness offset (slider units, relative to `params`) at which Pass 1
@@ -1512,10 +1549,13 @@ pub unsafe extern "C" fn kk3_measure(
 /// `PARAM_STYLE_DISPLAY`, `PARAM_STYLE_HANDWRITING`), 4096 the join
 /// checker's shortest line (`KK3JoinPair.clearance`, `JOINPAIR_NEAR`: a join
 /// is broken only when its strokes stay 3 units per 1000 em apart along the
-/// shortest line between them, as Spacing QA judges it).
+/// shortest line between them, as Spacing QA judges it), 8192 keeping the
+/// font's fit and staying close to its spacing (`PARAM_FIT_FONT`,
+/// `KK3GlyphOpt.fit_group`, `kk3_result_category_fits`, `KK3Params.keep`; a
+/// glyph's Looseness offset counts in full on punctuation by convention).
 #[no_mangle]
 pub extern "C" fn kk3_features() -> u32 {
-    8191
+    16383
 }
 
 /// The glyphs `kk3_stem_slant` reads, by name, space separated and in its

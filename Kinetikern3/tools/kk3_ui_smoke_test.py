@@ -1552,6 +1552,7 @@ class SmokeTest(object):
             self.check_punctuation_lookups()
             self.check_spaces_in_step()
             self.change_settings()
+            self.check_categories()
             self.apply_sample()
             self.whole_font()
             self.close_window()
@@ -1967,6 +1968,133 @@ class SmokeTest(object):
                   "sliders, threshold and sample text are saved in Glyphs.defaults",
                   ", ".join("%s=%r" % (k, v if k != "sample" else "%d chars" % len(v or ""))
                             for k, v in saved.items()))
+
+    # 2b. the Categories window: a Looseness per category, keeping the font's fit, staying close to it
+    def check_categories(self):
+        rep, ui, win = self.report, self.ui, self.win
+        import json
+        import kk3_groups as kg
+        snap = win.snapshot
+        cats = win._glyph_categories()
+        timeout = self.args.timeout
+        main_button = ui.button("Categories…")
+        start = win.result
+        m0 = [(m.lsb, m.rsb, m.advance) for m in start.metrics]
+
+        valid = [m.valid for m in start.metrics]
+
+        def metrics():
+            return [(m.lsb, m.rsb, m.advance) for m in win.result.metrics]
+
+        def differ(a, b, pick=None):
+            """The glyphs (spaced ones; of category `pick`) whose metrics differ between a and b."""
+            return [snap.names[i] for i in range(len(a)) if valid[i] and (pick is None or cats[i] in pick)
+                    and a[i] != b[i]]
+
+        def preview(what, fn, *args):
+            before = win.result
+            self.act(what, fn, *args)
+            self.wait_for("the preview after " + what, lambda: self.ready(before), timeout,
+                          stage="preview after a category change")
+
+        self.act("Categories… button", main_button.performClick_, None)
+        cw = win.categories_window
+        if cw is None:
+            raise Abort("Categories… opened no window")
+        nsw = cw.w.getNSWindow()
+        counts = win.category_counts()
+        keys = [k for k, _slider, _field in cw._rows]
+        rep.check(nsw.isVisible() and keys == [k for k in kg.CATEGORY_KEYS if counts.get(k)],
+                  "Categories… opens a row for each category the master has",
+                  ", ".join("%s %d" % (k, counts[k]) for k in keys))
+        self.act("Categories… again", main_button.performClick_, None)
+        rep.check(win.categories_window is cw, "Categories… again brings the same window to the front")
+        key = next((k for k in ("quotes", "punctuation", "brackets", "dashes", "symbols", "figures") if k in keys),
+                   None)
+        if key is None:
+            raise Abort("the mock master has no punctuation, symbols or figures")
+        slider = getattr(cw.w, "slider_" + key).getNSSlider()
+        field = getattr(cw.w, "field_" + key).getNSTextField()
+
+        # a slider: the category's glyphs loosen, the letters stay; saved, and counted on the button
+        preview("a category's slider", set_slider, slider, 1.0)
+        res = win.result
+        m1 = metrics()
+        free = [i for i, c in enumerate(cats) if c == key and res.metrics[i].valid and not res.metrics[i].flags]
+        looser = [i for i in free if m1[i][0] > m0[i][0] + 1e-6 and m1[i][1] > m0[i][1] + 1e-6]
+        letters = differ(m0, m1, ("capitals", "lowercase"))
+        rep.check(free and len(looser) == len(free) and not letters,
+                  "a category's slider loosens its glyphs and leaves the letters",
+                  "%s +1: %d of %d glyphs looser, %d letters moved %s" % (key, len(looser), len(free), len(letters),
+                                                                        letters[:5]))
+        saved = MockGlyphs.defaults.get(PREFIX + "categoryOffsets")
+        try:
+            saved = json.loads(saved) if saved else None
+        except ValueError:
+            pass
+        rep.check(win.category_offsets == {key: 1.0} and saved == {key: 1.0}
+                  and str(field.stringValue()) == "+1.00" and str(main_button.title()) == "Categories (1)…",
+                  "the offset shows in its field and on the button, and is saved",
+                  "offsets %r, saved %r, field %r, button %r" % (win.category_offsets, saved, str(field.stringValue()),
+                                                                 str(main_button.title())))
+
+        # its field, typed with Return; then its 0 button: the preview as it was, exactly
+        preview("a category's field", enter_into, field, "-0.5")
+        rep.check(win.category_offsets == {key: -0.5} and abs(slider.doubleValue() + 0.5) < 1e-9
+                  and str(field.stringValue()) == "-0.50",
+                  "a category's field sets the offset and moves its slider",
+                  "offsets %r, slider %g, field %r" % (win.category_offsets, slider.doubleValue(),
+                                                       str(field.stringValue())))
+        preview("a category's 0 button", getattr(cw.w, "reset_" + key).getNSButton().performClick_, None)
+        back = differ(m0, metrics())
+        rep.check(win.category_offsets == {} and not back and str(main_button.title()) == "Categories…",
+                  "0 puts the category back: every glyph's metrics as before, exactly",
+                  "offsets %r, %d glyphs differ %s, button %r" % (win.category_offsets, len(back), back[:4],
+                                                                  str(main_button.title())))
+
+        # Keep the font's fit: the fitted Looseness of each kind of letter, shown in the window
+        if win.font_fit_available():
+            preview("Keep the font's fit", cw.w.keepFit.getNSButton().performClick_, None)
+            note = str(cw.w.keepFitNote.get())
+            rep.check(win.keep_fit and win._category_fits and "lowercase" in note,
+                      "Keep the font's fit measures the font's own tightness and shows it",
+                      "fits %r; %s" % (dict((g, round(v, 2)) for g, v in win._category_fits.items()), note))
+            preview("Keep the font's fit off", cw.w.keepFit.getNSButton().performClick_, None)
+            rep.check(not win.keep_fit and not differ(m0, metrics()), "off again: the preview as before, exactly")
+
+        # Stay close at 100 %: every free side at the font's own sidebearing
+        stay = cw.w.stayCloseField.getNSTextField()
+        preview("Stay close field", enter_into, stay, "100")
+        res = win.result
+        off = []
+        for i, name in enumerate(snap.names):
+            m, spec = res.metrics[i], snap.specs[i]
+            if not m.valid or m.flags or not (spec.cur_lsb == spec.cur_lsb and spec.cur_rsb == spec.cur_rsb):
+                continue
+            d = max(abs(m.lsb - spec.cur_lsb), abs(m.rsb - spec.cur_rsb))
+            if d > 1e-6:
+                off.append((name, round(d, 3)))
+        rep.check(win.stay_close == 100.0 and abs(cw.w.stayClose.get() - 100.0) < 1e-9 and not off,
+                  "Stay close at 100 % keeps every free glyph's sidebearings as they are in the font",
+                  "%d off, e.g. %s" % (len(off), off[:4]))
+        preview("Stay close slider", set_slider, cw.w.stayClose.getNSSlider(), 0.0)
+        rep.check(win.stay_close == 0.0 and str(stay.stringValue()) == "0" and not differ(m0, metrics()),
+                  "the slider back to 0: the preview as before, exactly",
+                  "stay close %g, field %r" % (win.stay_close, str(stay.stringValue())))
+
+        # two offsets, then All categories to 0
+        other = next((k for k in keys if k != key), None)
+        set_slider(slider, 0.75)
+        if other is not None:
+            set_slider(getattr(cw.w, "slider_" + other).getNSSlider(), -0.25)
+        n = len(win.category_offsets)
+        preview("All categories to 0", cw.w.resetAll.getNSButton().performClick_, None)
+        rep.check(n == (2 if other else 1) and win.category_offsets == {} and not differ(m0, metrics())
+                  and abs(slider.doubleValue()) < 1e-9,
+                  "All categories to 0 clears every offset", "%d offsets before, %r after" % (n, win.category_offsets))
+
+        self.act("close the Categories window", nsw.performClose_, None)
+        rep.check(win.categories_window is None and not nsw.isVisible(), "the Categories window closes")
 
     def sample_mask(self, snap):
         mask = bytearray(len(snap.names))

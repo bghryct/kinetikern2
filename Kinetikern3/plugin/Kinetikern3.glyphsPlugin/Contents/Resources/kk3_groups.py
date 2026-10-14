@@ -325,6 +325,40 @@ def section_of(name, category, subcategory, case, script):
     return category or "Other"
 
 
+# Tightness by category (the Categories window): every glyph's category, in
+# the order the window lists them
+CATEGORIES = (("capitals", "Capitals"), ("lowercase", "Lowercase"), ("smallcaps", "Small caps"),
+              ("letters", "Letters without case"), ("figures", "Figures"), ("quotes", "Quotes"),
+              ("brackets", "Brackets"), ("dashes", "Dashes"), ("punctuation", "Other punctuation"),
+              ("symbols", "Symbols"), ("other", "Marks and other"))
+CATEGORY_KEYS = tuple(k for k, _label in CATEGORIES)
+# Keep the font's fit: the categories fitted on their own (engine fit groups);
+# every other glyph follows the lowercase (kb.FIT_FOLLOW)
+FIT_GROUPS = {"capitals": 1, "lowercase": 2, "smallcaps": 3, "letters": 4}
+# a category's Looseness offset, slider units
+OFFSET_RANGE = (-1.5, 1.5)
+
+
+def category_of(name, category, subcategory, case, script):
+    """The glyph's category for tightness by category (CATEGORY_KEYS)."""
+    section = section_of(name, category, subcategory, case, script)
+    head, _sep, tail = section.partition(" \u00b7 ")
+    if category == "Letter":
+        return {"Uppercase": "capitals", "Lowercase": "lowercase", "Small caps": "smallcaps"}.get(tail, "letters")
+    if head == "Figures":
+        return "figures"
+    if head == "Punctuation":
+        return {"Quotes": "quotes", "Brackets": "brackets", "Dashes": "dashes"}.get(tail, "punctuation")
+    if head == "Symbols":
+        return "symbols"
+    return "other"
+
+
+def snapshot_categories(snapshot):
+    """category_of every glyph of a snapshot, in its glyph order."""
+    return [category_of(*entry) for entry in snapshot_entries(snapshot)]
+
+
 # The groups by_category makes, in this order, then one per script
 CATEGORY_GROUPS = ("Figures", "Punctuation", "Symbols")
 

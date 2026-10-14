@@ -796,7 +796,7 @@ def _stub_vanilla():
         def makeKey(self):
             pass
 
-    for name in ("FloatingWindow", "TextBox", "SegmentedButton", "Button", "List"):
+    for name in ("Window", "FloatingWindow", "TextBox", "SegmentedButton", "Button", "List"):
         setattr(stub, name, type(name, (Control,), {}))
     sys.modules["vanilla"] = stub
 

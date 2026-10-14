@@ -47,6 +47,7 @@ same pairs up in the font's kerning.
 
 from __future__ import division, print_function, unicode_literals
 
+import json
 import math
 import os
 import time
@@ -55,7 +56,8 @@ import weakref
 
 import objc
 import vanilla
-from AppKit import NSAlert, NSAlertFirstButtonReturn, NSColor, NSFont, NSObject
+import vanilla.dialogs
+from AppKit import NSAlert, NSAlertFirstButtonReturn, NSColor, NSFont, NSObject, NSPasteboard, NSPasteboardTypeString
 from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 import kk3_apply as ka
@@ -75,7 +77,7 @@ import kk3_snapshot as ks
 PREFIX = host.PREFIX
 # preferences the window remembers between sessions (keys under PREFIX)
 PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "view",
-             "overlayStyle", "alignWords", "sample", "replace")
+             "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "sample", "replace")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -90,6 +92,10 @@ VIEWS = ["Side by side", "Toggle", "Overlay"]
 VIEW_SIDE, VIEW_TOGGLE, VIEW_OVERLAY = 0, 1, 2
 OVERLAY_STYLES = ["Font in red", "Both translucent"]
 OVERLAY_RED, OVERLAY_TRANSLUCENT = 0, 1
+# Copy, Paste, Save and Load Settings: a JSON object that names itself, its choices as words
+SETTINGS_FORMAT, SETTINGS_VERSION = "kinetikern3", 1
+SCOPE_NAMES, VIEW_NAMES, OVERLAY_NAMES, JOIN_NAMES = ["sample", "whole"], ["side", "toggle", "overlay"], \
+    ["red", "translucent"], ["keep", "space"]
 SCOPES = ["Glyphs in sample text", "Whole font"]
 SCOPE_SAMPLE, SCOPE_WHOLE = 0, 1
 LOOSENESS_RATIO = 3.86
@@ -296,6 +302,7 @@ class KK3Window(object):
         self._overlay_due = False  # the font laid over Kinetikern3 (Toggle, Overlay), after the right pane
         self._left_stale = False  # the left pane, hidden (Toggle, Overlay), missed a layout
         self._showing_font = False  # Toggle: the font as it is is shown (else Kinetikern3)
+        self._test_pasteboard = None  # Copy and Paste Settings in a test instance (never the user's clipboard)
         self._render_at = 0.0  # not before this time (a pause after typing)
         self._fonts = []  # the fonts the Font popup lists, in its order
         self._ruled = set()  # glyphs with a side driven by a metrics key or an aligned component
@@ -316,6 +323,13 @@ class KK3Window(object):
         self._harness_cache = None
         self._job_harness = None
         self._result_harness = None
+        # tightness by category and keeping the font's fit (the Categories window)
+        self.category_offsets = self._offsets_setting()
+        self.keep_fit = self._setting("keepFit", False, bool)
+        self.stay_close = min(100.0, max(0.0, self._setting("stayClose", 0.0)))
+        self.categories_window = None
+        self._categories = None  # (snapshot, the category of each of its glyphs)
+        self._category_fits = {}  # the last result's fitted Looseness per engine fit group
         # the Looseness the last solve fitted to the frozen glyphs or kept joins;
         # it ran at that plus the slider's (FEATURE_FIT_OFFSET)
         self._fitted = None
@@ -506,6 +520,8 @@ class KK3Window(object):
             "Most kerning entries a whole-font Apply writes (the least important are left out). Empty or 0: "
             "no limit.")
         w.maxPairsNote = vanilla.TextBox((620, 70, 112, 14), "", sizeStyle="mini")
+        w.categoriesButton = vanilla.Button((738, 64, 106, 22), "Categories…", callback=self.openCategories,
+                                            sizeStyle="small")
         w.connected = vanilla.CheckBox((850, 67, 128, 18), "Connected script", sizeStyle="small",
                                        value=self._setting("connected", True, bool), callback=self.connectedChanged)
         w.connected.getNSButton().setToolTip_(
@@ -513,7 +529,7 @@ class KK3Window(object):
             "most lowercase letters overlap most of their partners, the font is a connected script. A font whose "
             "letters do not join is spaced as usual, so this can stay on.")
         mode = int(self._setting("joinMode", JOIN_KEEP, int))
-        w.joinMode = vanilla.PopUpButton((980, 66, 150, 20), JOIN_MODES, callback=self.joinModeChanged,
+        w.joinMode = vanilla.PopUpButton((980, 66, 124, 20), JOIN_MODES, callback=self.joinModeChanged,
                                          sizeStyle="small")
         w.joinMode.set(mode if mode in (JOIN_KEEP, JOIN_SPACE) else JOIN_KEEP)
         w.joinMode.getNSPopUpButton().setToolTip_(
@@ -528,6 +544,18 @@ class KK3Window(object):
         # window's edge, and the label then covered every control above.)
         w.connectedValue = vanilla.TextBox((14, 0, 10, 10), "", sizeStyle="mini")
         w.connectedValue.show(False)
+        w.settingsMenu = vanilla.ActionButton((-92, 64, 38, 22), [
+            dict(title="Copy Settings", callback=self.copySettings),
+            dict(title="Paste Settings", callback=self.pasteSettings),
+            "----",
+            dict(title="Save Settings…", callback=self.saveSettings),
+            dict(title="Load Settings…", callback=self.loadSettings),
+            "----",
+            dict(title="Reset Settings", callback=self.resetSettings)], sizeStyle="small")
+        w.settingsMenu.getNSPopUpButton().setToolTip_(
+            "Settings: copy them as text (JSON) to paste into another Kinetikern3 window or keep with a project, "
+            "save them to a file and load them, or go back to Kinetikern3's defaults. The sample text, the master "
+            "and the font's spacing groups stay with the font.")
         w.reload = vanilla.Button((-50, 64, 36, 22), "↻", callback=self.reloadOutlines, sizeStyle="small")
         w.reload.getNSButton().setToolTip_("Read the outlines of the font again")
 
@@ -719,10 +747,151 @@ class KK3Window(object):
             return DEFAULT_MAX_PAIRS
 
     def _glyph_opts(self):
-        """Per-glyph options of the spacing groups (None: no group changes anything)."""
+        """Per-glyph options: the spacing groups' (frozen, Looseness offset,
+        kerning force), each glyph's category offset on top, and with Keep the
+        font's fit its fit group (None: nothing changes anything)."""
         if self.snapshot is None or not self.engine.features & kb.FEATURE_GLYPH_OPTS:
             return None
-        return self.groups.opts_for(self.snapshot.names)
+        base = self.groups.opts_for(self.snapshot.names)
+        offsets = dict((k, v) for k, v in self.category_offsets.items() if v)
+        fit = self._keep_fit_on()
+        if not offsets and not fit:
+            return base
+        out = []
+        for i, cat in enumerate(self._glyph_categories()):
+            frozen, loose, force = tuple(base[i])[:3] if base else (False, 0.0, 1.0)
+            if not frozen:
+                loose += offsets.get(cat, 0.0)
+            out.append((frozen, loose, force, self._fit_group(cat) if fit else 0))
+        return out
+
+    # ---------------------------------------------------------- categories
+    def font_fit_available(self):
+        return bool(self.engine.features & kb.FEATURE_FONT_FIT)
+
+    def _keep_fit_on(self):
+        return bool(self.keep_fit and self.font_fit_available())
+
+    def _offsets_setting(self):
+        """The categories' Looseness offsets as saved ({category: offset}, the non-zero ones)."""
+        raw = self._setting("categoryOffsets", "", str)
+        try:
+            d = json.loads(raw) if raw else {}
+        except ValueError:
+            d = {}
+        return self._valid_offsets(d)
+
+    @staticmethod
+    def _valid_offsets(d):
+        lo, hi = kg.OFFSET_RANGE
+        out = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if (k in kg.CATEGORY_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+                        and v != 0):
+                    out[k] = min(hi, max(lo, float(v)))
+        return out
+
+    def _glyph_categories(self):
+        """The category of each glyph of the snapshot (kk3_groups.category_of), read once per snapshot."""
+        snap = self.snapshot
+        if snap is None:
+            return []
+        if self._categories is None or self._categories[0] is not snap:
+            self._categories = (snap, kg.snapshot_categories(snap))
+        return self._categories[1]
+
+    def category_counts(self):
+        """{category: glyphs} of the snapshot, None while the font is read."""
+        if self.snapshot is None:
+            return None
+        out = {}
+        for c in self._glyph_categories():
+            out[c] = out.get(c, 0) + 1
+        return out
+
+    def _fit_group(self, category):
+        """The engine fit group of a category: fitted on its own, or following the lowercase (small caps by
+        convention follow the letters' rhythm through their convention)."""
+        g = kg.FIT_GROUPS.get(category)
+        if category == "smallcaps" and self._small_caps_on():
+            g = None
+        return g if g is not None else kg.FIT_GROUPS["lowercase"] | kb.FIT_FOLLOW
+
+    def set_keep_fit(self, on):
+        self.keep_fit = bool(on)
+        self._save("keepFit", self.keep_fit)
+        self._categories_changed()
+
+    def set_stay_close(self, percent):
+        self.stay_close = min(100.0, max(0.0, float(percent)))
+        self._save("stayClose", self.stay_close)
+        self._categories_changed()
+
+    def set_category_offset(self, key, value):
+        if key not in kg.CATEGORY_KEYS:
+            return
+        d = dict(self.category_offsets)
+        d[key] = value
+        self.set_category_offsets(d)
+
+    def set_category_offsets(self, offsets):
+        self.category_offsets = self._valid_offsets(offsets)
+        self._save("categoryOffsets", json.dumps(self.category_offsets, sort_keys=True))
+        self._categories_changed()
+
+    def _categories_changed(self):
+        self._update_labels()
+        self._request_preview()
+        if self.harness_window is not None:
+            self.harness_window.settings_changed()
+
+    def _categories_active(self):
+        """How many adjustments the Categories window makes (offsets, the fit, staying close)."""
+        return len([v for v in self.category_offsets.values() if v]) + int(self._keep_fit_on()) + int(
+            self.stay_close > 0)
+
+    def _update_categories_button(self):
+        if self.w is None or getattr(self.w, "categoriesButton", None) is None:
+            return
+        n = self._categories_active()
+        self.w.categoriesButton.setTitle("Categories (%d)…" % n if n else "Categories…")
+        lines = ["Tightness by category: a Looseness for capitals, lowercase, figures, quotes, brackets and the "
+                 "rest on top of the main one; Keep the font's fit; Stay close to the font's spacing."]
+        if self._keep_fit_on():
+            lines.append(self.font_fit_note())
+        if self.stay_close > 0:
+            lines.append("Staying %d %% of the way to the font's own sidebearings." % round(self.stay_close))
+        if self.category_offsets:
+            labels = dict(kg.CATEGORIES)
+            lines.append("Offsets: " + ", ".join("%s %+.2f" % (labels[k], v)
+                                                for k, v in sorted(self.category_offsets.items())))
+        self.w.categoriesButton.getNSButton().setToolTip_("\n".join(lines))
+
+    def font_fit_note(self):
+        """A line on keeping the font's fit (the Categories window, the button's tooltip)."""
+        if not self.font_fit_available():
+            return "This build of the engine cannot fit to the font: rebuild the plugin (build.sh)."
+        if not self._keep_fit_on():
+            return "Off: every category at the main Looseness, plus its offset below."
+        fits = self._category_fits
+        names = {1: "capitals", 2: "lowercase", 3: "small caps", 4: "letters without case"}
+        parts = ["%s %+.2f" % (names[g], fits[g]) for g in sorted(fits) if g in names]
+        if not parts:
+            return "On: the font's own tightness is measured with the next preview."
+        return ("On: the font's own spacing sits at Looseness %s; the main Looseness and the offsets below move "
+                "from there." % ", ".join(parts))
+
+    def openCategories(self, sender=None):
+        if self.categories_window is not None:
+            self.categories_window.front()
+            return self.categories_window
+        import kk3_categories_window
+        self.categories_window = kk3_categories_window.CategoriesWindow(self)
+        return self.categories_window
+
+    def categories_window_closed(self):
+        self.categories_window = None
 
     def _kept_sides(self):
         """(left sides, right sides) Keep joins keeps as drawn, glyph
@@ -754,7 +923,9 @@ class KK3Window(object):
         fit = (bool(opts) and self.groups.match_frozen and any(o[0] for o in opts)) or self._keeps_joins()
         return kb.make_params(spring=spring, repulsion=repulsion, coupling=coupling, classes=True, window=True,
                               scope_scripts=True, threshold=self._threshold() * self._upm() / 1000.0,
-                              budget=budget, threads=self._threads(), fit_frozen=fit, style=self._style())
+                              budget=budget, threads=self._threads(), fit_frozen=fit, style=self._style(),
+                              fit_font=self._keep_fit_on(),
+                              keep=self.stay_close / 100.0 if self.font_fit_available() else 0.0)
 
     def _solve_key(self, whole):
         """What a result depends on, to tell whether it can be reused (the
@@ -762,7 +933,10 @@ class KK3Window(object):
         spring, repulsion, coupling = self._physics()
         return (self._generation, round(spring, 9), round(repulsion, 9), round(coupling, 9),
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
-                self.join_count, self._join_mode(), self._small_caps_on(), self._figures_on(), self._punctuation_on(),
+                self.join_count, self._join_mode(),
+                tuple(sorted(self.category_offsets.items())), self._keep_fit_on(), round(self.stay_close, 3),
+                # the last five as they are: the self-tests read them from the end
+                self._small_caps_on(), self._figures_on(), self._punctuation_on(),
                 self._style(),
                 round(self._harness_strength(), 4))
 
@@ -802,6 +976,7 @@ class KK3Window(object):
         self.w.thresholdValue.set(text)
         self._update_harness_label()
         self._update_join_label()
+        self._update_categories_button()
 
     def _update_harness_label(self):
         if self.w is None or getattr(self.w, "harness", None) is None:
@@ -1555,6 +1730,8 @@ class KK3Window(object):
     def _context_ready(self, context):
         self.context = context
         self._start_slant_probe()
+        if self.harness_window is not None:
+            self.harness_window.snapshot_changed()  # its list holds the old snapshot's glyph indices
         # a design whose glyphs touch by construction (underline, charted,
         # guide lines): every touching side is kept, not only the letters'
         self.join_decorated = False
@@ -1685,6 +1862,7 @@ class KK3Window(object):
         old = self.result
         self.result = result
         self._fitted = result.fitted_looseness if result is not None else None
+        self._category_fits = result.category_fits() if result is not None else {}
         self._result_kind = kind
         self._requested = requested
         self._result_key = key
@@ -1699,6 +1877,8 @@ class KK3Window(object):
             self.harness_window.result_ready()
         if self.joins_window is not None:
             self.joins_window.result_ready()
+        if self.categories_window is not None:
+            self.categories_window.result_ready()
 
     def _check_joins(self):
         """The join checker on the result shown: what it does to the
@@ -2184,6 +2364,256 @@ class KK3Window(object):
             self._set_status("Reverted the last apply: the kerning, groups and sidebearings of %s are back as they "
                              "were." % name)
 
+    # ------------------------------------------------------------ settings
+    def settings(self):
+        """Every control's setting, as a plain dict: Copy and Save Settings write it as JSON, Paste and Load
+        Settings read it back (apply_settings). The sample text, the master and the font's spacing groups
+        belong to the font and stay out."""
+        w = self.w
+        return {
+            SETTINGS_FORMAT: SETTINGS_VERSION,
+            "looseness": round(float(w.tightness.get()), 4),
+            "kerning": bool(w.kerning.get()),
+            "intensity": round(float(w.intensity.get()), 2),
+            "threshold": round(self._threshold(), 3),
+            "harness": bool(w.harness.get()),
+            "harnessStrength": round(float(w.harnessStrength.get()), 2),
+            "conventions": self.harness_style,
+            "punctuation": bool(w.punctuation.get()),
+            "figures": bool(w.figures.get()),
+            "smallCaps": bool(w.smallCaps.get()),
+            "connected": bool(w.connected.get()),
+            "joinMode": JOIN_NAMES[self._join_mode()],
+            "alongSlant": bool(w.alongSlant.get()),
+            "maxPairs": self._budget(),
+            "threads": self._threads(),
+            "applyTo": SCOPE_NAMES[int(w.scope.get())],
+            "replaceKerning": bool(w.replace.get()),
+            "textSize": round(self._size, 1),
+            "view": VIEW_NAMES[self._view()],
+            "overlay": OVERLAY_NAMES[int(w.overlayStyle.get())],
+            "alignWords": bool(w.alignWords.get()),
+            "keepFit": bool(self.keep_fit),
+            "stayClose": round(self.stay_close, 1),
+            "categories": dict(sorted(self.category_offsets.items())),
+        }
+
+    @staticmethod
+    def default_settings():
+        """Kinetikern3's own settings (Reset Settings)."""
+        return {SETTINGS_FORMAT: SETTINGS_VERSION, "looseness": 0.0, "kerning": True, "intensity": 100.0,
+                "threshold": DEFAULT_THRESHOLD, "harness": False, "harnessStrength": 100.0, "conventions": kh.AUTO,
+                "punctuation": True, "figures": True, "smallCaps": True, "connected": True, "joinMode": "keep",
+                "alongSlant": True, "maxPairs": DEFAULT_MAX_PAIRS, "threads": 0, "applyTo": "sample",
+                "replaceKerning": True, "textSize": DEFAULT_SIZE, "view": "side", "overlay": "red",
+                "alignWords": True, "keepFit": False, "stayClose": 0.0, "categories": {}}
+
+    def apply_settings(self, d):
+        """Sets the controls from a settings dict (settings()) the way a user would: each change goes through
+        its control's callback, so it is saved and the preview follows. Connected script, the join mode and
+        Along the italic angle only when they change, as each starts the engine again. Keys it does not know
+        and values of the wrong kind are left out. Returns (the keys applied, the keys left out)."""
+        if not isinstance(d, dict) or SETTINGS_FORMAT not in d:
+            raise ValueError('not Kinetikern3 settings (they start with {"%s": %d, ...})'
+                             % (SETTINGS_FORMAT, SETTINGS_VERSION))
+        w = self.w
+        known = set(self.settings())
+        applied, ignored = [], [k for k in d if k not in known]
+
+        def number(key, lo, hi):
+            if key not in d:
+                return None
+            v = d[key]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                ignored.append(key)
+                return None
+            applied.append(key)
+            return min(hi, max(lo, float(v)))
+
+        def flag(key):
+            if key not in d:
+                return None
+            if not isinstance(d[key], bool):
+                ignored.append(key)
+                return None
+            applied.append(key)
+            return d[key]
+
+        def choice(key, names):
+            if key not in d:
+                return None
+            v = d[key]
+            if isinstance(v, str) and v in names:
+                applied.append(key)
+                return names.index(v)
+            ignored.append(key)
+            return None
+
+        loose, inten = number("looseness", TIGHT_MIN, LOOSE_MAX), number("intensity", 0.0, MAX_INTENSITY)
+        if loose is not None:
+            w.tightness.set(loose)
+        if inten is not None:
+            w.intensity.set(inten)
+        if loose is not None or inten is not None:
+            self.physicsChanged(None)
+        v = flag("kerning")
+        if v is not None:
+            w.kerning.set(v)
+            self.kerningChanged(None)
+        v = number("threshold", 0.0, MAX_THRESHOLD)
+        if v is not None:
+            w.threshold.set(v)
+            self.thresholdChanged(None)
+        on, strength = flag("harness"), number("harnessStrength", 0.0, 100.0)
+        if on is not None:
+            w.harness.set(on)
+        if strength is not None:
+            w.harnessStrength.set(strength)
+        if on is not None or strength is not None:
+            self.harnessChanged(None)
+        if "conventions" in d:
+            if d["conventions"] in [k for k, _label in self.styles]:
+                applied.append("conventions")
+                self.set_harness_style(d["conventions"])
+            else:
+                ignored.append("conventions")
+        for key, control, callback in (("punctuation", w.punctuation, self.punctuationChanged),
+                                       ("figures", w.figures, self.figuresChanged),
+                                       ("smallCaps", w.smallCaps, self.smallCapsChanged),
+                                       ("replaceKerning", w.replace, self.replaceChanged),
+                                       ("alignWords", w.alignWords, self.alignWordsChanged)):
+            v = flag(key)
+            if v is not None:
+                control.set(v)
+                callback(None)
+        v = number("maxPairs", 0, 1.0e9)
+        if v is not None:
+            w.maxPairs.set(str(int(v)) if v >= 1 else "")
+            self.maxPairsChanged(None)
+        v = number("threads", 0, self.engine.cpu_count)
+        if v is not None:
+            w.threads.set(int(v))
+            self.threadsChanged(None)
+        v = choice("applyTo", SCOPE_NAMES)
+        if v is not None:
+            w.scope.set(v)
+            self.scopeChanged(None)
+        v = number("textSize", MIN_SIZE, MAX_SIZE)
+        if v is not None:
+            self._set_size(v)
+        style, view = choice("overlay", OVERLAY_NAMES), choice("view", VIEW_NAMES)
+        if style is not None:
+            w.overlayStyle.set(style)
+            self._save("overlayStyle", style)
+        if view is not None:
+            w.viewMode.set(view)
+            self._save("view", view)
+        if style is not None or view is not None:
+            self._apply_view()
+        if "categories" in d:
+            if isinstance(d["categories"], dict) and all(
+                    k in kg.CATEGORY_KEYS and isinstance(v, (int, float)) and not isinstance(v, bool)
+                    for k, v in d["categories"].items()):
+                applied.append("categories")
+                self.set_category_offsets(d["categories"])
+            else:
+                ignored.append("categories")
+        v = flag("keepFit")
+        if v is not None:
+            self.set_keep_fit(v)
+        v = number("stayClose", 0.0, 100.0)
+        if v is not None:
+            self.set_stay_close(v)
+        if self.categories_window is not None:
+            self.categories_window.refresh()
+        # the ones that start the engine again, only when they change
+        connected, mode = flag("connected"), choice("joinMode", JOIN_NAMES)
+        restart = False
+        if connected is not None and connected != bool(w.connected.get()):
+            w.connected.set(connected)
+            restart = True
+        if mode is not None and mode != int(w.joinMode.get()):
+            w.joinMode.set(mode)
+            self._save("joinMode", mode)
+            restart = True
+        if restart:
+            self.connectedChanged(None)
+        v = flag("alongSlant")
+        if v is not None and v != bool(w.alongSlant.get()):
+            w.alongSlant.set(v)
+            self.alongSlantChanged(None)
+        return applied, ignored
+
+    def settings_text(self, indent=None):
+        return json.dumps(self.settings(), indent=indent)
+
+    def load_settings_text(self, text, source):
+        """Applies settings given as JSON text; the status line says what happened. True when they applied."""
+        try:
+            applied, ignored = self.apply_settings(json.loads(text or ""))
+        except Exception as e:
+            self._set_status("No Kinetikern3 settings in %s: %s" % (source, e))
+            return False
+        note = "Settings from %s: %d applied" % (source, len(applied))
+        if ignored:
+            note += "; left out (unknown, or not a value it can take): %s" % ", ".join(sorted(set(ignored)))
+        self._set_status(note + ".")
+        return True
+
+    def _pasteboard(self):
+        """The general pasteboard; in a test instance a private one (a test never touches the clipboard)."""
+        if self._unattended:
+            if self._test_pasteboard is None:
+                self._test_pasteboard = NSPasteboard.pasteboardWithUniqueName()
+            return self._test_pasteboard
+        return NSPasteboard.generalPasteboard()
+
+    def copySettings(self, sender):
+        pb = self._pasteboard()
+        pb.clearContents()
+        pb.setString_forType_(self.settings_text(), NSPasteboardTypeString)
+        self._set_status("Settings copied as text (JSON): Paste Settings in any Kinetikern3 window takes them.")
+
+    def pasteSettings(self, sender):
+        self.load_settings_text(self._pasteboard().stringForType_(NSPasteboardTypeString), "the clipboard")
+
+    def saveSettings(self, sender):
+        vanilla.dialogs.putFile(messageText="Save Kinetikern3's settings", fileName="Kinetikern3 settings.json",
+                                fileTypes=["json"], parentWindow=self.w, resultCallback=self.save_settings_to)
+
+    def save_settings_to(self, path):
+        path = path[0] if isinstance(path, (list, tuple)) and path else path
+        if not path:
+            return False
+        try:
+            with open(path, "w") as f:
+                f.write(self.settings_text(indent=2) + "\n")
+        except Exception as e:
+            self._set_status("The settings could not be saved: %s" % e)
+            return False
+        self._set_status("Settings saved to %s." % os.path.basename(path))
+        return True
+
+    def loadSettings(self, sender):
+        vanilla.dialogs.getFile(messageText="Load Kinetikern3's settings", fileTypes=["json"], parentWindow=self.w,
+                                resultCallback=self.load_settings_from)
+
+    def load_settings_from(self, path):
+        path = path[0] if isinstance(path, (list, tuple)) and path else path
+        if not path:
+            return False
+        try:
+            with open(path) as f:
+                text = f.read()
+        except Exception as e:
+            self._set_status("The settings could not be read: %s" % e)
+            return False
+        return self.load_settings_text(text, os.path.basename(path))
+
+    def resetSettings(self, sender):
+        self.apply_settings(self.default_settings())
+        self._set_status("Settings back to Kinetikern3's defaults (Paste Settings brings back settings you copied).")
+
     # ----------------------------------------------------------- callbacks
     def physicsChanged(self, sender):
         self._save("tightness", float(self.w.tightness.get()))
@@ -2211,7 +2641,10 @@ class KK3Window(object):
         snap = self.snapshot
         if s <= 0 or snap is None or self.w is None:
             return None
-        looseness = float(self.w.tightness.get()) + (self._fitted or 0.0)
+        fit = self._fitted
+        if fit is None and self._keep_fit_on():
+            fit = self._category_fits.get(kg.FIT_GROUPS["lowercase"])  # the lowercase's fit, as the letters'
+        looseness = float(self.w.tightness.get()) + (fit or 0.0)
         opts = self._glyph_opts()
         frozen = frozenset(i for i, o in enumerate(opts or ()) if o[0])
         kept = self._kept_sides()
@@ -2670,10 +3103,12 @@ class KK3Window(object):
         return ""
 
     def windowClosed(self, sender):
-        for sub in (self.groups_window, self.pairs_window, self.harness_window, self.joins_window):
+        for sub in (self.groups_window, self.pairs_window, self.harness_window, self.joins_window,
+                    self.categories_window):
             if sub is not None:
                 sub.close()
         self.groups_window = self.pairs_window = self.harness_window = self.joins_window = None
+        self.categories_window = None
         self._stop_timer()
         if self._timer_target is not None:
             self._timer_target.kk3_callback = None

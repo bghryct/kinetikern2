@@ -257,11 +257,21 @@ pub struct GlyphOpt {
     /// Kerning force of the glyph's group as a multiple of the solve's
     /// intensity (1 = the same). A pair kerns with the mean of its two glyphs'.
     pub intensity: f64,
+    /// Its category for keeping the font's fit (`Params::fit_font`): the low
+    /// byte (`FIT_GROUP_MASK`) names the category whose fitted Looseness it is
+    /// spaced at (0: none); with `FIT_FOLLOW` it follows that category
+    /// without counting toward its fit (punctuation follows the lowercase).
+    pub fit_group: u32,
 }
+
+/// `GlyphOpt::fit_group`: the category (1 to 255; 0 none).
+pub const FIT_GROUP_MASK: u32 = 0xFF;
+/// `GlyphOpt::fit_group`: spaced at the category's fit, not counted in it.
+pub const FIT_FOLLOW: u32 = 0x100;
 
 impl Default for GlyphOpt {
     fn default() -> Self {
-        GlyphOpt { frozen: false, looseness: 0.0, intensity: 1.0 }
+        GlyphOpt { frozen: false, looseness: 0.0, intensity: 1.0, fit_group: 0 }
     }
 }
 
@@ -439,6 +449,9 @@ pub struct Context {
     /// A connected script's letters for the join checker, and whether its
     /// joins are kept (`prepare_with_joins`); None otherwise.
     pub joins: Option<crate::checker::FontJoins>,
+    /// The fitted Looseness of each category (`category_fits`) for the
+    /// category assignments seen last: they depend on the font only.
+    pub fit_cache: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<f64>>)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -544,7 +557,7 @@ pub struct Pass1 {
 }
 
 /// Pass 1's own result before section offsets and rules.
-struct FreeSpacing {
+pub(crate) struct FreeSpacing {
     zone_sb: Vec<(f64, f64)>,
     omegas: Vec<(f64, f64)>,
     white_credit: f64,
@@ -760,6 +773,7 @@ impl Context {
             prep_ms: t0.elapsed().as_secs_f64() * 1000.0,
             classes,
             joins,
+            fit_cache: Default::default(),
         })
     }
 
@@ -795,6 +809,17 @@ impl Context {
 
     /// Pass 1 with per-glyph options and the punctuation conventions.
     pub fn pass1_conv(&self, o: &SolveOptions, opts: Option<&[GlyphOpt]>, conv: Option<&Conventions>) -> Pass1 {
+        self.pass1_full(o, opts, conv, 0.0)
+    }
+
+    /// `pass1_conv`, each free side then moved the fraction `keep` (0 to 1) of
+    /// the way back to the sidebearing it has now (Stay close to the font's
+    /// spacing: at 1 the font keeps its sidebearings and is only kerned).
+    /// A glyph's Looseness offset applies before the punctuation conventions
+    /// to a glyph without one (so the letter rhythm they follow moves with
+    /// it) and after them to a glyph with one, or that follows a base mark
+    /// (so the offset counts in full there too).
+    pub fn pass1_full(&self, o: &SolveOptions, opts: Option<&[GlyphOpt]>, conv: Option<&Conventions>, keep: f64) -> Pass1 {
         let t1 = Instant::now();
         let spring = o.spring.max(1e-9);
         let repulsion = o.repulsion.max(0.0);
@@ -808,15 +833,27 @@ impl Context {
         let (zone_sb, omegas, white_credit) = (&free.zone_sb, &free.omegas, free.white_credit);
         let mut lsb = free.lsb.clone();
         let mut rsb = free.rsb.clone();
-        if let Some(opts) = opts {
+        // a glyph's offset after the conventions: it has one, or follows a mark that has
+        let late = |i: usize| match conv {
+            Some(c) => {
+                c.sides.get(i).is_some_and(|s| s[0][0].is_finite() || s[1][0].is_finite())
+                    || c.follow.get(i).is_some_and(|&f| f != NONE)
+            }
+            None => false,
+        };
+        let offset = |i: usize, g: &PreparedGlyph| -> f64 {
+            let dt = opts.and_then(|v| v.get(i)).map_or(0.0, |x| x.looseness);
+            if !(dt.is_finite() && dt != 0.0) {
+                return 0.0;
+            }
+            let shifted = o.shifted(dt);
+            let lam = self.rhythm_scale[g.group];
+            0.5 * (rest_gap(lam, shifted.spring.max(1e-9), shifted.repulsion.max(0.0)) - rest_gap(lam, spring, repulsion))
+        };
+        if opts.is_some() {
             for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid && !g.fixed_advance) {
-                let dt = opts.get(i).map_or(0.0, |x| x.looseness);
-                if dt.is_finite() && dt != 0.0 {
-                    let shifted = o.shifted(dt);
-                    let lam = self.rhythm_scale[g.group];
-                    let d = 0.5
-                        * (rest_gap(lam, shifted.spring.max(1e-9), shifted.repulsion.max(0.0))
-                            - rest_gap(lam, spring, repulsion));
+                if !late(i) {
+                    let d = offset(i, g);
                     lsb[i] += d;
                     rsb[i] += d;
                 }
@@ -859,6 +896,28 @@ impl Context {
                     rsb[i] = rsb[f as usize];
                 }
             }
+            if opts.is_some() {
+                for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid && !g.fixed_advance) {
+                    if late(i) {
+                        let d = offset(i, g);
+                        lsb[i] += d;
+                        rsb[i] += d;
+                    }
+                }
+            }
+        }
+        if keep.is_finite() && keep > 0.0 {
+            // a glyph whose advance is kept (tabular figures) too: its two sides
+            // move toward the font's, which add up to the same advance
+            let k = keep.min(1.0);
+            for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid) {
+                if g.cur_lsb.is_finite() && lsb[i].is_finite() {
+                    lsb[i] += k * (g.cur_lsb - lsb[i]);
+                }
+                if g.cur_rsb.is_finite() && rsb[i].is_finite() {
+                    rsb[i] += k * (g.cur_rsb - rsb[i]);
+                }
+            }
         }
         let (wanted_lsb, wanted_rsb) = (lsb.clone(), rsb.clone());
         let ruled = self.apply_rules(&mut lsb, &mut rsb, opts);
@@ -896,6 +955,112 @@ impl Context {
             rest_gap: rest,
             rhythm_scale: scale,
         }
+    }
+
+    /// The fitted Looseness of each category of `opts` (`GlyphOpt::fit_group`;
+    /// index = category, NaN for one without enough sides): the Looseness,
+    /// relative to `base`, at which Pass 1 gives the category's own glyphs
+    /// (not its followers), on average, the sidebearings they have now.
+    /// Cached by the assignment, as it depends on the font only.
+    pub fn category_fits(&self, base: &SolveOptions, opts: &[GlyphOpt]) -> std::sync::Arc<Vec<f64>> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for x in opts {
+            x.fit_group.hash(&mut h);
+        }
+        base.spring.to_bits().hash(&mut h);
+        base.repulsion.to_bits().hash(&mut h);
+        let key = h.finish();
+        if let Ok(cache) = self.fit_cache.lock() {
+            if let Some((_, hit)) = cache.iter().find(|(k, _)| *k == key) {
+                return hit.clone();
+            }
+        }
+        let mut fits = vec![f64::NAN; (FIT_GROUP_MASK + 1) as usize];
+        let n = self.glyphs.len();
+        let free = self.free_sidebearings(base);
+        let mut groups: Vec<u32> = opts
+            .iter()
+            .filter(|x| x.fit_group & FIT_FOLLOW == 0)
+            .map(|x| x.fit_group & FIT_GROUP_MASK)
+            .filter(|&g| g != 0)
+            .collect();
+        groups.sort_unstable();
+        groups.dedup();
+        for g in groups {
+            let which: Vec<bool> = (0..n)
+                .map(|i| opts.get(i).is_some_and(|x| x.fit_group & FIT_FOLLOW == 0 && x.fit_group & FIT_GROUP_MASK == g))
+                .collect();
+            if let Some(dt) = self.fit_offset(base, &free, &which) {
+                fits[g as usize] = dt;
+            }
+        }
+        let fits = std::sync::Arc::new(fits);
+        if let Ok(mut cache) = self.fit_cache.lock() {
+            if cache.len() >= 4 {
+                cache.remove(0);
+            }
+            cache.push((key, fits.clone()));
+        }
+        fits
+    }
+
+    /// The Looseness offset (slider units, relative to `base`) that, given to
+    /// the glyphs flagged in `which` the way Pass 1 gives a glyph its offset
+    /// (half the change of its group's rest gap on each side, `pass1_full`),
+    /// gives them, on average, the sidebearings they have now. `free` is
+    /// `free_sidebearings(base)`. None with fewer than six such sides.
+    pub(crate) fn fit_offset(&self, base: &SolveOptions, free: &FreeSpacing, which: &[bool]) -> Option<f64> {
+        let (spring, repulsion) = (base.spring.max(1e-9), base.repulsion.max(0.0));
+        let mut sides: Vec<(f64, f64, f64)> = Vec::new(); // (model side, current side, rhythm scale)
+        for (i, g) in self.glyphs.iter().enumerate() {
+            if !which.get(i).copied().unwrap_or(false) || !g.valid || g.fixed_advance {
+                continue;
+            }
+            let lam = self.rhythm_scale[g.group];
+            for (model, cur) in [(free.lsb[i], g.cur_lsb), (free.rsb[i], g.cur_rsb)] {
+                if model.is_finite() && cur.is_finite() {
+                    sides.push((model, cur, lam));
+                }
+            }
+        }
+        if sides.len() < 6 {
+            return None;
+        }
+        let n = sides.len() as f64;
+        let target = sides.iter().map(|s| s.1).sum::<f64>() / n;
+        let f = |dt: f64| -> f64 {
+            let o = base.shifted(dt);
+            let (sp, rp) = (o.spring.max(1e-9), o.repulsion.max(0.0));
+            sides.iter().map(|&(m, _, lam)| m + 0.5 * (rest_gap(lam, sp, rp) - rest_gap(lam, spring, repulsion))).sum::<f64>()
+                / n
+                - target
+        };
+        // the offset grows the sides; bisect within the slider's reach
+        let limit = crate::slant::FIT_LIMIT;
+        let (mut lo, mut hi) = (-limit, limit);
+        let (flo, fhi) = (f(lo), f(hi));
+        if !(flo.is_finite() && fhi.is_finite()) {
+            return None;
+        }
+        if flo >= 0.0 {
+            return Some(lo);
+        }
+        if fhi <= 0.0 {
+            return Some(hi);
+        }
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if f(mid) < 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+            if hi - lo < 1e-6 {
+                break;
+            }
+        }
+        Some(0.5 * (lo + hi))
     }
 
     /// The Looseness offset (slider units, relative to `o`) at which Pass 1

@@ -10,7 +10,10 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 use crate::classes::{Classes, PART_FROZEN};
-use crate::engine::{Context, Conventions, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, GLYPH_ZONE, NONE};
+use crate::engine::{
+    Context, Conventions, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, FIT_FOLLOW, FIT_GROUP_MASK, GLYPH_RTL, GLYPH_ZONE,
+    NONE,
+};
 use crate::job::{pool, Cancelled, JobError, Progress};
 use crate::pass2::{
     Fields, Kernel, Knobs, PairOut, Probes, Scratch, Solver, Verify, Windows, PAIR_BOUNDED, PAIR_CLEARANCE, PAIR_CREVICE,
@@ -67,6 +70,14 @@ pub struct Params {
     pub keep_bare: bool,
     /// Punctuation by convention (its sides in Pass 1, its pairs' response in Pass 2).
     pub conventions: Option<Arc<Conventions>>,
+    /// Keep the font's fit: each category of the glyph options
+    /// (`GlyphOpt::fit_group`) is spaced at the Looseness that gives its own
+    /// glyphs, on average, the sidebearings they have now; `looseness` and a
+    /// glyph's offset move from there. It replaces `fit_frozen`.
+    pub fit_font: bool,
+    /// Stay close to the font's spacing: each free side moved this fraction
+    /// (0 to 1) of the way back to the sidebearing it has now, before Pass 2.
+    pub keep: f64,
 }
 
 /// The designer harness: where the model consistently spaces differently from
@@ -139,6 +150,9 @@ pub struct Outcome {
     /// With `Params::keep_bare` and a harness: the same solve before the
     /// harness (the bare model's sidebearings and kerning).
     pub bare: Option<(Pass1, Vec<Entry>)>,
+    /// With `Params::fit_font`, the fitted Looseness of each category (index
+    /// = category; NaN without enough sides), else empty.
+    pub category_fits: Vec<f64>,
 }
 
 #[inline]
@@ -224,9 +238,38 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     // caller marks them), as a script's swash capitals and alternates reach
     // far past their bodies (Great Vibes' capitals alone fit below −6, its
     // lowercase at −0.5)
+    // keeping the font's fit: each category at the Looseness that gives its
+    // own glyphs their sidebearings as they are, measured from Looseness 0, so
+    // that the slider's Looseness and a glyph's offset move from there
+    let fit_font = p.fit_font && opts.is_some_and(|o| o.iter().any(|x| x.fit_group & FIT_GROUP_MASK != 0));
+    let mut category_fits: Vec<f64> = Vec::new();
+    let mut fitted_opts: Option<Vec<GlyphOpt>> = None;
+    if fit_font {
+        let o = opts.unwrap_or(&[]);
+        let base = p.options.shifted(-(if p.looseness.is_finite() { p.looseness } else { 0.0 }));
+        let fits = ctx.category_fits(&base, o);
+        // a follower spaced by convention follows the letter rhythm through
+        // its convention already (the rhythm moves with the letters' fit)
+        let by_convention = |i: usize| {
+            p.conventions.as_ref().is_some_and(|c| {
+                c.sides.get(i).is_some_and(|s| s[0][0].is_finite() || s[1][0].is_finite())
+                    || c.follow.get(i).is_some_and(|&f| f != NONE)
+            })
+        };
+        let mut v = o.to_vec();
+        for (i, x) in v.iter_mut().enumerate() {
+            let g = (x.fit_group & FIT_GROUP_MASK) as usize;
+            if g != 0 && fits[g].is_finite() && !(x.fit_group & FIT_FOLLOW != 0 && by_convention(i)) {
+                x.looseness += fits[g];
+            }
+        }
+        category_fits = fits.to_vec();
+        fitted_opts = Some(v);
+    }
+    let opts: Option<&[GlyphOpt]> = fitted_opts.as_deref().or(opts);
     let mut fitted = f64::NAN;
     let mut options = p.options.clone();
-    if p.fit_frozen && (any_frozen || any_kept) {
+    if p.fit_frozen && !fit_font && (any_frozen || any_kept) {
         let zone_marks = ctx.glyphs.iter().any(|g| g.flags & GLYPH_ZONE != 0);
         let lowercase_base = |g: &PreparedGlyph| {
             g.group_id == crate::engine::GROUP_LOWERCASE && (g.flags & GLYPH_ZONE != 0 || !zone_marks)
@@ -249,7 +292,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     } else {
         p
     };
-    let mut pass1 = ctx.pass1_conv(&p.options, opts, p.conventions.as_deref());
+    let mut pass1 = ctx.pass1_full(&p.options, opts, p.conventions.as_deref(), p.keep);
     // partitions: frozen glyphs, and the kerning force of each painted group
     let mut forces: Vec<f64> = Vec::new();
     let part: Vec<u32> = (0..n)
@@ -296,7 +339,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
             let built = classes.as_ref().unwrap_or(&ctx.classes);
             apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, (&fixed_l, &fixed_r), &kern, p.threshold, false);
         }
-        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare });
+        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare, category_fits });
     }
     let t2 = Instant::now();
     let pool = pool(p.threads);
@@ -335,7 +378,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     }
     stats.prune_ms = t3.elapsed().as_secs_f64() * 1000.0;
     progress.add(1);
-    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare })
+    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare, category_fits })
 }
 
 /// Keep joins: every pair of two kept sides gets the font's kerning, exactly

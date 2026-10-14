@@ -87,6 +87,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import tempfile
 import time
 import traceback
@@ -95,7 +96,7 @@ from contextlib import contextmanager
 
 import Foundation
 import objc
-from AppKit import (NSApp, NSBitmapImageFileTypePNG, NSBitmapImageRep, NSObject, NSProgressIndicator,
+from AppKit import (NSApp, NSBitmapImageFileTypePNG, NSBitmapImageRep, NSObject, NSPanel, NSProgressIndicator,
                     NSTextField)
 from Foundation import NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from PyObjCTools import AppHelper
@@ -141,6 +142,7 @@ GROUPS = "spacing groups"
 GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not judged
 HARNESS = "designer harness"
 PUNCTUATION = "punctuation"
+FEATURES = "window features"
 CONNECTED = "connected script"
 SLIDERS = "sliders"
 JUDGED = (PREVIEW, SLIDERS, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, PUNCTUATION, CONNECTED)
@@ -1983,10 +1985,241 @@ class SelfTest(object):
             self.after_connected()
 
     def after_connected(self):
+        self.later(0.3, self.features_step)
+
+    def after_features(self):
         if self.groups_test:
             self.later(0.3, self.groups_step)
         else:
             self.finish()
+
+    # --- Kinetikern3's window features ------------------------------------------
+    def _kw(self):
+        """The window's own module (its constants)."""
+        return sys.modules[type(self.win).__module__]
+
+    def _features_ready(self):
+        """The window is idle and shows the preview of its settings as they are
+        now (a preview started before a change may finish after it: the window
+        shows it, then the next)."""
+        win = self.win
+        return (self.window_state("waiting for a preview") == "ready" and not win.panes_due and win._job is None
+                and not win._preview_pending and win.result is not None and win._result_kind == "preview"
+                and win._result_key == win._solve_key(False))
+
+    def features_step(self):
+        """Kinetikern3's window features (kinetikern2's issues #5-#14) as a user
+        uses them: a plain window, the sliders' fields, the kerning switch, the
+        Toggle and Overlay views with the line breaks of Kinetikern3's pane,
+        settings copied and pasted, a category's Looseness, keeping the font's
+        fit and staying close to its spacing. The settings are put back after."""
+        win = self.win
+        w = win.w
+        nw = w.getNSWindow()
+        if nw.level() != 0 or nw.isKindOfClass_(NSPanel):
+            self.error("the main window floats above the others (level %d, %s)" % (nw.level(), nw.className()))
+        self.feat_saved = win.settings()
+        self.feat_notes = []
+        w.tightField.set("-0.4")
+        self.call_window(FEATURES, win.tightFieldChanged, None)
+        if abs(float(w.tightness.get()) + 0.4) > 1e-6 or w.tightField.get() != "-0.40":
+            self.error("the Looseness field did not set the slider: slider %r, field %r"
+                       % (float(w.tightness.get()), w.tightField.get()))
+        self.wait(self._features_ready, self.features_kerning_off, 120.0, "the preview at Looseness -0.4")
+
+    def features_kerning_off(self):
+        win = self.win
+        self.feat_kerned = win.right.kerned_pairs
+        win.w.kerning.set(False)
+        self.call_window(FEATURES, win.kerningChanged, None)
+        self.wait(self._features_ready, self.features_kerning_off_ready, 120.0, "the preview without kerning")
+
+    def features_kerning_off_ready(self):
+        win = self.win
+        if win.right.kerned_pairs and not win._keeps_joins():
+            self.error("with kerning off the preview still kerns %d pairs" % win.right.kerned_pairs)
+        if win.w.intensity.getNSSlider().isEnabled():
+            self.error("with kerning off the intensity slider stays enabled")
+        win.w.kerning.set(True)
+        self.call_window(FEATURES, win.kerningChanged, None)
+        self.wait(self._features_ready, self.features_views, 120.0, "the preview with kerning again")
+
+    def features_views(self):
+        win = self.win
+        if win.right.kerned_pairs != self.feat_kerned:
+            self.error("kerning on again kerns %d pairs, %d before" % (win.right.kerned_pairs, self.feat_kerned))
+        self.feat_notes.append("the kerning switch: %d kerned pairs, none, %d again" % (self.feat_kerned,
+                                                                                           win.right.kerned_pairs))
+        win.w.viewMode.set(self._kw().VIEW_TOGGLE)
+        self.call_window(FEATURES, win.viewModeChanged, None)
+        self.wait(self._features_ready, self.features_toggle_ready, 120.0, "the Toggle view")
+
+    def features_toggle_ready(self):
+        win = self.win
+        if not win.font_pane_view().isHidden():
+            self.error("Toggle left the font's pane beside Kinetikern3's")
+        starts, over = sorted(win.right.line_starts()), sorted(win.overlay.line_starts())
+        if starts != over:
+            self.error("Toggle: the font's lines break at %s, Kinetikern3's at %s" % (over[:8], starts[:8]))
+        self.call_window(FEATURES, win.flip)
+        shown = not win.overlay.view.isHidden() and win.overlay.view.drawsBackground()
+        self.call_window(FEATURES, win.flip)
+        if not shown or not win.overlay.view.isHidden():
+            self.error("Toggle: a click does not switch between the font and Kinetikern3")
+        win.w.viewMode.set(self._kw().VIEW_OVERLAY)
+        self.call_window(FEATURES, win.viewModeChanged, None)
+        self.wait(self._features_ready, self.features_overlay_ready, 120.0, "the Overlay view")
+
+    def features_overlay_ready(self):
+        win = self.win
+        if win.overlay.view.isHidden() or win.overlay.view.drawsBackground():
+            self.error("Overlay: the font is not laid over Kinetikern3 (hidden %s, opaque %s)"
+                       % (win.overlay.view.isHidden(), win.overlay.view.drawsBackground()))
+        lo, lb = win.overlay.view.layoutManager(), win.right.view.layoutManager()
+        chars = win.overlay.chars
+        worst, words = 0.0, 0
+        if win.w.alignWords.get():
+            for k in range(1, len(chars)):
+                if chars[k - 1] == " " and chars[k] not in (" ", "\n") and not win.right.rtl[k]:
+                    xb = lb.locationForGlyphAtIndex_(lb.glyphIndexForCharacterAtIndex_(k)).x
+                    xo = lo.locationForGlyphAtIndex_(lo.glyphIndexForCharacterAtIndex_(k)).x
+                    worst = max(worst, abs(xb - xo))
+                    words += 1
+            if worst > 0.5:
+                self.error("Overlay: a word of the font starts %.1f pt from Kinetikern3's" % worst)
+        self.feat_notes.append("Toggle and Overlay break their lines as Kinetikern3's pane, %d words aligned within "
+                               "%.2f pt" % (words, worst))
+        win.w.viewMode.set(self._kw().VIEW_SIDE)
+        self.call_window(FEATURES, win.viewModeChanged, None)
+        self.wait(self._features_ready, self.features_settings, 120.0, "the Side by side view again")
+
+    def features_settings(self):
+        win = self.win
+        if win.font_pane_view().isHidden():
+            self.error("Side by side does not show the font's pane again")
+        before = win.settings()
+        self.call_window(FEATURES, win.copySettings, None)
+        win.w.tightness.set(1.2)
+        self.call_window(FEATURES, win.physicsChanged, None)
+        self.call_window(FEATURES, win._set_size, 30)
+        win.w.viewMode.set(self._kw().VIEW_TOGGLE)
+        self.call_window(FEATURES, win.viewModeChanged, None)
+        self.call_window(FEATURES, win.pasteSettings, None)
+        after = win.settings()
+        diff = dict((k, (after.get(k), v)) for k, v in before.items() if after.get(k) != v)
+        if diff:
+            self.error("Paste Settings did not bring the settings back: %s" % diff)
+        self.feat_notes.append("Copy and Paste Settings: %d settings back" % (len(before) - 1))
+        # the preview of the Looseness changed before the paste may finish after it
+        self.wait(self._features_ready, self.features_category, 120.0, "the preview with the settings pasted")
+
+    def features_category(self):
+        """A category's Looseness: its glyphs loosen, the letters stay."""
+        win = self.win
+        sample = win._sample_indices()
+        cats = win._glyph_categories()
+        present = set(cats[i] for i in sample)
+        self.feat_cat = next((c for c in ("quotes", "punctuation", "figures", "symbols") if c in present), None)
+        if self.feat_cat is None:
+            self.feat_notes.append("categories: the sample has no quotes, punctuation, figures or symbols")
+            self.features_fit()
+            return
+        self.feat_m0 = self._metrics()
+        self.call_window(FEATURES, win.set_category_offset, self.feat_cat, 1.0)
+        self.wait(self._features_ready, self.features_category_ready, 120.0, "the preview with a category's offset")
+
+    def features_category_ready(self):
+        win = self.win
+        m1 = self._metrics()
+        cats = win._glyph_categories()
+        sample = win._sample_indices()
+        ruled = lambda i: win.result.metrics[i].flags != 0
+        loosened = [m1[i][0] - self.feat_m0[i][0] for i in sample if cats[i] == self.feat_cat and not ruled(i)]
+        per = 1000.0 / win.snapshot.upm
+        letters = ["%s %+.1f/%+.1f" % (win.snapshot.names[i], (m1[i][0] - self.feat_m0[i][0]) * per,
+                                      (m1[i][1] - self.feat_m0[i][1]) * per)
+                   for i in sorted(sample) if cats[i] in ("capitals", "lowercase")
+                   and any(abs(p - q) > 1e-6 for p, q in zip(m1[i], self.feat_m0[i]))]
+        if not loosened or min(loosened) < 1.0:
+            self.error("a Looseness of +1 for %s did not loosen them: %s" % (self.feat_cat, loosened[:6]))
+        if letters:
+            self.error("a Looseness for %s moved letters: %s" % (self.feat_cat, letters[:6]))
+        self.feat_notes.append("%s at +1: %d glyphs of the sample %+.0f a side per 1000 em, letters as they were"
+                               % (self.feat_cat, len(loosened), per * sum(loosened) / max(1, len(loosened))))
+        self.call_window(FEATURES, win.set_category_offsets, {})
+        self.wait(self._features_ready, self.features_fit, 120.0, "the preview without the category's offset")
+
+    def features_fit(self):
+        win = self.win
+        if not win.font_fit_available():
+            self.feat_notes.append("keeping the font's fit: this build of the engine cannot")
+            self.features_done()
+            return
+        # at Looseness 0 every kind of letter sits at the font's own tightness (the slider moves from there)
+        win.w.tightness.set(0.0)
+        self.call_window(FEATURES, win.physicsChanged, None)
+        self.call_window(FEATURES, win.set_keep_fit, True)
+        self.wait(self._features_ready, self.features_fit_ready, 120.0, "the preview keeping the font's fit")
+
+    def features_fit_ready(self):
+        win = self.win
+        snap = win.snapshot
+        cats = win._glyph_categories()
+        fits = win._category_fits
+        lower = [i for i, c in enumerate(cats) if c == "lowercase" and snap.specs[i].cur_lsb == snap.specs[i].cur_lsb
+                 and not snap.specs[i].flags & kb.GLYPH_FIXED_ADVANCE]
+        if len(lower) >= 3:
+            if 2 not in fits:
+                self.error("keeping the font's fit measured no lowercase fit: %s" % fits)
+            # the fit is measured on the engine's own sides, before rules and punctuation by convention
+            ok = [i for i in lower if win.result.metrics[i].flags == 0]
+            em = win.result.engine_metrics
+            model = sum(em[i].lsb + em[i].rsb for i in ok) / (2.0 * len(ok))
+            font = sum(snap.specs[i].cur_lsb + snap.specs[i].cur_rsb for i in ok) / (2.0 * len(ok))
+            per = 1000.0 / snap.upm
+            if abs(model - font) * per > 1.0:
+                self.error("keeping the font's fit: the lowercase at %.1f per side, the font's at %.1f" % (model, font))
+            self.feat_notes.append("keeping the font's fit: Looseness %s, the lowercase at %.1f per side as in the "
+                                   "font (%.1f)" % (", ".join("%d %+.2f" % (g, v) for g, v in sorted(fits.items())),
+                                                   model * per, font * per))
+        self.call_window(FEATURES, win.set_keep_fit, False)
+        self.call_window(FEATURES, win.set_stay_close, 100.0)
+        self.wait(self._features_ready, self.features_close_ready, 120.0, "the preview staying close to the font")
+
+    def features_close_ready(self):
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        off, n = [], 0
+        for i, name in enumerate(snap.names):
+            m = res.metrics[i]
+            info = snap.infos.get(name)
+            if not m.valid or m.flags or info is None or getattr(info, "empty", False):
+                continue
+            n += 1
+            d = max(abs(m.lsb - info.lsb), abs(m.rsb - info.rsb))
+            if d > 0.51:
+                off.append((name, round(d, 1)))
+        if off:
+            self.error("staying close at 100 %%: %d of %d glyphs off the font's sidebearings, e.g. %s"
+                       % (len(off), n, off[:5]))
+        self.feat_notes.append("staying close at 100 %%: %d glyphs keep the font's sidebearings, %d pairs of the "
+                               "sample kerned" % (n - len(off), win.right.kerned_pairs))
+        self.features_done()
+
+    def features_done(self):
+        win = self.win
+        self.call_window(FEATURES, win.apply_settings, self.feat_saved)
+        self.wait(self._features_ready, self.features_back, 120.0, "the preview with the settings as they were")
+
+    def features_back(self):
+        win = self.win
+        after = win.settings()
+        diff = dict((k, (after.get(k), v)) for k, v in self.feat_saved.items() if after.get(k) != v)
+        if diff:
+            self.error("the window features stage did not put the settings back: %s" % diff)
+        self.note("window features: " + "; ".join(self.feat_notes))
+        self.after_features()
 
     # --- connected scripts ----------------------------------------------------
 
