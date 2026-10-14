@@ -54,8 +54,10 @@ class HarnessWindow(object):
         self.main = main
         self.pairs = []  # (left index, right index, delta in font units)
         self.selected = None
+        self._snap = None  # the main window's snapshot the list was made from (its glyph indices)
         self._glyphs = frozenset()
         self._closed = False
+        self._error = None  # the last drawing error printed (each is printed once)
         self._build()
 
     def _build(self):
@@ -203,8 +205,11 @@ class HarnessWindow(object):
                          "left": "%+.0f" % (plan.sides[a][1] * per), "right": "%+.0f" % (plan.sides[b][0] * per),
                          "pairc": "%+.0f" % (plan.pair_value.get((a, b), 0.0) * per)
                          if (a, b) in plan.pair_value else ""})
-        keep = self.selected
+        # the pair shown stays selected by its glyphs' names (a master read again renumbers nothing,
+        # but another master or a changed font may)
+        keep = self._selected_names()
         self.pairs = pairs
+        self._snap = snap
         self.w.list.set(rows)
         glyphs = frozenset(i for a, b, _ in pairs for i in (a, b))
         if glyphs != self._glyphs:
@@ -221,16 +226,34 @@ class HarnessWindow(object):
             idx = 0
             if keep is not None:
                 for k, (a, b, _d) in enumerate(pairs):
-                    if (a, b) == keep[:2]:
+                    if (names[a], names[b]) == keep:
                         idx = k
                         break
             self.w.list.setSelection([idx])
         self.rowSelected(None)
 
+    def _selected_names(self):
+        """(left, right) glyph names of the pair shown, in the snapshot the list was made from."""
+        if self.selected is None or self._snap is None:
+            return None
+        a, b = self.selected[0], self.selected[1]
+        names = self._snap.names
+        return (names[a], names[b]) if a < len(names) and b < len(names) else None
+
+    def snapshot_changed(self):
+        """The main window read the master again (another master, ↻, after Apply): the list is made again
+        for the new snapshot, keeping the pair shown."""
+        if not self._closed:
+            self.refresh()
+
     def result_ready(self):
         """The main window has a new preview or whole-font result."""
-        if not self._closed:
-            self.preview.setNeedsDisplay_(True)
+        if self._closed:
+            return
+        if self.main.snapshot is not None and self.main.snapshot is not self._snap:
+            self.refresh()  # made from an older snapshot: its glyph indices may point elsewhere now
+            return
+        self.preview.setNeedsDisplay_(True)
 
     # -------------------------------------------------------------- preview
     def rowSelected(self, sender):
@@ -241,15 +264,34 @@ class HarnessWindow(object):
     def draw_preview(self, view, rect):
         NSColor.textBackgroundColor().set()
         NSRectFill(rect)
+        try:
+            self._draw(view, rect)
+        except Exception:
+            # never a blank preview: say so, and print the traceback once
+            trace = traceback.format_exc()
+            if trace != self._error:
+                self._error = trace
+                print(trace)
+            self._label("This pair could not be drawn (the traceback is in the Macro panel). Choose another pair "
+                        "or close and open this window.", 14, 14, 11.0)
+
+    def _draw(self, view, rect):
         main = self.main
         snap = main.snapshot
         if self.selected is None or snap is None:
-            self._label("Choose a pair.", 12, rect.size.height - 24, 12.0)
+            self._label("Choose a pair." if snap is not None else "The font is being read…", 12,
+                        view.frame().size.height - 24, 12.0)
+            return
+        if snap is not self._snap:
+            self._label("The font was read again: the list is being made again…", 12,
+                        view.frame().size.height - 24, 12.0)
             return
         a, b, _d = self.selected
         na, nb = snap.names[a], snap.names[b]
-        ia, ib = snap.infos.get(na), snap.infos.get(nb)
+        ia, ib = snap.glyph_info(na), snap.glyph_info(nb)
         if ia is None or ib is None:
+            self._label("%s or %s cannot be drawn: it has no outline in this master." % (na, nb), 12,
+                        view.frame().size.height - 24, 12.0)
             return
         upm = float(snap.upm)
         per = 1000.0 / upm
@@ -312,6 +354,7 @@ class HarnessWindow(object):
 
     def closed(self, sender):
         self._closed = True
+        self._snap = None
         self.preview.kk3_model = None
         self._glyphs = frozenset()
         self.main.harness_window_closed()

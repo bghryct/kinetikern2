@@ -1522,6 +1522,8 @@ class KK3Window(object):
     def _context_ready(self, context):
         self.context = context
         self._start_slant_probe()
+        if self.harness_window is not None:
+            self.harness_window.snapshot_changed()  # its list holds the old snapshot's glyph indices
         # a design whose glyphs touch by construction (underline, charted,
         # guide lines): every touching side is kept, not only the letters'
         self.join_decorated = False
