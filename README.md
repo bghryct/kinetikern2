@@ -1,5 +1,10 @@
 # Kinetikern2
 
+**Kinetikern3**, the next release, is in [Kinetikern3](Kinetikern3/README.md):
+Kinetikern2 with the issues filed here worked through (see its *New in
+Kinetikern3*). It installs next to Kinetikern2 and is licensed under the
+Apache License 2.0.
+
 A Glyphs 3 plugin that spaces and kerns a whole font with a multi-threaded
 Rust engine. It is the rebuild of *Kinetic SDF Kerning* (v1, in the folder
 above this one) and keeps v1's model unchanged:
