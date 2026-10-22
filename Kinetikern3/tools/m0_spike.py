@@ -20,7 +20,7 @@ import time
 import traceback
 
 from AppKit import NSApp, NSMutableDictionary
-from GlyphsApp import LTR, RTL, Glyphs
+from GlyphsApp import GSLTR as LTR, GSRTL as RTL, Glyphs  # Glyphs 4 has only the GS names
 
 PREFIX = "com.mirkovelimirovic.Kinetikern3."
 out_path = Glyphs.defaults[PREFIX + "devOut"]

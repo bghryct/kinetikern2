@@ -8,7 +8,8 @@ group and tabular figures per glyph.
 
 Run tools with Glyphs' Python (fontTools comes from the Glyphs repositories):
 
-    GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
+    GPY="$HOME/Library/Application Support/Glyphs 4/Repositories/Python/Python.framework/Versions/Current/bin/python3"
+    # Glyphs 3: GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
 """
 
 from __future__ import print_function
@@ -22,7 +23,21 @@ KK3 = os.path.dirname(HERE)
 ROOT = os.path.dirname(KK3)
 RESOURCES = os.path.join(KK3, "plugin", "Kinetikern3.glyphsPlugin", "Contents", "Resources")
 V1_RESOURCES = os.path.join(ROOT, "plugin", "Kinetic SDF Kerning.glyphsPlugin", "Contents", "Resources")
-GLYPHS_REPOS = os.path.expanduser("~/Library/Application Support/Glyphs 3/Repositories")
+
+
+def glyphs_repositories():
+    """The Repositories folder of the Glyphs whose Python runs this tool, else
+    of the newest Glyphs that has one."""
+    support = os.path.expanduser("~/Library/Application Support")
+    folders = [os.path.join(support, "Glyphs %d" % n, "Repositories") for n in (4, 3)]
+    python = os.path.realpath(sys.executable)
+    for repos in folders:
+        if python.startswith(os.path.realpath(repos) + os.sep):
+            return repos
+    return next((repos for repos in folders if os.path.isdir(repos)), folders[-1])
+
+
+GLYPHS_REPOS = glyphs_repositories()
 for p in (RESOURCES, os.path.join(GLYPHS_REPOS, "fonttools", "Lib")):
     if p not in sys.path:
         sys.path.insert(0, p)

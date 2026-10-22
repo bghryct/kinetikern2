@@ -5,7 +5,8 @@ kk3_ui_smoke_test.py — drive the Kinetikern3 window outside Glyphs.
 Run with Glyphs' own Python (PyObjC; vanilla and fontTools come from the
 Glyphs repositories):
 
-    GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
+    GPY="$HOME/Library/Application Support/Glyphs 4/Repositories/Python/Python.framework/Versions/Current/bin/python3"
+    # Glyphs 3: GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
     "$GPY" Kinetikern3/tools/kk3_ui_smoke_test.py [--font Arial.ttf] [--glyphs 400] [--png window.png]
 
 A mock of the GlyphsApp API serves the first 400 spacing glyphs of a font
@@ -60,7 +61,21 @@ import weakref
 HERE = os.path.dirname(os.path.abspath(__file__))
 KK3 = os.path.dirname(HERE)
 RESOURCES = os.path.join(KK3, "plugin", "Kinetikern3.glyphsPlugin", "Contents", "Resources")
-GLYPHS_REPOS = os.path.expanduser("~/Library/Application Support/Glyphs 3/Repositories")
+
+
+def glyphs_repositories():
+    """The Repositories folder of the Glyphs whose Python runs this tool, else
+    of the newest Glyphs that has one."""
+    support = os.path.expanduser("~/Library/Application Support")
+    folders = [os.path.join(support, "Glyphs %d" % n, "Repositories") for n in (4, 3)]
+    python = os.path.realpath(sys.executable)
+    for repos in folders:
+        if python.startswith(os.path.realpath(repos) + os.sep):
+            return repos
+    return next((repos for repos in folders if os.path.isdir(repos)), folders[-1])
+
+
+GLYPHS_REPOS = glyphs_repositories()
 for p in (os.path.join(GLYPHS_REPOS, "fonttools", "Lib"), os.path.join(GLYPHS_REPOS, "vanilla", "Lib"), HERE,
           RESOURCES):
     if p not in sys.path:
@@ -96,7 +111,8 @@ class Abort(Exception):
 
 
 # ------------------------------------------------------------------ mock API
-# GlyphsApp's constants (Glyphs 3.5, GlyphsApp/__init__)
+# GlyphsApp's constants (Glyphs 3.5 and 4, GlyphsApp/__init__); the module exports only their GS
+# names (GSLTR…), the ones Glyphs 4 kept
 LTR, BIDI, RTL, LTRTTB, RTLTTB = 0, 1, 2, 4, 8
 GSNoCase, GSUppercase, GSLowercase, GSSmallcaps, GSMinor, GSOtherCase = 0, 1, 2, 3, 4, 5
 NS_NOT_FOUND = float(0x7FFFFFFFFFFFFFFF)  # Glyphs' answer for a kerning pair it does not have
@@ -149,8 +165,8 @@ MISSING_API = []
 def install_glyphsapp():
     module = types.ModuleType("GlyphsApp")
     module.__dict__.update(
-        Glyphs=MockGlyphs, Message=message, LTR=LTR, BIDI=BIDI, RTL=RTL, LTRTTB=LTRTTB, RTLTTB=RTLTTB, GSLTR=LTR,
-        GSBIDI=BIDI, GSRTL=RTL, GSVertical=LTRTTB, GSNoCase=GSNoCase, GSUppercase=GSUppercase,
+        Glyphs=MockGlyphs, Message=message, GSLTR=LTR, GSBIDI=BIDI, GSRTL=RTL, GSVertical=LTRTTB,
+        GSVerticalToRight=RTLTTB, GSNoCase=GSNoCase, GSUppercase=GSUppercase,
         GSLowercase=GSLowercase, GSSmallcaps=GSSmallcaps, GSMinor=GSMinor, GSOtherCase=GSOtherCase,
         FILTER_MENU="FILTER_MENU", GLYPH_MENU="GLYPH_MENU", GSShapeTypePath=2, GSShapeTypeComponent=4)
 

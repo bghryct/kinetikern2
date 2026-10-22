@@ -1,6 +1,6 @@
 # Kinetikern3
 
-A Glyphs 3 plugin that spaces and kerns a whole font with a multi-threaded
+A Glyphs 3 and Glyphs 4 plugin that spaces and kerns a whole font with a multi-threaded
 Rust engine. It is the rebuild of *Kinetic SDF Kerning* (v1, in the folder
 above this one) and keeps v1's model unchanged:
 
@@ -103,32 +103,40 @@ spacing groups while the font has none of its own.
 | [#4](https://github.com/bghryct/kinetikern2/issues/4) Apache license | Apache License 2.0 (see *License*). |
 | [#1](https://github.com/bghryct/kinetikern2/issues/1) Automation | [Spacing QA](https://bghryct.github.io/KKQA/) checks the spacing of existing fonts (all of Google Fonts) with this engine. |
 
-The ports of [#3](https://github.com/bghryct/kinetikern2/issues/3) to FontLab, Sinter and Glyphs 4 are not part of this
-release. RoboFont has its port ([RobofontPlugin](RobofontPlugin/README.md)).
+Of the ports in [#3](https://github.com/bghryct/kinetikern2/issues/3), Glyphs 4 is supported: the same bundle runs in
+Glyphs 3 and Glyphs 4 (see *Install*). FontLab and Sinter are not part of this release. RoboFont has its port
+([RobofontPlugin](RobofontPlugin/README.md)).
 
 ## Install
 
 Requirements:
-- macOS 11 or later.
-- Glyphs 3, with the *Python* and *Vanilla* modules from Plugin Manager ▸ Modules.
+- macOS 11 or later (Glyphs 4: macOS 12 or later).
+- Glyphs 3 or Glyphs 4, with the *Python* and *Vanilla* modules from Plugin Manager ▸ Modules.
 - Rust 1.74 or later, for building the engine.
 
 ```bash
 cd Kinetikern3
-./build.sh --test --install
+./build.sh --test --install              # Glyphs 3
+./build.sh --test --install --glyphs 4   # Glyphs 4
 ```
 
 Then restart Glyphs, open a font and choose **Filter ▸ Kinetikern3…**.
 Kinetikern3 can be installed next to v1: every module, Objective-C class and
 preference key has a name of its own.
 
+Glyphs 4 keeps its preferences apart from Glyphs 3's, so the window's settings
+start from the defaults there; **⋯ ▸ Copy Settings** in one and **Paste
+Settings** in the other carry them over. Spacing groups are kept in the font
+and come along with it.
+
 | `build.sh` option | What it does |
 |---|---|
 | *(none)* | Builds the native library (arm64 on Apple Silicon) and puts it into the bundle. |
 | `--test` | Runs the engine's unit tests first (`cargo test --release`). |
 | `--universal` | Builds arm64 + x86_64. Needs `rustup target add x86_64-apple-darwin`. |
-| `--install` | Links the bundle into `~/Library/Application Support/Glyphs 3/Plugins/`. |
-| `--verify [font]` | Runs the in-Glyphs self-test in a temporary second Glyphs 3 (default font: Arial). |
+| `--glyphs 4` | `--install` and `--verify` use Glyphs 4 (its Plugins folder, `/Applications/Glyphs 4.app` and its Python) instead of Glyphs 3. |
+| `--install` | Links the bundle into `~/Library/Application Support/Glyphs 3/Plugins/` (`Glyphs 4/Plugins/` with `--glyphs 4`). |
+| `--verify [font]` | Runs the in-Glyphs self-test in a temporary second Glyphs 3, or Glyphs 4 with `--glyphs 4` (default font: Arial). |
 
 The library is replaced **atomically**: the script builds into a staging file
 of its own, sets the install name to `@rpath/libkinetikern3.dylib`, signs it
@@ -1216,6 +1224,7 @@ Glyphs' own Python, which has PyObjC, vanilla and fontTools:
 
 ```bash
 GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
+# Glyphs 4: GPY="$HOME/Library/Application Support/Glyphs 4/Repositories/Python/Python.framework/Versions/Current/bin/python3"
 ```
 
 The figures below were measured on an Apple M1 (4 performance and 4
