@@ -101,7 +101,7 @@ from AppKit import (NSApp, NSBitmapImageFileTypePNG, NSBitmapImageRep, NSKernAtt
 from Foundation import NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from PyObjCTools import AppHelper
 
-from GlyphsApp import FILTER_MENU, LTR, Glyphs
+from GlyphsApp import FILTER_MENU, GSLTR as LTR, Glyphs  # Glyphs 4 has only the GS name
 
 import kk3_args
 import kk3_bridge as kb
@@ -3490,7 +3490,8 @@ class SelfTest(object):
         self.plan = None
         if win is None or self.nswindow() is None:
             return
-        self.call_window(CLOSE, win.w.close)
+        # performClose_: Glyphs 4 runs no close callbacks for a window's close()
+        self.call_window(CLOSE, win.w.getNSWindow().performClose_, None)
         windows = len(self.open_windows())
         result_freed = _freed(getattr(win, "result", None))
         context_freed = _freed(getattr(win, "context", None))

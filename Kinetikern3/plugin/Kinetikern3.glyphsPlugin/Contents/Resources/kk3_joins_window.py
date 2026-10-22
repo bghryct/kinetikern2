@@ -140,7 +140,7 @@ class JoinsWindow(object):
         self.w.makeKey()
 
     def close(self):
-        self.w.close()
+        self.w.getNSWindow().performClose_(None)  # as the close button does: Glyphs 4 runs no close callbacks for close()
 
     def _closed(self, sender):
         cb = getattr(self.kw, "joins_window_closed", None)
