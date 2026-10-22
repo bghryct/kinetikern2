@@ -6,7 +6,7 @@ kk3_crash_report — what crashed a temporary Glyphs or RoboFont during a
     kk3_crash_report.py BEFORE_LIST APP_PREFIX [--wait SECONDS] [--dir FOLDER]
 
 BEFORE_LIST is a file with the names of the crash reports that were there
-before the run, one per line; APP_PREFIX is "Glyphs 3" or "RoboFont". With
+before the run, one per line; APP_PREFIX is "Glyphs 3", "Glyphs 4" or "RoboFont". With
 --wait the tool waits up to SECONDS for a new report (macOS writes it a few
 seconds after the crash). For each new report it prints the time, the
 exception and the crashing thread's top frames.
@@ -19,7 +19,8 @@ None and, in some launches (the address bits of NoneType, None's reference
 count), dereferences 0x388. Glyphs 3.5's Python 3.11 module ships PyObjC 10.2,
 and Glyphs sends setWindowController_(None) to each Python palette when a
 font window closes, so closing a font can crash it. Kinetikern3 has no
-palette. See notes/crash-investigation.md.
+palette. See notes/crash-investigation.md. Glyphs 4 ships PyObjC 12, which
+has the fix: a crash there is never this one.
 
 Exit status: 0 no new report, 3 only the known PyObjC crash, 4 another crash.
 """
@@ -31,6 +32,7 @@ import sys
 import time
 
 REPORTS = os.path.expanduser("~/Library/Logs/DiagnosticReports")
+UNAFFECTED = ("Glyphs 4",)  # apps whose PyObjC (11.0 or later) has the fix of the known crash
 
 
 def new_reports(before, prefix, folder=REPORTS):
@@ -41,8 +43,8 @@ def new_reports(before, prefix, folder=REPORTS):
     return sorted(n for n in names if n.startswith(prefix + "-") and n.endswith(".ips") and n not in before)
 
 
-def describe(path):
-    """(lines, known) for one .ips report."""
+def describe(path, prefix=""):
+    """(lines, known) for one .ips report of the app named `prefix`."""
     with open(path, encoding="utf-8", errors="replace") as f:
         text = f.read()
     head, _, body = text.partition("\n")
@@ -64,7 +66,7 @@ def describe(path):
 
     exc = report.get("exception", {})
     symbols = [fr.get("symbol", "") for fr in frames[:8]]
-    known = "PyObjCRT_SkipTypeSpec" in symbols and "method_stub" in symbols
+    known = "PyObjCRT_SkipTypeSpec" in symbols and "method_stub" in symbols and prefix not in UNAFFECTED
     lines = ["%s: %s %s, %s" % (os.path.basename(path), exc.get("type", "?"), exc.get("subtype", ""),
                                 info.get("timestamp", "")[:19])]
     lines += ["    " + frame(fr) for fr in frames[:8]]
@@ -95,7 +97,7 @@ def main():
         return 0
     all_known = True
     for name in found:
-        lines, known = describe(os.path.join(a.dir, name))
+        lines, known = describe(os.path.join(a.dir, name), a.prefix)
         all_known = all_known and known
         print("crash report " + "\n".join(lines))
     return 3 if all_known else 4

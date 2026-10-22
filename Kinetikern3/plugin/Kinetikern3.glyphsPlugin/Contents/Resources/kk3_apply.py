@@ -52,7 +52,7 @@ import kk3_punctuation as kpu
 import kk3_snapshot as ks
 
 try:
-    from GlyphsApp import LTR
+    from GlyphsApp import GSLTR as LTR  # Glyphs 4 has only the GS name (Glyphs 3 has both)
 except ImportError:  # outside Glyphs (tools, tests)
     LTR = 0
 

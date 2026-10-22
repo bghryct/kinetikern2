@@ -23,7 +23,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright Mirko Velimirovic 2026. Whole-font spacing and class kerning for Glyphs 3: a multi-threaded Rust engine (adaptive SDF profiles, DMAT disk packing, kinetic equilibrium) driven asynchronously with live proofing.</string>
+	<string>Copyright Mirko Velimirovic 2026. Whole-font spacing and class kerning for Glyphs 3 and 4: a multi-threaded Rust engine (adaptive SDF profiles, DMAT disk packing, kinetic equilibrium) driven asynchronously with live proofing.</string>
 	<key>NSPrincipalClass</key>
 	<string>Kinetikern3Plugin</string>
 	<key>PyMainFileNames</key>

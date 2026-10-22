@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Kinetikern3 — Glyphs 3 plugin shim.
+Kinetikern3 — Glyphs 3 and Glyphs 4 plugin shim.
 
 Filter ▸ Kinetikern3… opens the spacing and kerning window. All heavy work
 runs in libkinetikern3.dylib on threads the library owns; this file only

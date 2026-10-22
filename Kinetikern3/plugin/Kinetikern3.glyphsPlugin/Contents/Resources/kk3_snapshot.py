@@ -180,6 +180,42 @@ def zone_reference(name, codepoint, flags_codepoint, category):
         return False
 
 
+_quad_reader = None
+
+
+def _quad_points(path, i):
+    """(control point, end point) of quadratic element i of an NSBezierPath.
+
+    PyObjC (10.2 in Glyphs 3, 12.2 in Glyphs 4) predates the quadratic
+    element and hands back only its first point, so these are read through
+    the Objective-C runtime. Glyphs 3 gave TrueType outlines as cubic curves;
+    Glyphs 4 gives them as quadratic ones (on macOS 14 and later)."""
+    global _quad_reader
+    if _quad_reader is None:
+        import ctypes
+
+        import objc
+
+        class Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+        points = Point * 3
+        libobjc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        libobjc.sel_registerName.restype = ctypes.c_void_p
+        libobjc.sel_registerName.argtypes = [ctypes.c_char_p]
+        selector = libobjc.sel_registerName(b"elementAtIndex:associatedPoints:")
+        send = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long,
+                                ctypes.POINTER(points))(("objc_msgSend", libobjc))
+
+        def read(path, i):
+            out = points()
+            send(objc.pyobjc_id(path), selector, i, out)
+            return out[0], out[1]
+
+        _quad_reader = read
+    return _quad_reader(path, i)
+
+
 def bezier_contours(path):
     """Closed contours of an NSBezierPath as lists of (x, y, node kind)."""
     contours = []
@@ -200,7 +236,7 @@ def bezier_contours(path):
             c1, c2, p = points[0], points[1], points[2]
             current.extend([(c1.x, c1.y, 2), (c2.x, c2.y, 2), (p.x, p.y, 1)])
         elif kind == _QUAD:
-            c, p = points[0], points[1]
+            c, p = _quad_points(path, i)
             current.extend([(c.x, c.y, 2), (p.x, p.y, 3)])
         elif kind == _CLOSE:
             if len(current) > 1 and current[-1][0] == current[0][0] and current[-1][1] == current[0][1]:

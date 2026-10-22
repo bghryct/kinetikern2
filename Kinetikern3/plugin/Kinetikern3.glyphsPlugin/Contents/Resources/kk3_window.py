@@ -3271,7 +3271,8 @@ def open_window(resources):
         if getattr(win, "w", None) is None:
             _open_windows.remove(win)  # closed
         elif not win._font_open():
-            win.w.close()  # its font was closed
+            win.w.getNSWindow().performClose_(None)  # its font was closed; as the close button does
+            # (Glyphs 4 runs no close callbacks for close())
         elif font is not None and win.font == font:
             win.w.getNSWindow().makeKeyAndOrderFront_(None)
             return win

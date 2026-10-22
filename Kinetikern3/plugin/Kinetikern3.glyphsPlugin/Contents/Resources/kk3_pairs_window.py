@@ -438,6 +438,6 @@ class PairsWindow(object):
 
     def close(self):
         try:
-            self.w.close()
+            self.w.getNSWindow().performClose_(None)  # as the close button does: Glyphs 4 runs no close callbacks for close()
         except Exception:
             pass
