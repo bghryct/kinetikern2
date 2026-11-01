@@ -226,8 +226,20 @@ fn signatures_close(a: &[f64; SIGNATURE], b: &[f64; SIGNATURE], eps: f64) -> boo
 }
 
 impl SideClasses {
-    fn build(glyphs: &[PreparedGlyph], right: bool, eps: f64, shape_eps: f64, part: Option<&[u32]>) -> SideClasses {
+    /// `follow`: per glyph, the glyph whose side this side kerns as (NONE: its
+    /// own). Such a glyph takes no part in forming the classes and then joins
+    /// its glyph's class, where it is never evaluated (its pairs are its
+    /// glyph's).
+    fn build(
+        glyphs: &[PreparedGlyph],
+        right: bool,
+        eps: f64,
+        shape_eps: f64,
+        part: Option<&[u32]>,
+        follow: Option<&[u32]>,
+    ) -> SideClasses {
         let n = glyphs.len();
+        let follower = |i: usize| follow.is_some_and(|f| f.get(i).is_some_and(|&r| r != NONE));
         let joins = |i: usize| glyphs[i].join_side(right);
         let any_join = (0..n).any(|i| glyphs[i].valid && joins(i));
         let key = |i: usize| part.map_or(0, |p| p.get(i).copied().unwrap_or(0)) | if joins(i) { PART_JOIN } else { 0 };
@@ -251,7 +263,7 @@ impl SideClasses {
         if part.is_some() || any_join {
             let mut counts: std::collections::HashMap<u32, std::collections::BTreeMap<u32, usize>> =
                 std::collections::HashMap::new();
-            for i in (0..n).filter(|&i| glyphs[i].valid && existing(i) != NONE) {
+            for i in (0..n).filter(|&i| glyphs[i].valid && !follower(i) && existing(i) != NONE) {
                 *counts.entry(existing(i)).or_default().entry(key(i)).or_insert(0) += 1;
             }
             for (id, by_key) in counts {
@@ -264,7 +276,7 @@ impl SideClasses {
             }
         }
         let mut by_id: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        for i in (0..n).filter(|&i| glyphs[i].valid) {
+        for i in (0..n).filter(|&i| glyphs[i].valid && !follower(i)) {
             let id = existing(i);
             if id != NONE && keeper.get(&id).map_or(true, |&k| k == key(i)) {
                 let k = *by_id.entry(id).or_insert_with(|| {
@@ -289,6 +301,7 @@ impl SideClasses {
             eps: f64,
             is_frozen: &dyn Fn(usize) -> bool,
             key: &dyn Fn(usize) -> u32,
+            follower: &dyn Fn(usize) -> bool,
         ) -> u32 {
             if c.class_of[i] != NONE {
                 return c.class_of[i];
@@ -306,10 +319,11 @@ impl SideClasses {
                 && (b as usize) < glyphs.len()
                 && b as usize != i
                 && glyphs[b as usize].valid
+                && !follower(b as usize)
                 && key(b as usize) == key(i)
                 && depth < 8
             {
-                let kb = assign(b as usize, glyphs, c, depth + 1, profile, ink, eps, is_frozen, key);
+                let kb = assign(b as usize, glyphs, c, depth + 1, profile, ink, eps, is_frozen, key, follower);
                 let (y0, y1) = ink(b as usize);
                 let matches = glyphs[i].group_id == glyphs[b as usize].group_id
                     && compare(profile(i), profile(b as usize), eps)
@@ -327,8 +341,8 @@ impl SideClasses {
             c.members[target as usize].push(i as u32);
             target
         }
-        for i in (0..n).filter(|&i| glyphs[i].valid) {
-            assign(i, glyphs, &mut c, 0, &profile, &ink, eps, &is_frozen, &key);
+        for i in (0..n).filter(|&i| glyphs[i].valid && !follower(i)) {
+            assign(i, glyphs, &mut c, 0, &profile, &ink, eps, &is_frozen, &key, &follower);
         }
         // 2b. classes without a designer group merge when their representatives
         //     have the same shape over the spacing zone (same rhythm group)
@@ -372,6 +386,24 @@ impl SideClasses {
                         c.diff[g] = if bands.is_empty() { Diff::Same } else { Diff::Bands(bands) };
                     }
                 }
+            }
+        }
+        // 5. a side that kerns as another glyph's joins that glyph's class
+        if let Some(f) = follow {
+            let mut touched = Vec::new();
+            for i in (0..n).filter(|&i| glyphs[i].valid && follower(i)) {
+                let k = c.class_of[f[i] as usize];
+                if k != NONE {
+                    c.class_of[i] = k;
+                    c.members[k as usize].push(i as u32);
+                    c.diff[i] = Diff::All;
+                    touched.push(k as usize);
+                }
+            }
+            touched.sort_unstable();
+            touched.dedup();
+            for k in touched {
+                c.members[k].sort_unstable();
             }
         }
         c
@@ -459,12 +491,29 @@ impl Classes {
     /// Classes that never mix partitions (`PART_FROZEN`, `GLYPH_KEYED` and
     /// step 1 of `SideClasses::build`).
     pub fn build_with(glyphs: &[PreparedGlyph], upm: f64, part: Option<&[u32]>) -> Classes {
+        Classes::build_with_follow(glyphs, upm, part, None)
+    }
+
+    /// `build_with`, where the sides of `follow` (left sides, right sides:
+    /// per glyph the glyph whose side it kerns as, NONE for its own) join
+    /// that glyph's class.
+    pub fn build_with_follow(
+        glyphs: &[PreparedGlyph],
+        upm: f64,
+        part: Option<&[u32]>,
+        follow: Option<(&[u32], &[u32])>,
+    ) -> Classes {
         let eps = 0.5 * upm / 1000.0;
         let shape_eps = SHAPE_EPS * upm / 1000.0;
         Classes {
-            right: SideClasses::build(glyphs, true, eps, shape_eps, part),
-            left: SideClasses::build(glyphs, false, eps, shape_eps, part),
+            right: SideClasses::build(glyphs, true, eps, shape_eps, part, follow.map(|(_, r)| r)),
+            left: SideClasses::build(glyphs, false, eps, shape_eps, part, follow.map(|(l, _)| l)),
         }
+    }
+
+    /// Whether glyph `g`'s side (right: true) kerns as another glyph's.
+    pub fn follows(follow: Option<(&[u32], &[u32])>, g: usize, right: bool) -> bool {
+        follow.is_some_and(|(l, r)| if right { r[g] != NONE } else { l[g] != NONE })
     }
 
     /// True for every class of `side` whose members are all frozen.

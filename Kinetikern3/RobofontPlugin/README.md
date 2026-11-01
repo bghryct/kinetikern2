@@ -62,7 +62,9 @@ window, the same controls and the same tools:
   design, where the line does not meet), what the preview does to the
   joins, drawing advice for the kept sides, proofs in the Space Center;
 - Spacing Groups (frozen glyphs, glyphs spaced looser or tighter, with
-  more or less kerning) and its window, with **By Category**: figures,
+  more or less kerning, glyphs spaced and kerned like a glyph you name: the
+  double quote like the single quote, each side like a glyph of its own) and
+  its window, with **By Category**: figures,
   punctuation, symbols and the letters of each script but Latin in groups
   of their own, each with its own Looseness and kerning force (Latin
   letters keep the main sliders);
@@ -78,7 +80,9 @@ window, the same controls and the same tools:
   kerning switch, a text size slider (and pinch to zoom), the Toggle and
   Overlay views, settings copied, pasted, saved and loaded as JSON, and
   **Categories…** (a Looseness for each category, Keep the font's fit, Stay
-  close to the font's spacing, the word space);
+  close to the font's spacing, the word space), and the **Exceptions** field
+  (a glyph of a kerning class gets an exception only past that difference
+  from its class);
 - an unattended self-test inside RoboFont (`build.sh --verify`).
 
 ## Install

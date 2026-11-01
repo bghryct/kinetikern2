@@ -1566,6 +1566,7 @@ class SmokeTest(object):
             self.check_spaces_in_step()
             self.change_settings()
             self.check_categories()
+            self.check_exceptions_and_follow()
             self.apply_sample()
             self.whole_font()
             self.close_window()
@@ -2164,6 +2165,83 @@ class SmokeTest(object):
         self.act("close the Categories window", nsw.performClose_, None)
         rep.check(win.categories_window is None and not nsw.isVisible(), "the Categories window closes")
 
+    # 2c. the exception tolerance; a spacing group that follows a glyph (kinetikern2#16)
+    def check_exceptions_and_follow(self):
+        rep, ui, win = self.report, self.ui, self.win
+        snap = win.snapshot
+        timeout = self.args.timeout
+
+        def preview(what, fn, *args):
+            before = win.result
+            self.act(what, fn, *args)
+            self.wait_for("the preview after " + what, lambda: self.ready(before), timeout,
+                          stage="preview after a group change")
+
+        # Exceptions: past 8 units per 1000 em only; fewer exceptions, none of them within 8 of their class
+        field = win.w.exceptionsField.getNSTextField()
+        exc0 = win.result.stats["exception_entries"]
+        preview("Exceptions field", enter_into, field, "8")
+        exc = win.result.stats["exception_entries"]
+        note = str(win.w.thresholdValue.get())
+        saved = MockGlyphs.defaults.get(PREFIX + "exceptions")
+        rep.check(win._exceptions() == 8.0 and saved == 8.0 and "exceptions past 8" in note and exc <= exc0,
+                  "the Exceptions field: exceptions only past 8 units, saved and shown",
+                  "%d exceptions, %d before; saved %r; note %r" % (exc, exc0, saved, note))
+        preview("Exceptions field emptied", enter_into, field, "")
+        rep.check(win._exceptions() == 0.0 and win.result.stats["exception_entries"] == exc0,
+                  "emptied: the ignore threshold again, the exceptions as before",
+                  "%d exceptions" % win.result.stats["exception_entries"])
+
+        single, double = snap.char_map.get("'"), snap.char_map.get('"')
+        if single is None or double is None or not win.engine.features & kb.FEATURE_FOLLOW:
+            rep.info("Follow: no quotes in the mock font, or an engine without it; not checked")
+            return
+        self.act("Spacing Groups… button", ui.button("Spacing Groups…").performClick_, None)
+        gw = win.groups_window
+        if gw is None:
+            raise Abort("Spacing Groups… opened no window")
+        # a group of the double quote, in Follow mode, like the single quote
+        gw.grid.selection = set([double])
+        self.act("New Group", gw.w.addGroup.getNSButton().performClick_, None)
+        seg = gw.w.mode.getNSSegmentedButton()
+        seg.setSelectedSegment_(2)
+        self.act("Follow mode", seg.sendAction_to_, seg.action(), seg.target())
+        rep.check(gw.w.likeLeft.getNSTextField().isHidden() is False and gw.w.loose.getNSSlider().isHidden(),
+                  "Follow mode shows the glyph fields in place of the sliders")
+        preview("Left side like", enter_into, gw.w.likeLeft.getNSTextField(), single)
+        g = gw.groups.group(gw.current)
+        res = win.result
+        i, j = snap.index[single], snap.index[double]
+        m = res.metrics
+        rep.check(g.follows and (g.like_left, g.like_right) == (single, single)
+                  and str(gw.w.likeRight.get()) == single and (m[j].lsb, m[j].rsb) == (m[i].lsb, m[i].rsb),
+                  "Follow: the double quote takes the single quote's sidebearings (the right side's field too)",
+                  "%s: %s / %s; double %.2f %.2f, single %.2f %.2f" % (g.describe(), g.like_left, g.like_right,
+                                                                       m[j].lsb, m[j].rsb, m[i].lsb, m[i].rsb))
+
+        def same(a, b):
+            return (a != a and b != b) or a == b
+
+        sample = sorted(win._sample_indices())
+        apart = [snap.names[q] for q in sample if q not in (i, j)
+                 and not (same(res.value(j, q), res.value(i, q)) and same(res.value(q, j), res.value(q, i)))]
+        rep.check(not apart and gw.followed_by(single) is g,
+                  "Follow: the double quote kerns as the single quote with every glyph of the sample",
+                  "%d differ, e.g. %s" % (len(apart), apart[:5]))
+        # Kerning off: the sides still follow; the kerning is its own again (in Arial the two quotes may share
+        # a class anyway, by shape) and Apply moves no kerning group
+        preview("Kerning off", gw.w.followKerning.getNSButton().performClick_, None)
+        res = win.result
+        m = res.metrics
+        opts = win._glyph_opts()
+        rep.check(not g.follow_kerning and (m[j].lsb, m[j].rsb) == (m[i].lsb, m[i].rsb)
+                  and opts[j][6] == kb.GLYPHOPT_FOLLOW_SPACING and win._kerning_followers() is None,
+                  "Kerning off: the sides follow, the double quote kerns on its own",
+                  "%s; options %r" % (g.describe(), tuple(opts[j])))
+        preview("Delete Group", gw.w.removeGroup.getNSButton().performClick_, None)
+        rep.check(not gw.groups.groups, "the group goes")
+        self.act("close the Spacing Groups window", gw.w.getNSWindow().performClose_, None)
+
     def sample_mask(self, snap):
         mask = bytearray(len(snap.names))
         for t in self.ks.tokenize(str(self.ui.editor().string()), snap):
@@ -2294,7 +2372,7 @@ class SmokeTest(object):
             held["alert"] = alert
             held["result"] = win.result
             held["plan"] = self.ka.plan(win.snapshot, win.result, replace, metrics_names=win.plan_names(win.result),
-                                        word_space=win._word_space_apply_arg())
+                                        word_space=win._word_space_apply_arg(), following=win._kerning_followers())
             held["writes_before"] = len(font.writes())
             held["t"] = time.perf_counter()
             held["applying"] = []

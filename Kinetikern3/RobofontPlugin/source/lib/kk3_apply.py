@@ -734,14 +734,17 @@ class Planner(_Stepper):
     rules follow and the glyphs that follow them). `scope_scripts`: the
     solve paired only glyphs of one script (plus Common), as the window's
     solves do; Replace then keeps existing pairs across scripts, which the
-    engine never saw. The result must stay open until the planner is done.
+    engine never saw. `following`: {glyph: (the glyph its left side kerns
+    as, the one for its right side)} ("" for its own): a side the result puts
+    into its glyph's class joins that class's group, leaving a group of its
+    own. The result must stay open until the planner is done.
     """
 
     def __init__(self, snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None,
-                 word_space=None):
+                 word_space=None, following=None):
         _Stepper.__init__(self)
         self.plan = None
-        self._args = (snapshot, result, replace, metrics_names, scope_scripts, frozen, word_space)
+        self._args = (snapshot, result, replace, metrics_names, scope_scripts, frozen, word_space, following)
         self.text = "Planning"
 
     def _finished(self, value):
@@ -749,7 +752,7 @@ class Planner(_Stepper):
         value.ms = self.busy_ms
 
     def _work(self):
-        snapshot, result, replace, metrics_names, scope_scripts, frozen_names, word_space = self._args
+        snapshot, result, replace, metrics_names, scope_scripts, frozen_names, word_space, following = self._args
         self._args = None
         names = list(snapshot.names)
         n = len(names)
@@ -854,7 +857,16 @@ class Planner(_Stepper):
         origins_r, origins_l = result.right_class_origin, result.left_class_origin
         groups = {}
         moves = {}
-        group_sides = joining = 0
+        group_sides = joining = follow_moves = 0
+        # sides that kern as the glyph they follow (spacing groups in Follow mode): {glyph: that glyph}, indices
+        at = dict((name, k) for k, name in enumerate(names))
+        follow_l, follow_r = {}, {}
+        for name, (like_l, like_r) in (following or {}).items():
+            k = at.get(name)
+            if k is not None and like_l in at:
+                follow_l[k] = at[like_l]
+            if k is not None and like_r in at:
+                follow_r[k] = at[like_r]
         for i in range(n):
             if not i & 1023:
                 yield
@@ -865,21 +877,26 @@ class Planner(_Stepper):
             move_l = move_r = None
             joins = False
             q = lclass[i]
-            if q != kb.NONE and used_l[q] and left_names[q] is not None:
+            # a side the engine kerns as its glyph's: in that glyph's class (its group, whether kerned or not)
+            fl = i in follow_l and q != kb.NONE and lclass[follow_l[i]] == q
+            if q != kb.NONE and (used_l[q] or fl) and left_names[q] is not None:
                 if spec.left_group == kb.NONE:
                     left = left_names[q]
                     joins = bool(origins_l[q] & kb.EXISTING)
-                elif frozen_names and not origins_l[q] & kb.EXISTING and \
+                elif (fl or (frozen_names and not origins_l[q] & kb.EXISTING)) and \
                         left_groups[spec.left_group] != left_names[q]:
-                    move_l = left_names[q]  # it left a group it shared with frozen glyphs
+                    move_l = left_names[q]  # it left a group it shared with frozen glyphs, or its glyph's
             c = rclass[i]
-            if c != kb.NONE and used_r[c] and right_names[c] is not None:
+            fr = i in follow_r and c != kb.NONE and rclass[follow_r[i]] == c
+            if c != kb.NONE and (used_r[c] or fr) and right_names[c] is not None:
                 if spec.right_group == kb.NONE:
                     right = right_names[c]
                     joins = joins or bool(origins_r[c] & kb.EXISTING)
-                elif frozen_names and not origins_r[c] & kb.EXISTING and \
+                elif (fr or (frozen_names and not origins_r[c] & kb.EXISTING)) and \
                         right_groups[spec.right_group] != right_names[c]:
                     move_r = right_names[c]
+            if (move_l is not None and fl) or (move_r is not None and fr):
+                follow_moves += 1
             if left is not None or right is not None:
                 groups[names[i]] = (left, right)
                 group_sides += (left is not None) + (right is not None)
@@ -1106,7 +1123,8 @@ class Planner(_Stepper):
             "joining_existing": joining,
             "other_masters": 0,
             "frozen": len(p.frozen),
-            "group_moves": len(moves),
+            "group_moves": len(moves) - follow_moves,
+            "follow_moves": follow_moves,
             "followers": len(followers),
             "spaces": len(spaces),
         }
@@ -1136,9 +1154,10 @@ def _release(*containers):
                 yield
 
 
-def plan(snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None, word_space=None):
+def plan(snapshot, result, replace, metrics_names=None, scope_scripts=True, frozen=None, word_space=None,
+         following=None):
     """The ApplyPlan of applying `result` (see Planner), in one call."""
-    return Planner(snapshot, result, replace, metrics_names, scope_scripts, frozen, word_space).run().plan
+    return Planner(snapshot, result, replace, metrics_names, scope_scripts, frozen, word_space, following).run().plan
 
 
 # --------------------------------------------------------------- revert
@@ -1953,6 +1972,9 @@ def describe_plan(plan):
                      % _n(c["frozen"]))
     if c.get("groups"):
         lines.append("%s glyphs join kerning groups (only sides without a group)." % _n(c["groups"]))
+    if c.get("follow_moves"):
+        lines.append("%s glyphs move into the kerning group of the glyph they follow (spacing groups in Follow "
+                     "mode)." % _n(c["follow_moves"]))
     if c.get("group_moves"):
         lines.append("%s glyphs leave a kerning group they shared with frozen glyphs for a group of their own."
                      % _n(c["group_moves"]))

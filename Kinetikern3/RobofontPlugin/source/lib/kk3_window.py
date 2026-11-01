@@ -77,8 +77,8 @@ import kk3_snapshot as ks
 PREFIX = host.PREFIX
 # preferences the window remembers between sessions (keys under PREFIX)
 PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "view",
-             "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "wordSpace", "sample",
-             "replace")
+             "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "wordSpace", "exceptions",
+             "sample", "replace")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -431,16 +431,26 @@ class KK3Window(object):
 
         x = 600
         threshold = min(MAX_THRESHOLD, max(0.0, self._setting("threshold", DEFAULT_THRESHOLD)))
-        w.thresholdLabel = vanilla.TextBox((x, 10, 236, 17), "Ignore threshold (units per 1000 em)",
+        w.thresholdLabel = vanilla.TextBox((x, 10, 172, 17), "Ignore threshold (per 1000 em)",
                                            sizeStyle="small")
-        w.threshold = vanilla.Slider((x, 28, 170, 22), minValue=0.0, maxValue=MAX_THRESHOLD, value=threshold,
+        w.threshold = vanilla.Slider((x, 28, 120, 22), minValue=0.0, maxValue=MAX_THRESHOLD, value=threshold,
                                      callback=self.thresholdChanged)
-        w.thresholdField = vanilla.EditText((x + 178, 28, 48, 21), "%g" % round(threshold, 1),
+        w.thresholdField = vanilla.EditText((x + 126, 28, 44, 21), "%g" % round(threshold, 1),
                                             callback=self.thresholdFieldChanged, sizeStyle="small")
         w.thresholdValue = vanilla.TextBox((x, 52, 280, 14), "", sizeStyle="mini")
         w.threshold.getNSSlider().setToolTip_(
             "Kerning values smaller than this are left out: the preview shows and Apply writes only pairs that "
             "matter.")
+        # the exception tolerance: how far a glyph of a kerning class may be from its class's value
+        exceptions = max(0.0, self._setting("exceptions", 0.0))
+        w.exceptionsLabel = vanilla.TextBox((x + 176, 10, 62, 17), "Exceptions", sizeStyle="small")
+        w.exceptionsField = vanilla.EditText((x + 176, 28, 50, 21), "%g" % round(exceptions, 1) if exceptions else "",
+                                             callback=self.exceptionsFieldChanged, continuous=False,
+                                             placeholder="as left", sizeStyle="small")
+        w.exceptionsField.getNSTextField().setToolTip_(
+            "A glyph in a kerning class gets an exception of its own only where its kerning differs from its "
+            "class's by this much or more (units per 1000 em); closer, it takes the class's value. Empty: the "
+            "ignore threshold. Raise it for fewer exceptions.")
 
         x = 886
         # the switches: right-aligned on the top row, so that the four fit the narrowest window (1200 points)
@@ -743,6 +753,11 @@ class KK3Window(object):
     def _threads(self):
         return int(self.w.threads.get())  # item 0 is Auto (0), item n is n threads
 
+    def _exceptions(self):
+        """The exception tolerance in units per 1000 em (0: the ignore threshold)."""
+        v = _number(self.w.exceptionsField.get() if self.w is not None else "")
+        return min(MAX_THRESHOLD * 10.0, max(0.0, v)) if v is not None else 0.0
+
     def _threshold(self):
         """Ignore threshold in units per 1000 em."""
         return min(MAX_THRESHOLD, max(0.0, float(self.w.threshold.get())))
@@ -760,8 +775,10 @@ class KK3Window(object):
 
     def _glyph_opts(self):
         """Per-glyph options: the spacing groups' (frozen, Looseness offset,
-        kerning force), each glyph's category offset on top, and with Keep the
-        font's fit its fit group (None: nothing changes anything)."""
+        kerning force, and the sides a Follow group's glyph takes from
+        another), each glyph's category offset on top, and with Keep the
+        font's fit its fit group, as kk3_bridge.pack_glyph_opts takes them
+        (None: nothing changes anything)."""
         if self.snapshot is None or not self.engine.features & kb.FEATURE_GLYPH_OPTS:
             return None
         base = self.groups.opts_for(self.snapshot.names)
@@ -772,9 +789,10 @@ class KK3Window(object):
         out = []
         for i, cat in enumerate(self._glyph_categories()):
             frozen, loose, force = tuple(base[i])[:3] if base else (False, 0.0, 1.0)
+            follow = tuple(base[i])[4:7] if base else (kb.NONE, kb.NONE, 0)  # a Follow group's sides
             if not frozen:
                 loose += offsets.get(cat, 0.0)
-            out.append((frozen, loose, force, self._fit_group(cat) if fit else 0))
+            out.append((frozen, loose, force, self._fit_group(cat) if fit else 0) + follow)
         return out
 
     # ---------------------------------------------------------- categories
@@ -924,6 +942,16 @@ class KK3Window(object):
             return None
         return space, nbsp, width, t[1], t[0]
 
+    def _kerning_followers(self):
+        """{glyph: (the glyph its left side kerns as, the one for its right side)} of the Follow groups whose
+        kerning follows ("" for a side of its own): Apply puts them into those glyphs' kerning groups. None
+        without any (or with an engine that cannot follow)."""
+        if self.groups is None or not self.engine.features & kb.FEATURE_FOLLOW:
+            return None
+        out = dict((name, (like_l, like_r)) for name, (like_l, like_r, _spacing, kerning)
+                   in self.groups.followers().items() if kerning)
+        return out or None
+
     def _word_space_apply_arg(self):
         """The word space setting for Apply (kk3_apply.Planner's word_space), or None."""
         info = self._word_space_info()
@@ -1025,7 +1053,8 @@ class KK3Window(object):
                               scope_scripts=True, threshold=self._threshold() * self._upm() / 1000.0,
                               budget=budget, threads=self._threads(), fit_frozen=fit, style=self._style(),
                               fit_font=self._keep_fit_on(),
-                              keep=self.stay_close / 100.0 if self.font_fit_available() else 0.0)
+                              keep=self.stay_close / 100.0 if self.font_fit_available() else 0.0,
+                              exception_tolerance=self._exceptions() * self._upm() / 1000.0)
 
     def _solve_key(self, whole):
         """What a result depends on, to tell whether it can be reused (the
@@ -1035,6 +1064,7 @@ class KK3Window(object):
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
                 self.join_count, self._join_mode(),
                 tuple(sorted(self.category_offsets.items())), self._keep_fit_on(), round(self.stay_close, 3),
+                round(self._exceptions(), 3),
                 # the last five as they are: the self-tests read them from the end
                 self._small_caps_on(), self._figures_on(), self._punctuation_on(),
                 self._style(),
@@ -1073,6 +1103,9 @@ class KK3Window(object):
                 text += " (%.1f units at %d UPM)" % (t * upm / 1000.0, upm)
         else:
             text = "every non-zero kern is kept"
+        e = self._exceptions()
+        if e > t:
+            text += "; exceptions past %g" % round(e, 1)
         self.w.thresholdValue.set(text)
         self._update_harness_label()
         self._update_join_label()
@@ -1145,7 +1178,8 @@ class KK3Window(object):
             return
         solving = self._job is not None and self._job_kind == "whole"
         busy = solving or self._stepper is not None or self.state == "applying"
-        for control in (w.tightness, w.tightField, w.kerning, w.threshold, w.thresholdField, w.maxPairs, w.threads,
+        for control in (w.tightness, w.tightField, w.kerning, w.threshold, w.thresholdField, w.exceptionsField,
+                        w.maxPairs, w.threads,
                         w.master, w.scope, w.replace, w.reload):
             control.enable(not busy)
         for control in (w.intensity, w.intensityField):
@@ -2371,7 +2405,7 @@ class KK3Window(object):
             opts = self._glyph_opts()
             frozen = self.groups.frozen_names() if opts else None
             planner = ka.Planner(snap, result, replace, metrics_names=self.plan_names(result), frozen=frozen,
-                                 word_space=self._word_space_apply_arg())
+                                 word_space=self._word_space_apply_arg(), following=self._kerning_followers())
         except Exception as e:
             self._fail("Apply could not be planned: %s" % e, traceback.format_exc())
             return False
@@ -2472,6 +2506,7 @@ class KK3Window(object):
             "kerning": bool(w.kerning.get()),
             "intensity": round(float(w.intensity.get()), 2),
             "threshold": round(self._threshold(), 3),
+            "exceptions": round(self._exceptions(), 3),
             "harness": bool(w.harness.get()),
             "harnessStrength": round(float(w.harnessStrength.get()), 2),
             "conventions": self.harness_style,
@@ -2499,7 +2534,7 @@ class KK3Window(object):
     def default_settings():
         """Kinetikern3's own settings (Reset Settings)."""
         return {SETTINGS_FORMAT: SETTINGS_VERSION, "looseness": 0.0, "kerning": True, "intensity": 100.0,
-                "threshold": DEFAULT_THRESHOLD, "harness": False, "harnessStrength": 100.0, "conventions": kh.AUTO,
+                "threshold": DEFAULT_THRESHOLD, "exceptions": 0.0, "harness": False, "harnessStrength": 100.0, "conventions": kh.AUTO,
                 "punctuation": True, "figures": True, "smallCaps": True, "connected": True, "joinMode": "keep",
                 "alongSlant": True, "maxPairs": DEFAULT_MAX_PAIRS, "threads": 0, "applyTo": "sample",
                 "replaceKerning": True, "textSize": DEFAULT_SIZE, "view": "side", "overlay": "red",
@@ -2562,6 +2597,10 @@ class KK3Window(object):
         if v is not None:
             w.threshold.set(v)
             self.thresholdChanged(None)
+        v = number("exceptions", 0.0, MAX_THRESHOLD * 10.0)
+        if v is not None:
+            w.exceptionsField.set("%g" % round(v, 1) if v else "")
+            self.exceptionsFieldChanged(None)
         on, strength = flag("harness"), number("harnessStrength", 0.0, 100.0)
         if on is not None:
             w.harness.set(on)
@@ -2930,6 +2969,13 @@ class KK3Window(object):
             return
         self.w.threshold.set(t)
         self._save("threshold", t)
+        self._update_labels()
+        self._request_preview()
+
+    def exceptionsFieldChanged(self, sender):
+        e = self._exceptions()
+        self.w.exceptionsField.set("%g" % round(e, 1) if e else "")
+        self._save("exceptions", e)
         self._update_labels()
         self._request_preview()
 

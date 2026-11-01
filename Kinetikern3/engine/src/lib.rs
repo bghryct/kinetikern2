@@ -167,7 +167,22 @@ pub struct KK3GlyphOpt {
     /// Kerning force as a multiple of the solve's intensity (1 = the same;
     /// NaN or negative = 1). A pair kerns with the mean of its glyphs'.
     pub intensity: f64,
+    /// The glyph whose left side the glyph's left side is like, and the glyph
+    /// whose right side its right side is like (`follow` says what follows;
+    /// an index past the glyphs, or the glyph itself: none).
+    pub follow_left: u32,
+    pub follow_right: u32,
+    /// `GLYPHOPT_FOLLOW_SPACING` | `GLYPHOPT_FOLLOW_KERNING` (0: nothing follows).
+    pub follow: u32,
+    pub reserved: u32,
 }
+
+/// `KK3GlyphOpt.follow`: each free side takes the sidebearing of the glyph it
+/// follows.
+pub const GLYPHOPT_FOLLOW_SPACING: u32 = 1;
+/// `KK3GlyphOpt.follow`: each side kerns as the side of the glyph it follows
+/// does (its kerning class, no exceptions of its own).
+pub const GLYPHOPT_FOLLOW_KERNING: u32 = 2;
 
 /// The designer harness of a solve (`kk3_solve_start3`): corrections toward
 /// what well-spaced fonts do, applied after the solve, in font units. Set
@@ -399,6 +414,10 @@ pub struct KK3Params {
     /// (0 to 1) of the way back to its sidebearing as it is, before Pass 2
     /// (NaN or negative: 0).
     pub keep: f64,
+    /// Classes: a member pair within this many font units of its class pair
+    /// takes the class value instead of an exception (0, NaN or less than
+    /// the threshold: the threshold).
+    pub exception_tolerance: f64,
 }
 
 #[repr(C)]
@@ -426,7 +445,10 @@ pub struct KK3Metrics {
     pub y_min: f64,
     pub y_max: f64,
     pub valid: u32,
-    /// 1 LSB follows a rule, 2 RSB follows a rule.
+    /// 1 LSB follows a rule, 2 RSB follows a rule (a metrics key, an aligned
+    /// component, a frozen glyph: the font decides it, not Apply); 4 LSB and 8
+    /// RSB take another glyph's because the glyph's spacing group follows it
+    /// (`KK3GlyphOpt.follow`: Apply writes them).
     pub flags: u32,
 }
 
@@ -529,14 +551,14 @@ pub struct KK3Ray {
 const _: () = {
     assert!(size_of::<KK3Point>() == 24);
     assert!(size_of::<KK3Glyph>() == 104);
-    assert!(size_of::<KK3Params>() == 160);
+    assert!(size_of::<KK3Params>() == 168);
     assert!(size_of::<KK3Progress>() == 40);
     assert!(size_of::<KK3Metrics>() == 64);
     assert!(size_of::<KK3Entry>() == 24);
     assert!(size_of::<KK3Stats>() == 352);
     assert!(size_of::<KK3Result>() == 464);
     assert!(size_of::<KK3Ray>() == 24);
-    assert!(size_of::<KK3GlyphOpt>() == 24);
+    assert!(size_of::<KK3GlyphOpt>() == 40);
     assert!(size_of::<KK3Harness>() == 32);
     assert!(size_of::<KK3Punctuation>() == 40);
     assert!(size_of::<KK3HarnessPair>() == 16);
@@ -753,6 +775,11 @@ unsafe fn read_params(upm: f64, p: *const KK3Params) -> Result<Params, String> {
         looseness,
         fit_font: c.flags & PARAM_FIT_FONT != 0,
         keep: if c.keep.is_finite() && c.keep > 0.0 { c.keep.min(1.0) } else { 0.0 },
+        exception_tolerance: if c.exception_tolerance.is_finite() && c.exception_tolerance > 0.0 {
+            c.exception_tolerance
+        } else {
+            0.0
+        },
         harness: None,
         keep_bare: false,
         conventions: None,
@@ -1284,6 +1311,9 @@ pub unsafe extern "C" fn kk3_solve_start2(
                     looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
                     intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
                     fit_group: o.fit_group,
+                    follow_left: o.follow_left,
+                    follow_right: o.follow_right,
+                    follow: o.follow & (GLYPHOPT_FOLLOW_SPACING | GLYPHOPT_FOLLOW_KERNING),
                 })
                 .collect();
             p.glyph_opts = Some(Arc::new(v));
@@ -1341,6 +1371,9 @@ pub unsafe extern "C" fn kk3_solve_start4(
                     looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
                     intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
                     fit_group: o.fit_group,
+                    follow_left: o.follow_left,
+                    follow_right: o.follow_right,
+                    follow: o.follow & (GLYPHOPT_FOLLOW_SPACING | GLYPHOPT_FOLLOW_KERNING),
                 })
                 .collect();
             p.glyph_opts = Some(Arc::new(v));
@@ -1552,10 +1585,13 @@ pub unsafe extern "C" fn kk3_measure(
 /// shortest line between them, as Spacing QA judges it), 8192 keeping the
 /// font's fit and staying close to its spacing (`PARAM_FIT_FONT`,
 /// `KK3GlyphOpt.fit_group`, `kk3_result_category_fits`, `KK3Params.keep`; a
-/// glyph's Looseness offset counts in full on punctuation by convention).
+/// glyph's Looseness offset counts in full on punctuation by convention),
+/// 16384 sides that follow another glyph's spacing and kerning
+/// (`KK3GlyphOpt.follow_left`, `follow_right`, `follow`) and the exception
+/// tolerance (`KK3Params.exception_tolerance`).
 #[no_mangle]
 pub extern "C" fn kk3_features() -> u32 {
-    16383
+    32767
 }
 
 /// The glyphs `kk3_stem_slant` reads, by name, space separated and in its

@@ -2,11 +2,14 @@
 """
 kk3_groups — spacing groups.
 
-Glyphs are painted into colour-coded groups. Each group is either spaced with
-its own Looseness and kerning force (figures looser, Cyrillic a touch tighter,
-fractions with gentler kerning…) or frozen: its glyphs keep their sidebearings
-and the kerning between them stays as it is, and only the rest of the font is
-spaced around them. Glyphs in no group follow the main window's settings.
+Glyphs are painted into colour-coded groups. Each group is spaced with its
+own Looseness and kerning force (figures looser, Cyrillic a touch tighter,
+fractions with gentler kerning…), or frozen: its glyphs keep their
+sidebearings and the kerning between them stays as it is, and only the rest of
+the font is spaced around them, or it follows a glyph: its glyphs are spaced
+and kerned like that glyph (the double quotes like the single quote), each
+side like a glyph of its own if need be (left like o, right like n). Glyphs in
+no group follow the main window's settings.
 
 With "Match the frozen spacing" on, the main Looseness is first moved to the
 frozen glyphs' own tightness (the engine fits it on their current
@@ -31,6 +34,13 @@ LEGACY_USERDATA_KEY = "com.mirkovelimirovic.Kinetikern2.spacingGroups"
 
 MODE_SPACE = "space"
 MODE_FREEZE = "freeze"
+MODE_FOLLOW = "follow"
+MODES = (MODE_SPACE, MODE_FREEZE, MODE_FOLLOW)
+
+# kk3_bridge's: no side of its own to follow, and what a side that follows takes from its glyph
+NONE = 0xFFFFFFFF
+FOLLOW_SPACING = 1
+FOLLOW_KERNING = 2
 
 # distinct, readable on white and dark backgrounds (sRGB hex)
 PALETTE = ("#2a78d6", "#eb6834", "#1baf7a", "#a35ce0", "#e0b11b", "#d64570", "#2bb5c9", "#8a6d3b",
@@ -38,23 +48,48 @@ PALETTE = ("#2a78d6", "#eb6834", "#1baf7a", "#a35ce0", "#e0b11b", "#d64570", "#2
 
 
 class SpacingGroup(object):
-    __slots__ = ("gid", "name", "color", "mode", "looseness", "force")
+    __slots__ = ("gid", "name", "color", "mode", "looseness", "force", "like_left", "like_right", "follow_spacing",
+                 "follow_kerning")
 
-    def __init__(self, name, color, mode=MODE_SPACE, looseness=0.0, force=100.0, gid=None):
+    def __init__(self, name, color, mode=MODE_SPACE, looseness=0.0, force=100.0, gid=None, like_left="",
+                 like_right="", follow_spacing=True, follow_kerning=True):
         self.gid = gid or uuid.uuid4().hex[:10]
         self.name = name
         self.color = color
         self.mode = mode
         self.looseness = float(looseness)  # offset from the main Looseness, slider units
         self.force = float(force)  # kerning intensity, percent of the main one
+        # Follow: the glyph whose left side every member's left side is like, and the one for the right
+        # sides ("" = the side is its own); what follows: the sidebearings, the kerning
+        self.like_left = like_left or ""
+        self.like_right = like_right or ""
+        self.follow_spacing = bool(follow_spacing)
+        self.follow_kerning = bool(follow_kerning)
 
     @property
     def frozen(self):
         return self.mode == MODE_FREEZE
 
+    @property
+    def follows(self):
+        return self.mode == MODE_FOLLOW
+
     def describe(self):
         if self.frozen:
             return "frozen"
+        if self.follows:
+            if not (self.like_left or self.like_right):
+                return "follows no glyph yet"
+            if self.like_left == self.like_right:
+                text = "like %s" % self.like_left
+            else:
+                text = ", ".join("%s like %s" % (side, name) for side, name in
+                                 (("left", self.like_left), ("right", self.like_right)) if name)
+            if not self.follow_kerning:
+                text += ", spacing only"
+            elif not self.follow_spacing:
+                text += ", kerning only"
+            return text
         parts = []
         if abs(self.looseness) > 1e-6:
             parts.append("Looseness %+.2f" % self.looseness)
@@ -63,15 +98,21 @@ class SpacingGroup(object):
         return ", ".join(parts) or "main settings"
 
     def to_data(self):
-        return {"id": self.gid, "name": self.name, "color": self.color, "mode": self.mode,
-                "looseness": round(self.looseness, 4), "force": round(self.force, 2)}
+        d = {"id": self.gid, "name": self.name, "color": self.color, "mode": self.mode,
+             "looseness": round(self.looseness, 4), "force": round(self.force, 2)}
+        if self.follows or self.like_left or self.like_right:
+            d.update({"likeLeft": self.like_left, "likeRight": self.like_right,
+                      "followSpacing": self.follow_spacing, "followKerning": self.follow_kerning})
+        return d
 
     @classmethod
     def from_data(cls, d):
-        mode = d.get("mode") if d.get("mode") in (MODE_SPACE, MODE_FREEZE) else MODE_SPACE
+        mode = d.get("mode") if d.get("mode") in MODES else MODE_SPACE
+        flag = lambda key: bool(d.get(key)) if d.get(key) is not None else True
         return cls(str(d.get("name") or "Group"), str(d.get("color") or PALETTE[0]), mode,
                    float(d.get("looseness") or 0.0), float(d.get("force") if d.get("force") is not None else 100.0),
-                   str(d.get("id") or "") or None)
+                   str(d.get("id") or "") or None, str(d.get("likeLeft") or ""), str(d.get("likeRight") or ""),
+                   flag("followSpacing"), flag("followKerning"))
 
 
 class GroupSet(object):
@@ -115,6 +156,10 @@ class GroupSet(object):
                 setattr(g, k, v)
             elif k in ("looseness", "force") and v is not None:
                 setattr(g, k, float(v))
+            elif k in ("like_left", "like_right") and v is not None:
+                setattr(g, k, str(v).strip())
+            elif k in ("follow_spacing", "follow_kerning") and v is not None:
+                setattr(g, k, bool(v))
         self._changed()
 
     def assign(self, names, gid):
@@ -154,22 +199,62 @@ class GroupSet(object):
         return set(n for n, gid in self.members.items() if gid in frozen)
 
     def opts_for(self, names):
-        """Per-glyph engine options (frozen, Looseness offset, force multiplier)
-        for the snapshot's glyph order; None when no group changes anything."""
+        """Per-glyph engine options for the snapshot's glyph order, as
+        kk3_bridge.pack_glyph_opts takes them: (frozen, Looseness offset,
+        force multiplier, fit group 0, the glyph index its left side is like,
+        the one its right side is like (NONE: its own), FOLLOW_SPACING |
+        FOLLOW_KERNING); None when no group changes anything. A Follow
+        group's glyph that is not among `names` (or not spaced) is followed
+        by no side, and that glyph itself keeps its own sides."""
         if self.is_empty():
             return None
         by_id = dict((g.gid, g) for g in self.groups)
+        index = dict((name, i) for i, name in enumerate(names))
+        plain = (False, 0.0, 1.0, 0, NONE, NONE, 0)
         out = []
         effective = False
-        for name in names:
+        for i, name in enumerate(names):
             g = by_id.get(self.members.get(name))
             if g is None:
-                out.append((False, 0.0, 1.0))
+                out.append(plain)
                 continue
-            o = (g.frozen, 0.0 if g.frozen else g.looseness, 1.0 if g.frozen else max(0.0, g.force / 100.0))
-            effective = effective or o != (False, 0.0, 1.0)
+            if g.follows:
+                like_l, like_r = index.get(g.like_left, NONE), index.get(g.like_right, NONE)
+                like_l, like_r = (NONE if like_l == i else like_l), (NONE if like_r == i else like_r)
+                what = (FOLLOW_SPACING if g.follow_spacing else 0) | (FOLLOW_KERNING if g.follow_kerning else 0)
+                if not what or (like_l == NONE and like_r == NONE):
+                    like_l = like_r = NONE
+                    what = 0
+                o = (False, 0.0, 1.0, 0, like_l, like_r, what)
+            else:
+                o = (g.frozen, 0.0 if g.frozen else g.looseness, 1.0 if g.frozen else max(0.0, g.force / 100.0),
+                     0, NONE, NONE, 0)
+            effective = effective or o != plain
             out.append(o)
         return out if effective else None
+
+    def followers(self):
+        """{glyph: (left side like, right side like, spacing, kerning)} of the
+        Follow groups' glyphs (names; "" for a side of its own)."""
+        out = {}
+        for name, gid in self.members.items():
+            g = self.group(gid)
+            if g is not None and g.follows and (g.like_left or g.like_right):
+                out[name] = (g.like_left if g.like_left != name else "", g.like_right if g.like_right != name else "",
+                             g.follow_spacing, g.follow_kerning)
+        return out
+
+    def kerning_followers(self):
+        """(left sides, right sides): the glyphs whose side kerns as another
+        glyph's (Apply moves it into that glyph's kerning group)."""
+        left, right = set(), set()
+        for name, (like_l, like_r, _spacing, kerning) in self.followers().items():
+            if kerning:
+                if like_l:
+                    left.add(name)
+                if like_r:
+                    right.add(name)
+        return left, right
 
     def key(self):
         """What a solve depends on (for reusing results)."""

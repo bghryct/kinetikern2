@@ -262,17 +262,99 @@ pub struct GlyphOpt {
     /// spaced at (0: none); with `FIT_FOLLOW` it follows that category
     /// without counting toward its fit (punctuation follows the lowercase).
     pub fit_group: u32,
+    /// The glyph whose left side its left side is like, and the glyph whose
+    /// right side its right side is like (NONE: its own): a spacing group
+    /// that follows a glyph ("like quotesingle", "left like o, right like
+    /// n"). `follow` says what follows.
+    pub follow_left: u32,
+    pub follow_right: u32,
+    /// `FOLLOW_SPACING`: each free side that follows takes its glyph's
+    /// sidebearing. `FOLLOW_KERNING`: the side kerns as its glyph's does (its
+    /// kerning class, and none of its own exceptions).
+    pub follow: u32,
 }
 
 /// `GlyphOpt::fit_group`: the category (1 to 255; 0 none).
 pub const FIT_GROUP_MASK: u32 = 0xFF;
 /// `GlyphOpt::fit_group`: spaced at the category's fit, not counted in it.
 pub const FIT_FOLLOW: u32 = 0x100;
+/// `GlyphOpt::follow`: the sides take the sidebearings of the glyphs they follow.
+pub const FOLLOW_SPACING: u32 = 1;
+/// `GlyphOpt::follow`: the sides kern as the glyphs they follow do.
+pub const FOLLOW_KERNING: u32 = 2;
 
 impl Default for GlyphOpt {
     fn default() -> Self {
-        GlyphOpt { frozen: false, looseness: 0.0, intensity: 1.0, fit_group: 0 }
+        GlyphOpt {
+            frozen: false,
+            looseness: 0.0,
+            intensity: 1.0,
+            fit_group: 0,
+            follow_left: NONE,
+            follow_right: NONE,
+            follow: 0,
+        }
     }
+}
+
+/// The glyph each side of every glyph follows for `what` (`FOLLOW_SPACING`
+/// or `FOLLOW_KERNING`), as (left sides, right sides), NONE for a side of
+/// its own; None when no side follows. A chain (a glyph that follows one
+/// that follows another) ends at its last glyph; a cycle, a glyph that is
+/// not valid, a frozen glyph that would follow, a side that keeps its join
+/// and, for kerning, a frozen glyph to follow (its kerning stays as it is)
+/// follow nothing.
+pub fn follow_roots(glyphs: &[PreparedGlyph], opts: Option<&[GlyphOpt]>, what: u32) -> Option<(Vec<u32>, Vec<u32>)> {
+    let o = opts?;
+    let n = glyphs.len();
+    let frozen = |i: usize| o.get(i).is_some_and(|x| x.frozen);
+    let direct = |i: usize, left: bool| -> u32 {
+        let Some(x) = o.get(i) else { return NONE };
+        if x.follow & what == 0 || x.frozen || !glyphs[i].valid {
+            return NONE;
+        }
+        // a kept join stays as drawn
+        if (left && glyphs[i].kept_left) || (!left && glyphs[i].kept_right) {
+            return NONE;
+        }
+        let r = if left { x.follow_left } else { x.follow_right };
+        if r as usize >= n || r as usize == i || !glyphs[r as usize].valid {
+            return NONE;
+        }
+        r
+    };
+    let (mut out_l, mut out_r) = (vec![NONE; n], vec![NONE; n]);
+    let mut any = false;
+    for i in 0..n {
+        for left in [true, false] {
+            let mut r = direct(i, left);
+            let mut steps = 0;
+            while r != NONE {
+                let next = direct(r as usize, left);
+                if next == NONE {
+                    break;
+                }
+                steps += 1;
+                if next as usize == i || steps > 64 {
+                    r = NONE;
+                    break;
+                }
+                r = next;
+            }
+            if r != NONE && what == FOLLOW_KERNING && frozen(r as usize) {
+                r = NONE;
+            }
+            if r != NONE {
+                any = true;
+                if left {
+                    out_l[i] = r;
+                } else {
+                    out_r[i] = r;
+                }
+            }
+        }
+    }
+    any.then_some((out_l, out_r))
 }
 
 /// How one sidebearing is decided.
@@ -526,6 +608,11 @@ impl SolveOptions {
 /// `GlyphMetrics.flags`: the side follows a rule instead of Pass 1.
 pub const METRIC_LSB_RULED: u32 = 1;
 pub const METRIC_RSB_RULED: u32 = 2;
+/// The side takes another glyph's because its spacing group follows that
+/// glyph: unlike a ruled side (a metrics key, an aligned component, a frozen
+/// glyph), Kinetikern3 writes it.
+pub const METRIC_LSB_FOLLOWS: u32 = 4;
+pub const METRIC_RSB_FOLLOWS: u32 = 8;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlyphMetrics {
@@ -1241,7 +1328,12 @@ impl Context {
         let free_l: Vec<f64> = lsb.to_vec();
         let free_r: Vec<f64> = rsb.to_vec();
         let frozen = |i: usize| opts.and_then(|o| o.get(i)).is_some_and(|x| x.frozen);
-        let mut pending: Vec<(usize, bool)> = Vec::new();
+        // a spacing group that follows a glyph: its free sides take that glyph's
+        let follows = follow_roots(&self.glyphs, opts, FOLLOW_SPACING);
+        let root = |i: usize, left: bool| -> u32 {
+            follows.as_ref().map_or(NONE, |(l, r)| if left { l[i] } else { r[i] })
+        };
+        let mut pending: Vec<(usize, bool, SideRule)> = Vec::new();
         for (i, g) in self.glyphs.iter().enumerate().filter(|(_, g)| g.valid) {
             if frozen(i) {
                 if g.cur_lsb.is_finite() && g.cur_rsb.is_finite() {
@@ -1268,6 +1360,14 @@ impl Context {
             {
                 // a kept join stays as drawn, whatever rule the side has
                 let rule = if kept && cur.is_finite() { SideRule::Fixed(cur) } else { rule };
+                // a free side of a glyph that follows another takes its side (a
+                // metrics key of its own, or an aligned component, keeps the side)
+                let rule = match rule {
+                    SideRule::Free if root(i, left) != NONE => {
+                        SideRule::Follow { glyph: root(i, left), opposite: false, offset: 0.0 }
+                    }
+                    rule => rule,
+                };
                 match rule {
                     SideRule::Free => {}
                     SideRule::Fixed(v) => {
@@ -1281,24 +1381,26 @@ impl Context {
                             flags[i] |= if left { METRIC_LSB_RULED } else { METRIC_RSB_RULED };
                         }
                     }
-                    SideRule::Follow { .. } => pending.push((i, left)),
+                    SideRule::Follow { .. } => pending.push((i, left, rule)),
                 }
             }
         }
         // Follow rules read the *final* value of their target, so resolve the
         // ones whose target is settled first.
         let mut settled = vec![[true, true]; n];
-        for &(i, left) in &pending {
+        for &(i, left, _) in &pending {
             settled[i][if left { 0 } else { 1 }] = false;
         }
         for _round in 0..8 {
             let mut progressed = false;
-            for &(i, left) in &pending {
+            for &(i, left, rule) in &pending {
                 let k = if left { 0 } else { 1 };
                 if settled[i][k] {
                     continue;
                 }
-                let rule = if left { self.glyphs[i].lsb_rule } else { self.glyphs[i].rsb_rule };
+                // a side of its own that follows because its spacing group does
+                let own = if left { self.glyphs[i].lsb_rule } else { self.glyphs[i].rsb_rule };
+                let by_group = own == SideRule::Free;
                 if let SideRule::Follow { glyph, opposite, offset } = rule {
                     let t = glyph as usize;
                     if t >= n || !self.glyphs[t].valid {
@@ -1315,7 +1417,12 @@ impl Context {
                         } else {
                             rsb[i] = v;
                         }
-                        flags[i] |= if left { METRIC_LSB_RULED } else { METRIC_RSB_RULED };
+                        flags[i] |= match (by_group, left) {
+                            (true, true) => METRIC_LSB_FOLLOWS,
+                            (true, false) => METRIC_RSB_FOLLOWS,
+                            (false, true) => METRIC_LSB_RULED,
+                            (false, false) => METRIC_RSB_RULED,
+                        };
                     }
                     settled[i][k] = true;
                     progressed = true;
@@ -1326,7 +1433,7 @@ impl Context {
             }
         }
         // unresolved (cycles, missing targets): keep what the font has now
-        for &(i, left) in &pending {
+        for &(i, left, _) in &pending {
             let k = if left { 0 } else { 1 };
             if !settled[i][k] {
                 let g = &self.glyphs[i];

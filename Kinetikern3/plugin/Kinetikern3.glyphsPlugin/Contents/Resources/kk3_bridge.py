@@ -64,6 +64,9 @@ PARAM_FIT_FONT = 256
 FIT_FOLLOW = 0x100
 
 GLYPHOPT_FROZEN = 1
+# KK3GlyphOpt.follow: the sides take the sidebearings of the glyphs they follow / kern as those glyphs do
+GLYPHOPT_FOLLOW_SPACING = 1
+GLYPHOPT_FOLLOW_KERNING = 2
 
 # kk3_features() bits
 FEATURE_GLYPH_OPTS = 1
@@ -98,6 +101,9 @@ FEATURE_JOIN_CLEARANCE = 4096
 # keeping the font's fit (PARAM_FIT_FONT, KK3GlyphOpt.fit_group, kk3_result_category_fits), staying
 # close to its spacing (KK3Params.keep), a glyph's Looseness offset in full on punctuation by convention
 FEATURE_FONT_FIT = 8192
+# a spacing group that follows a glyph (KK3GlyphOpt.follow_left, follow_right, follow: its sides spaced and kerned
+# as that glyph's), and the exception tolerance (KK3Params.exception_tolerance)
+FEATURE_FOLLOW = 16384
 
 # kk3_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
@@ -148,7 +154,8 @@ class KK3Params(Structure):
         "spring", "repulsion", "coupling", "white_credit", "depth_ratio", "rhythm_weight", "width_coupling",
         "min_clearance", "crevice_pressure", "max_negative_kern", "max_positive_kern", "min_kern", "field_cap",
         "field_decay", "field_core", "threshold", "radius_ratio")] + [("budget", c_uint32), ("threads", c_uint32),
-                                                                      ("keep", c_double)]
+                                                                      ("keep", c_double),
+                                                                      ("exception_tolerance", c_double)]
 
 
 class KK3Progress(Structure):
@@ -212,7 +219,8 @@ class KK3HarnessPair(Structure):
 
 class KK3GlyphOpt(Structure):
     """Per-solve options of one glyph: its spacing group."""
-    _fields_ = [("flags", c_uint32), ("fit_group", c_uint32), ("looseness", c_double), ("intensity", c_double)]
+    _fields_ = [("flags", c_uint32), ("fit_group", c_uint32), ("looseness", c_double), ("intensity", c_double),
+                ("follow_left", c_uint32), ("follow_right", c_uint32), ("follow", c_uint32), ("reserved", c_uint32)]
 
 
 class KK3KernIn(Structure):
@@ -254,8 +262,8 @@ class KK3MeasureStats(Structure):
                 ("loosest_count", c_uint32), ("tightest_count", c_uint32)]
 
 
-_SIZES = {KK3Point: 24, KK3Glyph: 104, KK3Params: 160, KK3Progress: 40, KK3Metrics: 64, KK3Entry: 24,
-          KK3Stats: 352, KK3Result: 464, KK3Ray: 24, KK3GlyphOpt: 24, KK3KernIn: 16, KK3PairOut: 24,
+_SIZES = {KK3Point: 24, KK3Glyph: 104, KK3Params: 168, KK3Progress: 40, KK3Metrics: 64, KK3Entry: 24,
+          KK3Stats: 352, KK3Result: 464, KK3Ray: 24, KK3GlyphOpt: 40, KK3KernIn: 16, KK3PairOut: 24,
           KK3MeasureStats: 40, KK3Harness: 32, KK3HarnessPair: 16, KK3Joins: 32, KK3JoinStats: 64,
           KK3JoinSide: 24, KK3JoinPair: 64, KK3Punctuation: 40}
 _POINT = struct.Struct("<ddII")
@@ -377,14 +385,20 @@ class InputPacker(object):
 
 
 def pack_glyph_opts(opts):
-    """[(frozen, looseness offset, intensity multiplier[, fit group])] → a KK3GlyphOpt array."""
+    """[(frozen, looseness offset, intensity multiplier[, fit group[, left side like, right side like, follow]]])]
+    → a KK3GlyphOpt array. The sides follow glyph indices (NONE: their own); follow is GLYPHOPT_FOLLOW_SPACING |
+    GLYPHOPT_FOLLOW_KERNING."""
     arr = (KK3GlyphOpt * max(len(opts), 1))()
     for k, o in enumerate(opts):
-        frozen, loose, inten, fit = (tuple(o) + (False, 0.0, 1.0, 0)[len(tuple(o)):])[:4]
+        frozen, loose, inten, fit, like_l, like_r, follow = \
+            (tuple(o) + (False, 0.0, 1.0, 0, NONE, NONE, 0)[len(tuple(o)):])[:7]
         arr[k].flags = GLYPHOPT_FROZEN if frozen else 0
         arr[k].fit_group = int(fit or 0)
         arr[k].looseness = float(loose or 0.0)
         arr[k].intensity = 1.0 if inten is None else float(inten)
+        arr[k].follow_left = NONE if like_l is None else int(like_l)
+        arr[k].follow_right = NONE if like_r is None else int(like_r)
+        arr[k].follow = int(follow or 0)
     return arr
 
 
@@ -409,10 +423,12 @@ def pack_joins(joins, n):
 
 def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=True, scope_scripts=True,
                 threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False,
-                v1_pass2=False, style=None, fit_font=False, keep=0.0, **tuning):
+                v1_pass2=False, style=None, fit_font=False, keep=0.0, exception_tolerance=0.0, **tuning):
     """`style`: Pass 2's conventions, "display" or "handwriting" (None or
     "text": text faces'). `fit_font`: keep the font's fit (the glyph options'
-    fit groups); `keep`: stay close to the font's spacing, 0 to 1."""
+    fit groups); `keep`: stay close to the font's spacing, 0 to 1.
+    `exception_tolerance`: a member pair within this many font units of its
+    class pair takes the class value (0: the threshold)."""
     p = KK3Params()
     p.struct_size = sizeof(KK3Params)
     p.flags = ((PARAM_CLASSES if classes else 0) | (PARAM_WINDOW if window else 0) |
@@ -431,6 +447,7 @@ def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=T
     p.budget = int(budget)
     p.threads = int(threads)
     p.keep = max(0.0, min(1.0, float(keep or 0.0)))
+    p.exception_tolerance = max(0.0, float(exception_tolerance or 0.0))
     return p
 
 

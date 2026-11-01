@@ -605,6 +605,80 @@ def test_word_spaces():
           "a share of an advance is set in whole units")
 
 
+def ufo_kern(f, a, b):
+    """The kerning of glyph pair (a, b) in a UFO, with the usual precedence."""
+    kern1 = next((g for g, m in f.groups.items() if g.startswith("public.kern1.") and a in m), None)
+    kern2 = next((g for g, m in f.groups.items() if g.startswith("public.kern2.") and b in m), None)
+    for pair in ((a, b), (a, kern2), (kern1, b), (kern1, kern2)):
+        if None not in pair and pair in f.kerning:
+            return f.kerning[pair]
+    return 0
+
+
+def test_follow(engine):
+    """Spacing groups that follow a glyph (kinetikern2#16): the comma like the
+    period, x's right side like n's, Ograve's right side like o's (out of the
+    O group it shares). The solve spaces and kerns them as their glyphs
+    (Ograve's metrics keys, =O, keep its sides O's; it kerns as o); Apply
+    writes their glyphs' sidebearings and kerning groups, so that every pair
+    of theirs kerns as their glyph's; Revert is exact."""
+    print("\n== spacing groups that follow a glyph")
+    f = synthetic_font()
+    before = copy.deepcopy(font_state(f))
+    snap, _ms = read(f)
+    groups = kg.GroupSet()
+    # (glyph, left side like, right side like, the glyph whose sides it takes: a metrics key keeps its own)
+    follows = (("comma", "period", "period", "period"), ("x", "", "n", "n"), ("Ograve", "", "o", "O"))
+    for name, like_l, like_r, _spaced in follows:
+        g = groups.add_group(name, kg.MODE_FOLLOW)
+        groups.update(g.gid, like_left=like_l, like_right=like_r)
+        groups.assign([name], g.gid)
+    context, result = solve_whole(engine, snap, None, groups.opts_for(snap.names))
+    at = snap.index
+    m = result.metrics
+    names = [n for n in snap.names if m[at[n]].valid]
+    for name, like_l, like_r, spaced in follows:
+        i = at[name]
+        for like, side in ((like_l, "left"), (like_r, "right")):
+            if not like:
+                continue
+            k = at[like]
+            spacer = at[spaced]
+            mine, theirs = (m[i].lsb, m[spacer].lsb) if side == "left" else (m[i].rsb, m[spacer].rsb)
+            cls = result.glyph_left_class if side == "left" else result.glyph_right_class
+            pairs = [(x, result.value(i, at[x]), result.value(k, at[x])) if side == "right" else
+                     (x, result.value(at[x], i), result.value(at[x], k)) for x in names if x not in (name, like)]
+            apart = [x for x, a, b in pairs if not ((a != a and b != b) or a == b)]
+            check(mine == theirs and cls[i] == cls[k] and not apart,
+                  "the solve: %s's %s side spaced as %s's, kerned as %s's (%d pairs apart, e.g. %s)"
+                  % (name, side, spaced, like, len(apart), apart[:3]))
+    following = dict((n, (l, r)) for n, (l, r, _s, k) in groups.followers().items() if k)
+    p = ka.plan(snap, result, True, following=following)
+    summary, point = ka.apply(f, snap, p)
+    check(summary["ok"] and p.counts.get("follow_moves") == 1,
+          "Apply reads back as planned; Ograve moves out of the O group (%d moves)" % p.counts.get("follow_moves", 0))
+    layer = f.naked().layers.defaultLayer
+    left_of, right_of, _d = ks.kerning_group_maps(f.naked().groups)
+    for name, like_l, like_r, spaced in follows:
+        mine, theirs = ks.ink_metrics(layer[name], layer), ks.ink_metrics(layer[spaced], layer)
+        others = [x for x in f.keys() if x not in (name, like_r)]
+        apart = [x for x in others if ufo_kern(f, name, x) != ufo_kern(f, like_r, x)]
+        ok = right_of.get(name) == right_of.get(like_r) and abs(mine[1] - theirs[1]) <= 0.5 and not apart
+        if like_l:
+            apart_l = [x for x in others if ufo_kern(f, x, name) != ufo_kern(f, x, like_l)]
+            ok = ok and left_of.get(name) == left_of.get(like_l) and abs(mine[0] - theirs[0]) <= 0.5 and not apart_l
+            apart += apart_l
+        check(ok, "the font: %s spaced as %s, kerned as %s (group %s, %s's %s; %d pairs apart, e.g. %s)"
+              % (name, spaced, like_r, right_of.get(name), like_r, right_of.get(like_r), len(apart), apart[:3]))
+    check(left_of.get("Ograve") == "O", "Ograve's left side stays in the O group (%s)" % left_of.get("Ograve"))
+    point.restore(overwrite=False)
+    diff = diff_state(before, font_state(f))
+    check(not diff, "Revert puts every glyph, the kerning and the groups back exactly (%d differences, e.g. %s)"
+          % (len(diff), diff[:4]))
+    result.close()
+    context.close()
+
+
 def apply_and_revert(engine, f, label, harness=False, groups=None):
     print("\n== %s: whole font, Apply, read back, Revert" % label)
     before = copy.deepcopy(font_state(f))
@@ -1356,6 +1430,7 @@ def main():
         apply_and_revert(engine, synthetic_font(), "synthetic font with the designer harness", harness=True)
         test_figure_space(engine)
         test_word_spaces()
+        test_follow(engine)
         test_groups(engine)
         test_by_category(engine)
         test_conflict(engine)

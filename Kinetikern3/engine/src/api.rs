@@ -18,6 +18,7 @@ use crate::run::{self, Params, KIND_CLASS_CLASS, KIND_CLASS_GLYPH, KIND_GLYPH_CL
 pub use crate::classes::{EXISTING, GLYPH_KEYED};
 pub use crate::engine::{
     physics_for_looseness, GlyphInput, GlyphOpt, SideRule, SolveOptions, COUPLING_CALIBRATION, FIT_FOLLOW, FIT_GROUP_MASK,
+    FOLLOW_KERNING, FOLLOW_SPACING,
     GLYPH_FIGURE, GLYPH_FIXED_ADVANCE,
     GLYPH_KERN, GLYPH_RTL, GROUP_LOWERCASE, GROUP_OTHER, GROUP_UPPERCASE, LOOSENESS_GAIN, LOOSENESS_RATIO, MAX_GROUPS,
     NONE, pair_class, style_response, Conventions, PairResponse, Style, PAIR_CAP_CAP, PAIR_CAP_LOWER, PAIR_CLASSES, PAIR_LOWER_CAP, PAIR_LOWER_LOWER, PAIR_OTHER,
@@ -106,6 +107,9 @@ pub struct Settings {
     pub fit_font: bool,
     /// Stay close to the font's spacing (0 to 1).
     pub keep: f64,
+    /// Classes: a member pair within this many units per 1000 em of its class
+    /// pair takes the class value (0: the threshold).
+    pub exception_tolerance_per_1000: f64,
 }
 
 impl Settings {
@@ -131,6 +135,7 @@ impl Settings {
             punctuation: None,
             fit_font: false,
             keep: 0.0,
+            exception_tolerance_per_1000: 0.0,
         }
     }
 
@@ -333,6 +338,7 @@ impl Engine {
             conventions: s.punctuation.clone().map(Arc::new),
             fit_font: s.fit_font,
             keep: s.keep,
+            exception_tolerance: s.exception_tolerance_per_1000.max(0.0) * ctx.upm / 1000.0,
         };
         let mask: Option<Vec<u8>> = s.kern_mask.as_ref().map(|m| m.iter().map(|&b| b as u8).collect());
         let progress = Progress::new();
@@ -1261,5 +1267,184 @@ mod tests {
         // the period is not frozen: its side moves, and V–period is corrected
         assert!((with.lsb[3] - plain.lsb[3] + 6.0).abs() < 1e-9);
         assert!((with.kerning(1, 3) - plain.kerning(1, 3) + 20.0).abs() < 1e-6);
+    }
+
+    /// quotesingle, quotedbl (two heavier ticks), o, n, d, period, H; `o2`: an
+    /// o whose right side bulges a little, in o's right group (index 7).
+    fn quotes_font(o2: bool) -> Engine {
+        let tick = |x: f64, w: f64, y: f64| poly(&[(x, 700.0), (x + w, 700.0), (x + 0.8 * w, y), (x + 0.2 * w, y)]);
+        let single = GlyphInput::simple(vec![tick(60.0, 70.0, 470.0)], 190.0, GROUP_OTHER);
+        let double = GlyphInput::simple(vec![tick(60.0, 90.0, 440.0), tick(200.0, 90.0, 440.0)], 350.0, GROUP_OTHER);
+        let bowl = |bulge: f64| {
+            vec![
+                poly(&[(140.0, 0.0), (260.0, 0.0), (360.0, 140.0), (360.0 + bulge, 250.0), (360.0, 360.0), (260.0, 500.0), (140.0, 500.0), (40.0, 360.0), (40.0, 140.0)]),
+                poly(&[(160.0, 70.0), (110.0, 170.0), (110.0, 330.0), (160.0, 430.0), (240.0, 430.0), (290.0, 330.0), (290.0, 170.0), (240.0, 70.0)]),
+            ]
+        };
+        let mut o = GlyphInput::simple(bowl(0.0), 400.0, GROUP_LOWERCASE);
+        let n = GlyphInput::simple(vec![rect(80.0, 0.0, 150.0, 500.0), rect(330.0, 0.0, 400.0, 500.0), rect(150.0, 430.0, 330.0, 500.0)], 480.0, GROUP_LOWERCASE);
+        let mut d = bowl(0.0);
+        d.push(rect(330.0, 0.0, 400.0, 700.0));
+        let d = GlyphInput::simple(d, 460.0, GROUP_LOWERCASE);
+        let dot = GlyphInput::simple(vec![rect(60.0, 0.0, 150.0, 90.0)], 210.0, GROUP_OTHER);
+        let h = GlyphInput::simple(
+            vec![rect(60.0, 0.0, 140.0, 700.0), rect(460.0, 0.0, 540.0, 700.0), rect(140.0, 320.0, 460.0, 390.0)],
+            600.0,
+            GROUP_UPPERCASE,
+        );
+        let mut glyphs = vec![single, double];
+        if o2 {
+            o.right_group = 7;
+            let mut wide = GlyphInput::simple(bowl(12.0), 412.0, GROUP_LOWERCASE);
+            wide.right_group = 7;
+            glyphs.push(o);
+            glyphs.extend([n, d, dot, h, wide]);
+        } else {
+            glyphs.push(o);
+            glyphs.extend([n, d, dot, h]);
+        }
+        Engine::prepare(glyphs, 1000.0, 1).unwrap()
+    }
+
+    fn like(left: u32, right: u32, what: u32) -> GlyphOpt {
+        GlyphOpt { follow_left: left, follow_right: right, follow: what, ..GlyphOpt::default() }
+    }
+
+    #[test]
+    fn a_glyph_that_follows_another_is_spaced_and_kerned_as_it() {
+        let e = quotes_font(false);
+        let mut opts = vec![GlyphOpt::default(); 7];
+        opts[1] = like(0, 0, FOLLOW_SPACING | FOLLOW_KERNING);
+        for mode in [Mode::Pairs, Mode::Classes] {
+            let base = Settings { mode, ..Settings::new() };
+            let plain = e.solve(&base).unwrap();
+            let s = e.solve(&Settings { glyph_opts: Some(opts.clone()), ..base.clone() }).unwrap();
+            // on its own the double quote is spaced and kerned otherwise
+            assert!(
+                (plain.lsb[1] - plain.lsb[0]).abs() > 0.5
+                    || (plain.rsb[1] - plain.rsb[0]).abs() > 0.5
+                    || (2..7).any(|p| (plain.kerning(1, p) - plain.kerning(0, p)).abs() > 0.5),
+                "{mode:?}: the fixture's double quote is not its own"
+            );
+            assert_eq!((s.lsb[1], s.rsb[1]), (s.lsb[0], s.rsb[0]), "{mode:?} sides");
+            // its advance is its own ink between the single quote's sides
+            let ink = plain.advance[1] - plain.lsb[1] - plain.rsb[1];
+            assert!((s.advance[1] - (s.lsb[0] + ink + s.rsb[0])).abs() < 1e-9, "{mode:?} advance");
+            for p in 2..7 {
+                assert_eq!(s.kerning(1, p).to_bits(), s.kerning(0, p).to_bits(), "{mode:?} double, {p}");
+                assert_eq!(s.kerning(p, 1).to_bits(), s.kerning(p, 0).to_bits(), "{mode:?} {p}, double");
+            }
+            for (a, b) in [(1, 1), (0, 1), (1, 0)] {
+                assert_eq!(s.kerning(a, b).to_bits(), s.kerning(0, 0).to_bits(), "{mode:?} quotes {a} {b}");
+            }
+            // the rest of the font as without it
+            for a in 2..7 {
+                assert_eq!((s.lsb[a], s.rsb[a]), (plain.lsb[a], plain.rsb[a]), "{mode:?} sides of {a}");
+                for b in 2..7 {
+                    assert_eq!(s.kerning(a, b).to_bits(), plain.kerning(a, b).to_bits(), "{mode:?} {a} {b}");
+                }
+            }
+            if mode == Mode::Classes {
+                assert_eq!((s.right_class[1], s.left_class[1]), (s.right_class[0], s.left_class[0]));
+                // no entry names it but as a copy of the single quote's
+                let own = |g: u32| s.entries.iter().filter(|x| x.kind == run::KIND_GLYPH_GLYPH && (x.left == g || x.right == g)).count();
+                assert!(own(1) <= 3 * own(0).max(1), "{} entries of the double quote, {} of the single", own(1), own(0));
+            }
+        }
+    }
+
+    #[test]
+    fn each_side_follows_a_glyph_of_its_own() {
+        // d's left side as o's, its right side its own
+        let e = quotes_font(false);
+        let mut opts = vec![GlyphOpt::default(); 7];
+        opts[4] = like(2, NONE, FOLLOW_SPACING | FOLLOW_KERNING);
+        let base = Settings { mode: Mode::Classes, ..Settings::new() };
+        let plain = e.solve(&base).unwrap();
+        let s = e.solve(&Settings { glyph_opts: Some(opts), ..base.clone() }).unwrap();
+        assert_eq!(s.lsb[4], s.lsb[2]);
+        assert_eq!(s.rsb[4], plain.rsb[4]);
+        assert_eq!(s.left_class[4], s.left_class[2]);
+        for p in (0..7).filter(|&p| p != 4) {
+            assert_eq!(s.kerning(p, 4).to_bits(), s.kerning(p, 2).to_bits(), "{p}, d as {p}, o");
+            assert_eq!(s.kerning(4, p).to_bits(), plain.kerning(4, p).to_bits(), "d, {p} as it was");
+        }
+    }
+
+    #[test]
+    fn spacing_alone_follows_and_the_kerning_stays_its_own() {
+        let e = quotes_font(false);
+        let mut opts = vec![GlyphOpt::default(); 7];
+        opts[1] = like(0, 0, FOLLOW_SPACING);
+        let base = Settings { mode: Mode::Classes, ..Settings::new() };
+        let plain = e.solve(&base).unwrap();
+        let s = e.solve(&Settings { glyph_opts: Some(opts), ..base.clone() }).unwrap();
+        assert_eq!((s.lsb[1], s.rsb[1]), (s.lsb[0], s.rsb[0]));
+        assert_eq!((s.right_class[1], s.left_class[1]), (plain.right_class[1], plain.left_class[1]));
+    }
+
+    #[test]
+    fn the_harness_does_not_part_a_follower_from_its_glyph() {
+        let e = quotes_font(false);
+        let mut opts = vec![GlyphOpt::default(); 7];
+        opts[1] = like(0, 0, FOLLOW_SPACING | FOLLOW_KERNING);
+        let mut sides = vec![[0.0, 0.0]; 7];
+        sides[0] = [4.0, -2.0];
+        sides[1] = [9.0, 7.0];
+        let h = Harness { sides, pairs: vec![(1, 2, -15.0), (0, 2, 5.0)] };
+        for mode in [Mode::Pairs, Mode::Classes] {
+            let base = Settings { mode, glyph_opts: Some(opts.clone()), ..Settings::new() };
+            let plain = e.solve(&base).unwrap();
+            let s = e.solve(&Settings { harness: Some(h.clone()), ..base.clone() }).unwrap();
+            assert_eq!((s.lsb[1], s.rsb[1]), (s.lsb[0], s.rsb[0]), "{mode:?}");
+            assert!((s.lsb[0] - plain.lsb[0] - 4.0).abs() < 1e-9, "{mode:?} the single quote's own shift");
+            // the double quote's own correction goes; the single quote's is copied
+            assert_eq!(s.kerning(1, 2).to_bits(), s.kerning(0, 2).to_bits(), "{mode:?}");
+            assert!((s.kerning(0, 2) - plain.kerning(0, 2) - 5.0).abs() < 1e-6, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn glyphs_that_follow_each_other_follow_nothing() {
+        let e = quotes_font(false);
+        let mut opts = vec![GlyphOpt::default(); 7];
+        opts[0] = like(1, 1, FOLLOW_SPACING | FOLLOW_KERNING);
+        opts[1] = like(0, 0, FOLLOW_SPACING | FOLLOW_KERNING);
+        let base = Settings { mode: Mode::Classes, ..Settings::new() };
+        let plain = e.solve(&base).unwrap();
+        let s = e.solve(&Settings { glyph_opts: Some(opts), ..base.clone() }).unwrap();
+        for a in 0..7 {
+            assert_eq!((s.lsb[a], s.rsb[a]), (plain.lsb[a], plain.rsb[a]));
+            for b in 0..7 {
+                assert_eq!(s.kerning(a, b).to_bits(), plain.kerning(a, b).to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn the_exception_tolerance_keeps_near_members_in_their_class() {
+        // the wide o shares o's right group: at the lowest threshold it differs
+        // from o by a few units, which become exceptions; within the tolerance
+        // it takes the class value
+        let e = quotes_font(true);
+        let exceptions = |s: &Solution| {
+            s.entries.iter().filter(|x| x.kind != run::KIND_CLASS_CLASS && x.kind != run::KIND_CLASS_GLYPH && x.left == 7).count()
+        };
+        let base = Settings { mode: Mode::Classes, ..Settings::new() };
+        let strict = e.solve(&base).unwrap();
+        assert_eq!(strict.right_class[7], strict.right_class[2]);
+        assert!(exceptions(&strict) > 0, "the fixture's wide o has no exceptions to begin with");
+        let near = |s: &Solution| (0..8).filter(|&p| (s.kerning(7, p) - s.kerning(2, p)).abs() > 1e-9).count();
+        let fuzzy = e.solve(&Settings { exception_tolerance_per_1000: 40.0, ..base.clone() }).unwrap();
+        assert_eq!(exceptions(&fuzzy), 0);
+        assert_eq!(near(&fuzzy), 0, "within the tolerance it kerns as its class");
+        // every member pair of the font: its own value, or its class's within the tolerance
+        let all = |s: &Solution| s.entries.iter().filter(|x| x.kind != run::KIND_CLASS_CLASS).count();
+        assert!(all(&fuzzy) < all(&strict), "{} exceptions, {} without the tolerance", all(&fuzzy), all(&strict));
+        for a in 0..8 {
+            for b in 0..8 {
+                assert!((fuzzy.kerning(a, b) - strict.kerning(a, b)).abs() < 40.0, "{a} {b}");
+            }
+        }
     }
 }

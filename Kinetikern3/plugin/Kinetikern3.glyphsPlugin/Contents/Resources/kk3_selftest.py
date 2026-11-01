@@ -139,6 +139,7 @@ OPEN, PREVIEW, AGAIN = "open window", "preview", "menu again"
 CANCELLED_RUN, WHOLE_RUN = "cancelled run", "whole-font run"
 APPLY, REVERT, CLOSE = "apply", "revert", "close"
 GROUPS = "spacing groups"
+FOLLOW = "spacing groups that follow a glyph"
 GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not judged
 HARNESS = "designer harness"
 PUNCTUATION = "punctuation"
@@ -407,6 +408,23 @@ def _space_width(width, target):
     return float(width) if not isinstance(target, tuple) else float(math.floor(target[1] * float(width) + 0.5))
 
 
+def effective_kern(table, left_keys, right_keys):
+    """The kerning of a pair in a {left key: {right key: value}} table, with
+    the usual precedence: glyph–glyph, glyph–group, group–glyph, group–group
+    (0 without any). `left_keys`: (the left glyph's key, its right group's
+    key); `right_keys`: (the right glyph's key, its left group's key)."""
+    (la, lg), (rb, rg) = left_keys, right_keys
+    for lk, rk in ((la, rb), (la, rg), (lg, rb), (lg, rg)):
+        if lk is not None and rk is not None and rk in table.get(lk, {}):
+            return table[lk][rk]
+    return 0.0
+
+
+def _same(a, b):
+    """Equal, or both NaN (a pair a result does not kern)."""
+    return (a != a and b != b) or a == b
+
+
 class Heartbeat(object):
     """A 60 Hz timer in the common run-loop modes (it fires during menu
     tracking, slider drags and modal panels). The gap between two ticks, less
@@ -571,7 +589,8 @@ CLICKABLE = ("tightness", "intensity", "threshold", "thresholdField", "harness",
              "master", "size", "threads", "maxPairs", "connected", "joinMode", "reload", "scope", "replace",
              "groupsButton", "pairsButton", "joinsButton", "revert", "apply", "alongSlant", "cancel", "punctuation",
              "figures", "smallCaps", "conventions", "tightField", "kerning", "intensityField",
-             "harnessStrengthField", "viewMode", "showing", "overlayStyle", "alignWords", "sizeField", "settingsMenu")
+             "harnessStrengthField", "viewMode", "showing", "overlayStyle", "alignWords", "sizeField", "settingsMenu",
+             "exceptionsField", "categoriesButton")
 
 
 def covered_controls(win):
@@ -2004,10 +2023,157 @@ class SelfTest(object):
         self.later(0.3, self.features_step)
 
     def after_features(self):
+        self.later(0.3, self.follow_step)
+
+    def after_follow(self):
         if self.groups_test:
             self.later(0.3, self.groups_step)
         else:
             self.finish()
+
+    # --- spacing groups that follow a glyph (kinetikern2#16) -------------------
+
+    def follow_step(self):
+        """Spacing groups in Follow mode, set as a user sets them: the double
+        quote like the single quote (both sides, spacing and kerning), and a
+        letter's right side like another's. The preview must space and kern
+        each exactly as its glyph; Apply must write them so (that glyph's
+        sidebearings and kerning groups, and the same kerning in the font
+        with every glyph of the sample); Revert puts the font back."""
+        import kk3_groups as kg
+        win = self.win
+        snap = win.snapshot
+        self.heartbeat.stage(FOLLOW)
+        cm = snap.char_map
+        single, double = cm.get("'"), cm.get('"')
+        if not win.engine.features & kb.FEATURE_FOLLOW or single is None or double is None:
+            self.note("follow: no single and double quote in the font, or an engine that cannot follow; not tested")
+            self.after_follow()
+            return
+        res = win.result
+        # a letter whose right side kerns in a class of its own, to follow another letter's
+        letter = (None, None)
+        for f, r in (("p", "o"), ("b", "o"), ("q", "n"), ("u", "n"), ("d", "l")):
+            fi, ri = snap.index.get(cm.get(f)), snap.index.get(cm.get(r))
+            if fi is not None and ri is not None and res.glyph_right_class[fi] != res.glyph_right_class[ri]:
+                letter = (cm.get(f), cm.get(r))
+                break
+        self.follow_saved = (win.groups, win.editor.get())
+        self.follow_pairs = [(double, single, True, True)]  # (glyph, the glyph it follows, left side, right side)
+        groups = kg.GroupSet()
+        g = groups.add_group("Double quotes", kg.MODE_FOLLOW)
+        groups.update(g.gid, like_left=single, like_right=single)
+        groups.assign([double], g.gid)
+        chars = "'\""
+        if letter[0] is not None:
+            self.follow_pairs.append((letter[0], letter[1], False, True))
+            g2 = groups.add_group("Right side like %s" % letter[1], kg.MODE_FOLLOW)
+            groups.update(g2.gid, like_right=letter[1])
+            groups.assign([letter[0]], g2.gid)
+        partners = [c for c in "onHdAaT." if cm.get(c)]
+        text = " ".join(p + "'" + p + '"' + p for p in partners)
+        if letter[0] is not None:
+            fc, rc = snap.infos[letter[0]].char, snap.infos[letter[1]].char
+            if fc and rc:
+                text += "\n" + " ".join(fc + p + rc + p for p in partners)
+        win.editor.set(text)
+        self.call_window(FOLLOW, win.textChanged, None)
+        self.call_window(FOLLOW, win.set_groups, groups)
+        self.wait(self._features_ready, self.follow_preview, 120.0, "the preview with glyphs that follow")
+
+    def follow_preview(self):
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        sample = sorted(win._sample_indices())
+        bad, compared = [], 0
+        for f, r, left, right in self.follow_pairs:
+            i, k = snap.index[f], snap.index[r]
+            m = res.metrics
+            if left and m[i].lsb != m[k].lsb:
+                bad.append(["LSB", f, m[i].lsb, m[k].lsb])
+            if right and m[i].rsb != m[k].rsb:
+                bad.append(["RSB", f, m[i].rsb, m[k].rsb])
+            if left and res.glyph_left_class[i] != res.glyph_left_class[k]:
+                bad.append(["left class", f])
+            if right and res.glyph_right_class[i] != res.glyph_right_class[k]:
+                bad.append(["right class", f])
+            for q in sample:
+                if q in (i, k):
+                    continue
+                compared += 1
+                if right and not _same(res.value(i, q), res.value(k, q)):
+                    bad.append([f, snap.names[q], res.value(i, q), res.value(k, q)])
+                if left and not _same(res.value(q, i), res.value(q, k)):
+                    bad.append([snap.names[q], f, res.value(q, i), res.value(q, k)])
+        self.log("follow preview", pairs=self.follow_pairs, compared=compared, differences=bad[:10])
+        if bad:
+            self.error("glyphs that follow: the preview spaces or kerns %d of them otherwise, e.g. %s"
+                       % (len(bad), bad[:4]))
+        self.follow_compared = compared
+        self.before = self.font_state(snap.names, snap.master_id)
+        previous = win.last_apply
+        if not self.call_window(FOLLOW, win._apply, res, False):
+            raise RuntimeError("the window did not apply the preview with glyphs that follow")
+        self.wait(lambda: win.last_apply is not previous and self.window_state("during the follow Apply") != "applying",
+                  self.follow_applied, 120.0, "applying with glyphs that follow")
+
+    def follow_applied(self):
+        win = self.win
+        snap = win.snapshot
+        after = self.font_state(snap.names, snap.master_id)
+        table = after["kerning"]
+        sample = [snap.names[q] for q in sorted(win._sample_indices())]
+        bad, written = [], []
+        for f, r, left, right in self.follow_pairs:
+            gf, gr = after["glyphs"].get(f), after["glyphs"].get(r)
+            if gf is None or gr is None:
+                bad.append(["missing", f, r])
+                continue
+            if left and (gf[0] != gr[0] or gf[2] is None or abs(gf[2] - gr[2]) > 0.5):
+                bad.append(["left side", f, gf[0], gf[2], gr[0], gr[2]])
+            if right and (gf[1] != gr[1] or gf[3] is None or abs(gf[3] - gr[3]) > 0.5):
+                bad.append(["right side", f, gf[1], gf[3], gr[1], gr[3]])
+            written.append("%s %s" % (f, "like %s" % r if left and right else "right side like %s" % r))
+            fl, fr = self._kern_keys(f)
+            rl, rr = self._kern_keys(r)
+            for x in sample:
+                if x in (f, r):
+                    continue
+                xl, xr = self._kern_keys(x)
+                if right and effective_kern(table, fl, xr) != effective_kern(table, rl, xr):
+                    bad.append([f, x, effective_kern(table, fl, xr), effective_kern(table, rl, xr)])
+                if left and effective_kern(table, xl, fr) != effective_kern(table, xl, rr):
+                    bad.append([x, f, effective_kern(table, xl, fr), effective_kern(table, xl, rr)])
+        self.log("follow applied", differences=bad[:10], summary=win.last_apply)
+        if bad:
+            self.error("glyphs that follow: after Apply %d sides, groups or kerning values differ from their "
+                       "glyph's, e.g. %s" % (len(bad), bad[:4]))
+        self.note("spacing groups that follow a glyph: %s; the preview and, after Apply, the font space and kern "
+                  "them as their glyphs (sidebearings, kerning groups, %d pairs with the sample's glyphs)"
+                  % ("; ".join(written), self.follow_compared))
+        if not self.call_window(FOLLOW, win.revert_last_apply):
+            raise RuntimeError("the window did not revert the Apply with glyphs that follow")
+        self.wait(lambda: self.window_state("during the follow Revert") != "applying", self.follow_reverted, 300.0,
+                  "reverting the Apply with glyphs that follow")
+
+    def follow_reverted(self):
+        win = self.win
+        snap = win.snapshot
+        after = self.font_state(snap.names, snap.master_id)
+        kern_diff = diff_kerning(self.before["kerning"], after["kerning"])
+        glyph_diff = diff_glyphs(self.before["glyphs"], after["glyphs"])
+        if kern_diff or glyph_diff:
+            self.error("after reverting the Apply with glyphs that follow %d kerning entries and %d glyph values "
+                       "differ, e.g. %s" % (len(kern_diff), len(glyph_diff), (kern_diff + glyph_diff)[:4]))
+        else:
+            self.note("follow Revert: the font is as before")
+        self.before = None
+        groups, text = self.follow_saved
+        self.call_window(FOLLOW, win.set_groups, groups)
+        win.editor.set(text)
+        self.call_window(FOLLOW, win.textChanged, None)
+        self.wait(self._features_ready, self.after_follow, 120.0, "the preview with the groups and text as they were")
 
     # --- Kinetikern3's window features ------------------------------------------
     def _kw(self):
@@ -3322,6 +3488,16 @@ class SelfTest(object):
         self.finish()
 
     # --- reading ------------------------------------------------------------
+
+    def _kern_keys(self, name):
+        """(the glyph's key and its group's as kerning names them on the left
+        of a pair, the same on the right)."""
+        glyph = self.font.glyphs[name]
+        if glyph is None:
+            return (None, None), (None, None)
+        gid = _text(glyph.id)
+        rg, lg = _text(glyph.rightKerningGroup), _text(glyph.leftKerningGroup)
+        return (gid, "@MMK_L_" + rg if rg else None), (gid, "@MMK_R_" + lg if lg else None)
 
     def font_state(self, names, master_id):
         """The master's kerning plus groups and (ink) sidebearings of the glyphs."""

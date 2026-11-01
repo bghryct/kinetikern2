@@ -99,6 +99,7 @@ spacing groups while the font has none of its own.
 | [#11](https://github.com/bghryct/kinetikern2/issues/11) Save and load settings | The **⋯** menu: Copy Settings, Paste Settings (as JSON, like RMX Tools), Save Settings…, Load Settings… and Reset Settings. |
 | [#13](https://github.com/bghryct/kinetikern2/issues/13) Tightness by category | **Categories…**: a Looseness for each category (capitals, lowercase, small caps, figures, quotes, brackets, dashes, punctuation, symbols…) on top of the main one. |
 | [#7](https://github.com/bghryct/kinetikern2/issues/7) Keep the font's general fit | **Categories…**: **Keep the font's fit** starts each kind of letter at the font's own tightness; **Stay close to the font's spacing** (0–100 %) moves every side back toward the font's. |
+| [#16](https://github.com/bghryct/kinetikern2/issues/16) Inconsistent kerning of quotes; fewer exceptions | A spacing group can **follow a glyph**: its glyphs are spaced and kerned like the glyph you name, the double quote like the single quote, or each side like a glyph of its own (left like o, right like n). The **Exceptions** field beside the ignore threshold makes exceptions only where a glyph of a kerning class differs from its class by that much: with the threshold at 3 and Exceptions at 8, the all-glyph sample of the smoke test (400 glyphs of Arial) goes from 17,322 exceptions to 9,335. |
 | [#2](https://github.com/bghryct/kinetikern2/issues/2) Punctuation, E and F in light weights, the space | Kinetikern2 added punctuation, figures and small caps by convention, and the designer harness (E and F in light weights 41 % closer to their designers). Kinetikern3 adds the **word space**: in step with the n, or as designers of well-rated fonts set it (see *The word space*). |
 | [#4](https://github.com/bghryct/kinetikern2/issues/4) Apache license | Apache License 2.0 (see *License*). |
 | [#1](https://github.com/bghryct/kinetikern2/issues/1) Automation | [Spacing QA](https://bghryct.github.io/KKQA/) checks the spacing of existing fonts (all of Google Fonts) with this engine. |
@@ -167,6 +168,7 @@ other two.
 |---|---|
 | **Looseness / Tightness** | The ratio of Pass 1's spring tension to its bounding repulsion, which sets the rest gap of each rhythm group: −3 (tight) to +2 (loose), slider or field. 0 (ratio 3.86) is v1's tuned median over 30 Google Fonts families. The label shows the resulting spring, repulsion and rest gaps. |
 | **SDF Kerning Intensity** | The checkbox turns kerning off and on (the preview shows the spacing alone, and the intensity is kept). The slider and field set the coupling β of Pass 2's contour field, 0–200 %; 100 % is v1's calibration against designers' kerning. |
+| **Exceptions** | Beside the ignore threshold, in units per 1000 em: a glyph of a kerning class gets an exception of its own only where its kerning differs from its class's by this much or more; closer, it takes the class's value. Empty (the default): the ignore threshold, as before. Raise it for fewer exceptions without leaving out small kerning (see *Classes and exceptions*). |
 | **Ignore threshold** | 0–20 units per 1000 em (slider or field; default 5). Kerning values smaller than this are left out of the preview and of Apply. It applies to the final value, *after* the engine's own calibrated dead zone (1.5 % of the UPM on the raw contrast, from v1), not instead of it. The label also gives the value in the font's units. |
 | **Master** | The master that is read, solved and written. |
 | **View** | *Side by side*, *Toggle* or *Overlay* (see *Views* below). |
@@ -269,7 +271,7 @@ settings are saved with the window's others and copied with them.
 ### Spacing groups
 
 **Spacing Groups…** opens a picker that paints glyphs into colour-coded
-groups. A group either has its own spacing or is frozen:
+groups. A group has its own spacing, is frozen, or follows a glyph:
 
 - **Space.** The group's glyphs are spaced with a **Looseness offset** from the
   main slider (−1 to +1) and kerned with a **kerning force** (0–300 % of the
@@ -279,6 +281,20 @@ groups. A group either has its own spacing or is frozen:
   kerning *between* frozen glyphs stays exactly as it is. Only the rest of the
   font is spaced and kerned, including against the frozen glyphs. Use it to
   space only the new characters of a finished font.
+- **Follow.** The group's glyphs are spaced and kerned like a glyph you name:
+  **Left side like** and **Right side like** (type a glyph name, or select a
+  glyph in the grid and click **Selected**; a side left empty is the glyph's
+  own). The double quotes like the single quote, the curly ones like their
+  single quotes, or p, b and þ with their right side like o. **Spacing**: each
+  side takes that glyph's sidebearing. **Kerning**: each side kerns as that
+  glyph's does — the engine puts it into that glyph's kerning class, where it
+  gets no exceptions of its own (it has that glyph's), and Apply moves it into
+  that glyph's kerning group, out of a group of its own if it had one (the
+  dialog counts them). A side with a metrics key or an aligned component keeps
+  it, and so its spacing; its kerning still follows. A chain (a glyph that
+  follows one that follows another) ends at the last glyph; glyphs that follow
+  each other follow nothing. In the grid, a glyph that follows another shows
+  =, and a glyph that others follow a ring.
 - **Glyphs in no group** follow the main window's settings.
 
 The window has three parts:
@@ -1137,8 +1153,16 @@ in full. Each member pair then gets one of three treatments:
   accepts the class value only when the final bracket lies inside the target
   window, so it agrees with the solver by construction.
 * **Solved** when the verify finds the pair really differs. If the result
-  differs from the class value by the threshold or more, it becomes an
-  exception.
+  differs from the class value by the threshold or more (or by the
+  **Exceptions** tolerance, when that is larger), it becomes an exception;
+  closer, the pair takes the class value.
+
+A side that follows another glyph's kerning (a spacing group in Follow mode)
+takes no part in forming the classes. It joins its glyph's class afterwards,
+its own pairs are never evaluated, and every exception of its glyph is copied
+for it before the exceptions are compressed. After the designer harness, which
+corrects each glyph on its own, the follower's entries are its glyph's again,
+and so are its sides.
 
 Exceptions that agree across every in-scope partner in a class are compressed
 into one glyph–class or class–glyph entry. On whole Arial, the 1,868 kerned
@@ -1445,7 +1469,13 @@ in Glyphs' import):
      sidebearings;
    - the word space as designers set it must show in Kinetikern3's pane at
      once.
-9. Saves `window.png` and `selftest.json`, then quits.
+9. Tests spacing groups that follow a glyph: the double quote like the single
+   quote, and a letter's right side like another letter's (two whose classes
+   differ). The preview must space and kern each exactly as its glyph with
+   every glyph of the sample; after Apply the font must give it that glyph's
+   sidebearings, kerning groups and kerning (the effective value of every pair
+   with the sample's glyphs); Revert must put the font back exactly.
+10. Saves `window.png` and `selftest.json`, then quits.
 
 `./build.sh --verify FONT --connected` adds a connected-script stage after
 the harness (FONT must be a connected script; an OFL script from Google

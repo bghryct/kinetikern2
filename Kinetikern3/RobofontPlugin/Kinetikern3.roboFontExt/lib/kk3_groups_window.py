@@ -233,6 +233,15 @@ class GridModel(object):
                     NSBezierPath.fillRect_(NSMakeRect(r.origin.x + 1, r.origin.y + 1, r.size.width - 2, 3))
                     if g.frozen:
                         _text("❄", r.origin.x + r.size.width - 13, r.origin.y + 3, 10.0, hex_to_color(g.color))
+                    elif g.follows and (g.like_left or g.like_right) and name not in (g.like_left, g.like_right):
+                        _text("=", r.origin.x + r.size.width - 12, r.origin.y + 3, 10.0, hex_to_color(g.color))
+                followed = owner.followed_by(name)
+                if followed is not None:
+                    hex_to_color(followed.color).set()
+                    ring = NSBezierPath.bezierPathWithOvalInRect_(NSMakeRect(r.origin.x + r.size.width - 14,
+                                                                             r.origin.y + 5, 9, 9))
+                    ring.setLineWidth_(1.5)
+                    ring.stroke()
                 if selected:
                     NSColor.selectedContentBackgroundColor().set()
                     ring = NSBezierPath.bezierPathWithRect_(NSMakeRect(r.origin.x + 2, r.origin.y + 2,
@@ -474,8 +483,13 @@ class GroupsWindow(object):
         w.color = vanilla.ColorWell((-50, 258, -12, 24), callback=self.colorChanged)
         w.modeLabel = vanilla.TextBox((x, 294, 60, 17), "Mode", sizeStyle="small")
         w.mode = vanilla.SegmentedButton((x + 60, 291, -12, 22),
-                                         [dict(title="Space"), dict(title="Freeze")],
+                                         [dict(title="Space"), dict(title="Freeze"), dict(title="Follow")],
                                          callback=self.modeChanged, sizeStyle="small")
+        w.mode.getNSSegmentedButton().setToolTip_(
+            "Space: the group's own Looseness and kerning force. Freeze: its glyphs keep their sidebearings, and "
+            "the kerning between them stays. Follow: its glyphs are spaced and kerned like a glyph you name — "
+            "the double quotes like the single quote, or each side like a glyph of its own (left like o, right "
+            "like n).")
         w.looseLabel = vanilla.TextBox((x, 326, 260, 17), "Looseness (offset from the main slider)",
                                        sizeStyle="small")
         w.loose = vanilla.Slider((x, 346, -64, 22), minValue=-1.0, maxValue=1.0, value=0.0,
@@ -486,6 +500,30 @@ class GroupsWindow(object):
         w.force = vanilla.Slider((x, 396, -64, 22), minValue=0.0, maxValue=300.0, value=100.0,
                                  callback=self.forceChanged, sizeStyle="small")
         w.forceValue = vanilla.TextBox((-58, 399, -12, 17), "", sizeStyle="small", alignment="right")
+        # Follow: the glyph each side is like, and what follows
+        w.likeLeftLabel = vanilla.TextBox((x, 328, 96, 17), "Left side like", sizeStyle="small")
+        w.likeLeft = vanilla.EditText((x + 98, 326, -86, 21), "", callback=self.likeLeftChanged, continuous=False,
+                                      placeholder="glyph name", sizeStyle="small")
+        w.likeLeftSelected = vanilla.Button((-80, 325, -12, 22), "Selected", sizeStyle="small",
+                                            callback=self.likeLeftSelected)
+        w.likeRightLabel = vanilla.TextBox((x, 356, 96, 17), "Right side like", sizeStyle="small")
+        w.likeRight = vanilla.EditText((x + 98, 354, -86, 21), "", callback=self.likeRightChanged, continuous=False,
+                                       placeholder="glyph name", sizeStyle="small")
+        w.likeRightSelected = vanilla.Button((-80, 353, -12, 22), "Selected", sizeStyle="small",
+                                             callback=self.likeRightSelected)
+        for b in (w.likeLeftSelected, w.likeRightSelected):
+            b.getNSButton().setToolTip_("The glyph selected in the grid.")
+        w.followSpacing = vanilla.CheckBox((x, 382, 90, 20), "Spacing", sizeStyle="small", value=True,
+                                           callback=self.followSpacingChanged)
+        w.followSpacing.getNSButton().setToolTip_(
+            "Each side takes that glyph's sidebearing (a side with a metrics key or an aligned component keeps "
+            "its own).")
+        w.followKerning = vanilla.CheckBox((x + 96, 382, 90, 20), "Kerning", sizeStyle="small", value=True,
+                                           callback=self.followKerningChanged)
+        w.followKerning.getNSButton().setToolTip_(
+            "Each side kerns as that glyph's does: Apply puts it into that glyph's kerning group, and it gets "
+            "no exceptions of its own.")
+        w.followNote = vanilla.TextBox((x, 404, -12, 28), "", sizeStyle="mini")
         w.assign = vanilla.Button((x, 436, -12, 24), "Put Selected Glyphs into This Group", callback=self.assign)
         w.unassignButton = vanilla.Button((x, 466, -12, 22), "Take Selected Glyphs out of Their Groups",
                                           callback=self.unassignButton, sizeStyle="small")
@@ -545,9 +583,15 @@ class GroupsWindow(object):
         editable = g is not None
         for c in (w.name, w.color, w.mode, w.removeGroup):
             c.enable(editable)
-        space = editable and not g.frozen
+        space = editable and not g.frozen and not g.follows
         w.loose.enable(space)
         w.force.enable(space)
+        follow = editable and g.follows
+        for c in (w.looseLabel, w.loose, w.looseValue, w.forceLabel, w.force, w.forceValue):
+            c.show(not follow)
+        for c in (w.likeLeftLabel, w.likeLeft, w.likeLeftSelected, w.likeRightLabel, w.likeRight,
+                  w.likeRightSelected, w.followSpacing, w.followKerning, w.followNote):
+            c.show(follow)
         if g is None:
             w.name.set("")
             w.loose.set(0.0)
@@ -558,7 +602,12 @@ class GroupsWindow(object):
             return
         w.name.set(g.name)
         w.color.set(hex_to_color(g.color))
-        w.mode.set(1 if g.frozen else 0)
+        w.mode.set(kg.MODES.index(g.mode) if g.mode in kg.MODES else 0)
+        w.likeLeft.set(g.like_left)
+        w.likeRight.set(g.like_right)
+        w.followSpacing.set(g.follow_spacing)
+        w.followKerning.set(g.follow_kerning)
+        w.followNote.set(self._follow_note(g))
         w.loose.set(g.looseness)
         w.force.set(g.force)
         w.looseValue.set("%+.2f" % g.looseness)
@@ -689,7 +738,83 @@ class GroupsWindow(object):
 
     def modeChanged(self, sender):
         if self.current is not None:
-            self.groups.update(self.current, mode=kg.MODE_FREEZE if sender.get() == 1 else kg.MODE_SPACE)
+            k = int(sender.get())
+            self.groups.update(self.current, mode=kg.MODES[k] if 0 <= k < len(kg.MODES) else kg.MODE_SPACE)
+            self._sync_controls()
+            self._changed()
+
+    # ------------------------------------------------------------- follow
+    def followed_by(self, name):
+        """The Follow group whose glyphs follow `name`, or None."""
+        for g in self.groups.groups:
+            if g.follows and name in (g.like_left, g.like_right):
+                return g
+        return None
+
+    def _follow_note(self, g):
+        if g is None or not g.follows:
+            return ""
+        missing = [n for n in (g.like_left, g.like_right) if n and n not in self.name_set]
+        if missing:
+            return "No spacing glyph named %s in this font: the side stays its own." % " or ".join(
+                sorted(set(missing)))
+        if not (g.like_left or g.like_right):
+            return "Name a glyph (or select one and click Selected): the group's glyphs are spaced and kerned " \
+                   "like it."
+        if not (g.follow_spacing or g.follow_kerning):
+            return "Neither the spacing nor the kerning follows: the group's glyphs are their own."
+        return "%s follow %s; a side left empty is the glyph's own." % (
+            "The sidebearings and the kerning" if g.follow_spacing and g.follow_kerning else
+            "The sidebearings" if g.follow_spacing else "The kerning",
+            "it" if g.like_left == g.like_right else "them")
+
+    def _set_like(self, left, name):
+        if self.current is None:
+            return
+        g = self.groups.group(self.current)
+        name = (name or "").strip()
+        if left:
+            values = {"like_left": name}
+            # the right side as well, while it is empty or was the same glyph
+            if not g.like_right or g.like_right == g.like_left:
+                values["like_right"] = name
+        else:
+            values = {"like_right": name}
+        self.groups.update(self.current, **values)
+        self._sync_controls()
+        self._changed()
+
+    def likeLeftChanged(self, sender):
+        self._set_like(True, sender.get())
+
+    def likeRightChanged(self, sender):
+        self._set_like(False, sender.get())
+
+    def _selected_glyph(self):
+        if len(self.grid.selection) != 1:
+            self.w.selectionInfo.set("Select one glyph to follow")
+            return None
+        return next(iter(self.grid.selection))
+
+    def likeLeftSelected(self, sender):
+        name = self._selected_glyph()
+        if name is not None:
+            self._set_like(True, name)
+
+    def likeRightSelected(self, sender):
+        name = self._selected_glyph()
+        if name is not None:
+            self._set_like(False, name)
+
+    def followSpacingChanged(self, sender):
+        if self.current is not None:
+            self.groups.update(self.current, follow_spacing=bool(sender.get()))
+            self._sync_controls()
+            self._changed()
+
+    def followKerningChanged(self, sender):
+        if self.current is not None:
+            self.groups.update(self.current, follow_kerning=bool(sender.get()))
             self._sync_controls()
             self._changed()
 
