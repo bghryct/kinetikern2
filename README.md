@@ -2,7 +2,7 @@
 
 **Kinetikern3**, the next release, is in [Kinetikern3](Kinetikern3/README.md):
 Kinetikern2 with the issues filed here worked through (see its *New in
-Kinetikern3*). It installs next to Kinetikern2 and is licensed under the
+Kinetikern3*). It installs next to Kinetikern2. Both are licensed under the
 Apache License 2.0.
 
 A Glyphs 3 plugin that spaces and kerns a whole font with a multi-threaded
@@ -1483,3 +1483,9 @@ Result on the final build: **PASSED** in 33.2 s.
   are never aligned. The composite paths are tested on one italic `.glyphs`
   source with 324 composites: 14 aligned, about 160 aligned in part, the rest
   not aligned. A whole-font Apply there re-aligned only two of the 14.
+
+## License
+
+Copyright 2026 Mirko Velimirovic. Licensed under the
+[Apache License, Version 2.0](LICENSE); see also [NOTICE](NOTICE). Releases
+before 1 November 2026 came with the MIT License.
