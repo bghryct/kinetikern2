@@ -1638,4 +1638,5 @@ Result on the final build: **PASSED** in 33.2 s.
 
 Copyright 2026 Mirko Velimirovic. Licensed under the
 [Apache License, Version 2.0](LICENSE); see also [NOTICE](NOTICE).
-Kinetikern2 was released under the MIT License, and its releases keep it.
+Kinetikern2 is under the Apache License 2.0 too since 1 November 2026; its
+earlier releases came with the MIT License.
