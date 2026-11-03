@@ -26,6 +26,9 @@ What is new is everything around the model:
 **RoboFont:** [RobofontPlugin](RobofontPlugin/README.md) is a port to
 RoboFont 4 with the same engine, window and tools.
 
+This repository held Kinetikern2 until 3 November 2026. Kinetikern2 is kept
+in its history: the tag `kinetikern2-final` is its last state.
+
 All lengths below are in **units per 1000 em** unless a font's own units are
 named. Arial has 2048 UPM, so its default threshold of 5/1000 em is 10.24
 font units.
