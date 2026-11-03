@@ -10,7 +10,10 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 use crate::classes::{Classes, PART_FROZEN};
-use crate::engine::{Context, Conventions, GlyphOpt, Pass1, PreparedGlyph, SolveOptions, GLYPH_RTL, GLYPH_ZONE, NONE};
+use crate::engine::{
+    follow_roots, Context, Conventions, GlyphOpt, Pass1, PreparedGlyph, SideRule, SolveOptions, FIT_FOLLOW,
+    FIT_GROUP_MASK, FOLLOW_KERNING, FOLLOW_SPACING, GLYPH_RTL, GLYPH_ZONE, NONE, PAIR_CAP_LOWER, PAIR_LOWER_CAP,
+};
 use crate::job::{pool, Cancelled, JobError, Progress};
 use crate::pass2::{
     Fields, Kernel, Knobs, PairOut, Probes, Scratch, Solver, Verify, Windows, PAIR_BOUNDED, PAIR_CLEARANCE, PAIR_CREVICE,
@@ -67,6 +70,24 @@ pub struct Params {
     pub keep_bare: bool,
     /// Punctuation by convention (its sides in Pass 1, its pairs' response in Pass 2).
     pub conventions: Option<Arc<Conventions>>,
+    /// Keep the font's fit: each category of the glyph options
+    /// (`GlyphOpt::fit_group`) is spaced at the Looseness that gives its own
+    /// glyphs, on average, the sidebearings they have now; `looseness` and a
+    /// glyph's offset move from there. It replaces `fit_frozen`.
+    pub fit_font: bool,
+    /// Stay close to the font's spacing: each free side moved this fraction
+    /// (0 to 1) of the way back to the sidebearing it has now, before Pass 2.
+    pub keep: f64,
+    /// Classes: a member pair within this many font units of its class pair
+    /// takes the class value; an exception only past it (at least the
+    /// threshold; 0 = the threshold).
+    pub exception_tolerance: f64,
+    /// Tightness of capitals to lowercase, Looseness offsets (slider units;
+    /// 0 = as the solve): the gap of every capital–lowercase pair (`cap_lower`)
+    /// and lowercase–capital pair (`lower_cap`) moves by as much as that
+    /// Looseness moves their rest gap, as kerning before the floors.
+    pub cap_lower: f64,
+    pub lower_cap: f64,
 }
 
 /// The designer harness: where the model consistently spaces differently from
@@ -139,6 +160,9 @@ pub struct Outcome {
     /// With `Params::keep_bare` and a harness: the same solve before the
     /// harness (the bare model's sidebearings and kerning).
     pub bare: Option<(Pass1, Vec<Entry>)>,
+    /// With `Params::fit_font`, the fitted Looseness of each category (index
+    /// = category; NaN without enough sides), else empty.
+    pub category_fits: Vec<f64>,
 }
 
 #[inline]
@@ -224,9 +248,42 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     // caller marks them), as a script's swash capitals and alternates reach
     // far past their bodies (Great Vibes' capitals alone fit below −6, its
     // lowercase at −0.5)
+    // keeping the font's fit: each category at the Looseness that gives its
+    // own glyphs their sidebearings as they are, measured from Looseness 0, so
+    // that the slider's Looseness and a glyph's offset move from there
+    let fit_font = p.fit_font && opts.is_some_and(|o| o.iter().any(|x| x.fit_group & FIT_GROUP_MASK != 0));
+    let mut category_fits: Vec<f64> = Vec::new();
+    let mut fitted_opts: Option<Vec<GlyphOpt>> = None;
+    if fit_font {
+        let o = opts.unwrap_or(&[]);
+        let base = p.options.shifted(-(if p.looseness.is_finite() { p.looseness } else { 0.0 }));
+        let fits = ctx.category_fits(&base, o);
+        // a follower spaced by convention follows the letter rhythm through
+        // its convention already (the rhythm moves with the letters' fit)
+        let by_convention = |i: usize| {
+            p.conventions.as_ref().is_some_and(|c| {
+                c.sides.get(i).is_some_and(|s| s[0][0].is_finite() || s[1][0].is_finite())
+                    || c.follow.get(i).is_some_and(|&f| f != NONE)
+            })
+        };
+        let mut v = o.to_vec();
+        for (i, x) in v.iter_mut().enumerate() {
+            let g = (x.fit_group & FIT_GROUP_MASK) as usize;
+            if g != 0 && fits[g].is_finite() && !(x.fit_group & FIT_FOLLOW != 0 && by_convention(i)) {
+                x.looseness += fits[g];
+            }
+        }
+        category_fits = fits.to_vec();
+        fitted_opts = Some(v);
+    }
+    let opts: Option<&[GlyphOpt]> = fitted_opts.as_deref().or(opts);
+    // spacing groups that follow a glyph: sides spaced, and sides kerned, as another glyph's
+    let follow_s = follow_roots(&ctx.glyphs, opts, FOLLOW_SPACING);
+    let follow_k = follow_roots(&ctx.glyphs, opts, FOLLOW_KERNING);
+    let follow_k_ref: Option<(&[u32], &[u32])> = follow_k.as_ref().map(|(l, r)| (l.as_slice(), r.as_slice()));
     let mut fitted = f64::NAN;
     let mut options = p.options.clone();
-    if p.fit_frozen && (any_frozen || any_kept) {
+    if p.fit_frozen && !fit_font && (any_frozen || any_kept) {
         let zone_marks = ctx.glyphs.iter().any(|g| g.flags & GLYPH_ZONE != 0);
         let lowercase_base = |g: &PreparedGlyph| {
             g.group_id == crate::engine::GROUP_LOWERCASE && (g.flags & GLYPH_ZONE != 0 || !zone_marks)
@@ -249,7 +306,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     } else {
         p
     };
-    let mut pass1 = ctx.pass1_conv(&p.options, opts, p.conventions.as_deref());
+    let mut pass1 = ctx.pass1_full(&p.options, opts, p.conventions.as_deref(), p.keep);
     // partitions: frozen glyphs, and the kerning force of each painted group
     let mut forces: Vec<f64> = Vec::new();
     let part: Vec<u32> = (0..n)
@@ -268,8 +325,8 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
             }
         })
         .collect();
-    let classes = if (any_frozen || forces.len() > 1) && p.mode == Mode::Classes {
-        Some(Classes::build_with(&ctx.glyphs, ctx.upm, Some(&part)))
+    let classes = if (any_frozen || forces.len() > 1 || follow_k.is_some()) && p.mode == Mode::Classes {
+        Some(Classes::build_with_follow(&ctx.glyphs, ctx.upm, Some(&part), follow_k_ref))
     } else {
         None
     };
@@ -295,13 +352,18 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
             }
             let built = classes.as_ref().unwrap_or(&ctx.classes);
             apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, (&fixed_l, &fixed_r), &kern, p.threshold, false);
+            follow_spacing(ctx, &mut pass1, follow_s.as_ref());
+            follow_kerning(&mut entries, &ctx.glyphs, follow_k_ref, &kern, p.scope_scripts);
         }
-        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare });
+        return Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare, category_fits });
     }
     let t2 = Instant::now();
     let pool = pool(p.threads);
     let fields = Fields::new(ctx, &p.options);
-    let knobs = Knobs::new(&p.options, ctx.upm, p.threshold);
+    let mut knobs = Knobs::new(&p.options, ctx.upm, p.threshold);
+    // capitals to lowercase: a bias on those pairs' kerning, before the floors
+    knobs.response[PAIR_CAP_LOWER].bias = ctx.case_pair_bias(&p.options, p.cap_lower);
+    knobs.response[PAIR_LOWER_CAP].bias = ctx.case_pair_bias(&p.options, p.lower_cap);
     let frozen_ref: Option<&[bool]> = if any_frozen { Some(&frozen) } else { None };
     let entries = pool.install(|| match p.mode {
         Mode::Pairs => run_pairs(ctx, p, &pass1, &kern, frozen_ref, force.as_deref(), &fields, knobs, progress, &mut stats)
@@ -314,6 +376,7 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
             classes.as_ref().unwrap_or(&ctx.classes),
             frozen_ref,
             force.as_deref(),
+            follow_k_ref,
             &fields,
             knobs,
             progress,
@@ -326,16 +389,21 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     let built = classes.as_ref().unwrap_or(&ctx.classes);
     // kept joins at the font's own values, whatever the threshold and budget did
     keep_joins(ctx, &mut entries, built, p.mode, &kern, &frozen, p.scope_scripts);
+    // a side that kerns as another glyph's has that glyph's entries
+    follow_kerning(&mut entries, &ctx.glyphs, follow_k_ref, &kern, p.scope_scripts);
     let mut bare = None;
     if let Some(h) = &p.harness {
         if p.keep_bare {
             bare = Some((pass1.clone(), entries.clone()));
         }
         apply_harness(h, ctx, &mut pass1, &mut entries, built, p.mode, (&fixed_l, &fixed_r), &kern, p.threshold, true);
+        // the harness corrects each glyph on its own: a follower is its glyph's again
+        follow_spacing(ctx, &mut pass1, follow_s.as_ref());
+        follow_kerning(&mut entries, &ctx.glyphs, follow_k_ref, &kern, p.scope_scripts);
     }
     stats.prune_ms = t3.elapsed().as_secs_f64() * 1000.0;
     progress.add(1);
-    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare })
+    Ok(Outcome { pass1, mode: p.mode, entries, kern, stats, classes, fitted, bare, category_fits })
 }
 
 /// Keep joins: every pair of two kept sides gets the font's kerning, exactly
@@ -651,6 +719,7 @@ fn run_classes(
     classes: &Classes,
     frozen: Option<&[bool]>,
     force: Option<&[f64]>,
+    follow: Option<(&[u32], &[u32])>,
     fields: &Fields,
     knobs: Knobs,
     progress: &Progress,
@@ -666,6 +735,8 @@ fn run_classes(
     };
     let upm = ctx.upm;
     let t = knobs.threshold;
+    // a member pair within the exception tolerance of its class pair takes the class value
+    let te = t.max(if p.exception_tolerance.is_finite() { p.exception_tolerance } else { 0.0 });
 
     // members of every class inside the kern set
     let in_k = |members: &Vec<u32>| -> Vec<u32> { members.iter().copied().filter(|&g| kern[g as usize]).collect() };
@@ -802,9 +873,17 @@ fn run_classes(
                 let mut work = 0u64;
                 for &m in &r_members[pi] {
                     let m = m as usize;
+                    if Classes::follows(follow, m, true) {
+                        // kerns as its glyph does: that glyph's pairs are copied below
+                        work += l_members[qi].len() as u64;
+                        continue;
+                    }
                     for &nn in &l_members[qi] {
                         let nn = nn as usize;
                         work += 1;
+                        if Classes::follows(follow, nn, false) {
+                            continue;
+                        }
                         if !script_ok(&glyphs[m], &glyphs[nn], p.scope_scripts) {
                             continue;
                         }
@@ -853,7 +932,7 @@ fn run_classes(
                             }
                         };
                         let value = if value.abs() >= t { value } else { 0.0 };
-                        if (value - v_eff).abs() >= t {
+                        if (value - v_eff).abs() >= te {
                             exc.push(Exception {
                                 pair: idx as u32,
                                 m: m as u32,
@@ -877,6 +956,35 @@ fn run_classes(
     let mut exceptions = Vec::with_capacity(results.iter().map(Vec::len).sum());
     for e in results {
         exceptions.extend(e);
+    }
+    // a side that kerns as another glyph's gets that glyph's exceptions (its
+    // class pairs are its glyph's already), before they are compressed
+    if let Some((fl, fr)) = follow {
+        let n = glyphs.len();
+        let (mut of_l, mut of_r) = (vec![Vec::<u32>::new(); n], vec![Vec::<u32>::new(); n]);
+        for g in (0..n).filter(|&g| kern[g]) {
+            if fl[g] != NONE {
+                of_l[fl[g] as usize].push(g as u32);
+            }
+            if fr[g] != NONE {
+                of_r[fr[g] as usize].push(g as u32);
+            }
+        }
+        let mut copies = Vec::new();
+        for e in &exceptions {
+            let (fm, fn_) = (&of_r[e.m as usize], &of_l[e.n as usize]);
+            if fm.is_empty() && fn_.is_empty() {
+                continue;
+            }
+            for m in std::iter::once(e.m).chain(fm.iter().copied()) {
+                for nn in std::iter::once(e.n).chain(fn_.iter().copied()) {
+                    if (m, nn) != (e.m, e.n) && script_ok(&glyphs[m as usize], &glyphs[nn as usize], p.scope_scripts) {
+                        copies.push(Exception { m, n: nn, ..*e });
+                    }
+                }
+            }
+        }
+        exceptions.extend(copies);
     }
 
     // 3. entries: class pairs, then exceptions compressed to glyph–class /
@@ -971,6 +1079,94 @@ fn run_classes(
         }
     }
     Ok(entries)
+}
+
+/// Sides spaced as another glyph's (a spacing group that follows a glyph):
+/// after the harness, which shifts every glyph on its own, each takes its
+/// glyph's sidebearing again. Only free sides follow (a metrics key or an
+/// aligned component keeps its own), and a glyph whose advance is kept keeps
+/// both.
+fn follow_spacing(ctx: &Context, pass1: &mut Pass1, follow: Option<&(Vec<u32>, Vec<u32>)>) {
+    let Some((fl, fr)) = follow else { return };
+    for (i, g) in ctx.glyphs.iter().enumerate() {
+        if !pass1.metrics[i].valid || g.fixed_advance {
+            continue;
+        }
+        let (mut dl, mut dr) = (0.0, 0.0);
+        if fl[i] != NONE && g.lsb_rule == SideRule::Free {
+            let v = pass1.lsb[fl[i] as usize];
+            if v.is_finite() {
+                dl = v - pass1.lsb[i];
+                pass1.lsb[i] = v;
+            }
+        }
+        if fr[i] != NONE && g.rsb_rule == SideRule::Free {
+            let v = pass1.rsb[fr[i] as usize];
+            if v.is_finite() {
+                dr = v - pass1.rsb[i];
+                pass1.rsb[i] = v;
+            }
+        }
+        let m = &mut pass1.metrics[i];
+        m.lsb += dl;
+        m.rsb += dr;
+        m.advance += dl + dr;
+    }
+}
+
+/// Sides kerned as another glyph's (a spacing group that follows a glyph): a
+/// follower sits in its glyph's class, so class pairs need nothing; every
+/// glyph entry of a following side goes (the harness's, say), and every
+/// glyph entry of the glyph it follows is copied for it.
+fn follow_kerning(
+    entries: &mut Vec<Entry>,
+    glyphs: &[PreparedGlyph],
+    follow: Option<(&[u32], &[u32])>,
+    kern: &[bool],
+    scope_scripts: bool,
+) {
+    let Some((fl, fr)) = follow else { return };
+    let n = glyphs.len();
+    let (mut of_l, mut of_r) = (vec![Vec::<u32>::new(); n], vec![Vec::<u32>::new(); n]);
+    for g in (0..n).filter(|&g| kern.get(g).copied().unwrap_or(false)) {
+        if fl[g] != NONE {
+            of_l[fl[g] as usize].push(g as u32);
+        }
+        if fr[g] != NONE {
+            of_r[fr[g] as usize].push(g as u32);
+        }
+    }
+    let mut out = Vec::with_capacity(entries.len());
+    for e in entries.drain(..) {
+        // which side of the entry names a glyph (the others name classes)
+        let (glyph_l, glyph_r) = match e.kind {
+            KIND_GLYPH_GLYPH => (true, true),
+            KIND_GLYPH_CLASS => (true, false),
+            KIND_CLASS_GLYPH => (false, true),
+            _ => (false, false),
+        };
+        if (glyph_l && fr[e.left as usize] != NONE) || (glyph_r && fl[e.right as usize] != NONE) {
+            continue; // a follower's own entry: it has its glyph's
+        }
+        out.push(e);
+        let lefts: &[u32] = if glyph_l { &of_r[e.left as usize] } else { &[] };
+        let rights: &[u32] = if glyph_r { &of_l[e.right as usize] } else { &[] };
+        if lefts.is_empty() && rights.is_empty() {
+            continue;
+        }
+        for a in std::iter::once(e.left).chain(lefts.iter().copied()) {
+            for b in std::iter::once(e.right).chain(rights.iter().copied()) {
+                if (a, b) == (e.left, e.right) {
+                    continue;
+                }
+                if glyph_l && glyph_r && !script_ok(&glyphs[a as usize], &glyphs[b as usize], scope_scripts) {
+                    continue;
+                }
+                out.push(Entry { left: a, right: b, parent: NONE, ..e });
+            }
+        }
+    }
+    *entries = out;
 }
 
 /// Applies the budget: keeps the most important entries; an exception goes

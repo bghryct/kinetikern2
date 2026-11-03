@@ -1,11 +1,11 @@
-# Kinetikern2 for RoboFont
+# Kinetikern3 for RoboFont
 
-The Kinetikern2 spacing and kerning plugin for Glyphs 3, ported to
+The Kinetikern3 spacing and kerning plugin for Glyphs 3, ported to
 RoboFont 4. It runs the same engine (`../engine`, built into the extension
 as a universal library for Apple silicon and Intel) and has the same
 window, the same controls and the same tools:
 
-- the live proof panes (the font as it is, and Kinetikern2's spacing and
+- the live proof panes (the font as it is, and Kinetikern3's spacing and
   kerning of the sample text), the Looseness, SDF kerning intensity and
   ignore-threshold sliders, Threads, Max pairs, Replace existing kerning;
 - Apply to the glyphs of the sample text or to the whole font, with
@@ -31,8 +31,11 @@ window, the same controls and the same tools:
 - **Small caps** by convention (on by default, a switch of its own): small
   caps (`.sc`, `.smcp`, `.c2sc`, accented ones by their letter) spaced as
   designers space them beside the capitals they follow;
-- after a whole-font run, where the word space sits against what designers
-  of the font's kind set for its n (Kinetikern2 does not set it);
+- the **word space**, in the Categories window: in step with the n (the
+  default: it keeps its share of the n's advance), as designers of
+  well-rated fonts of its kind set it, or as it is; the preview shows it,
+  Apply sets it and a blank no-break space as wide, and the note (and the
+  status line after a whole-font run) says where it sits;
 - the punctuation and figure spaces kept in step: Apply gives a blank
   punctuation space exactly as wide as the period the period's new advance,
   and a blank figure space as wide as a proportional zero the zero's (with
@@ -59,7 +62,9 @@ window, the same controls and the same tools:
   design, where the line does not meet), what the preview does to the
   joins, drawing advice for the kept sides, proofs in the Space Center;
 - Spacing Groups (frozen glyphs, glyphs spaced looser or tighter, with
-  more or less kerning) and its window, with **By Category**: figures,
+  more or less kerning, glyphs spaced and kerned like a glyph you name: the
+  double quote like the single quote, each side like a glyph of its own) and
+  its window, with **By Category**: figures,
   punctuation, symbols and the letters of each script but Latin in groups
   of their own, each with its own Looseness and kerning force (Latin
   letters keep the main sliders);
@@ -68,13 +73,23 @@ window, the same controls and the same tools:
   designs that lean without declaring one along the slant their stems show
   where Spacing QA's rule says so (**Along the 21.5° slant of its stems**);
 - the Pairs window (the font's pairs, loosest to tightest, against
-  Kinetikern2);
+  Kinetikern3);
+- what Kinetikern3 adds to Kinetikern2 (see
+  [New in Kinetikern3](../README.md#new-in-kinetikern3)): a window that does
+  not float, a field beside each slider, the Looseness from −3 to +2, a
+  kerning switch, a text size slider (and pinch to zoom), the Toggle and
+  Overlay views, settings copied, pasted, saved and loaded as JSON, and
+  **Categories…** (a Looseness for each category, capitals to lowercase and
+  lowercase to capitals, Keep the font's fit, Stay close to the font's
+  spacing, the word space), and the **Exceptions** field
+  (a glyph of a kerning class gets an exception only past that difference
+  from its class);
 - an unattended self-test inside RoboFont (`build.sh --verify`).
 
 ## Install
 
-Double-click `Kinetikern2.roboFontExt` (RoboFont asks to install it), then
-choose **Extensions ▸ Kinetikern2…** with a font open. RoboFont 4.0 or later;
+Double-click `Kinetikern3.roboFontExt` (RoboFont asks to install it), then
+choose **Extensions ▸ Kinetikern3…** with a font open. RoboFont 4.0 or later;
 the extension carries its own engine, nothing else to install.
 
 For development, `./build.sh --install` links the extension into RoboFont's
@@ -87,12 +102,12 @@ RoboFont works on UFOs, so the port does what Glyphs does with the UFO's
 own means:
 
 - **Fonts, not masters.** A UFO is one master. The window's **Font** popup
-  lists the open fonts; Kinetikern2 reads, previews and applies to the one
+  lists the open fonts; Kinetikern3 reads, previews and applies to the one
   chosen. For a family, choose each master in turn (each UFO has its own
   groups and kerning).
 - **Kerning groups** are the UFO's: a glyph's left side is its
   `public.kern2` group, its right side its `public.kern1` group. New groups
-  are named after the glyph they grew from (`public.kern1.T`), with `.kk2`
+  are named after the glyph they grew from (`public.kern1.T`), with `.kk3`
   added when that name is taken. Kerning pairs are written with the UFO's
   keys and precedence (glyph–glyph, glyph–group, group–glyph, group–group).
 - **Glyph categories.** Glyphs looks a glyph's category up in its glyph
@@ -138,13 +153,15 @@ own means:
   disabled for an upright font. A font that declares no italic angle but
   whose stems lean is measured along that slant where Spacing QA's rule
   says so, as in Glyphs: the engine reads the stems' slant
-  (`kk2_stem_slant`), a check in the background compares the kernel's
-  glyphs upright and along it (`kk2_lean_wins`), and the font is read again
+  (`kk3_stem_slant`), a check in the background compares the kernel's
+  glyphs upright and along it (`kk3_lean_wins`), and the font is read again
   along the slant when that wins; a click on the switch decides instead.
 - **Looking at a pair** opens it in a Space Center (Glyphs: an Edit tab).
 - The window's settings are kept in RoboFont's extension defaults; the
   spacing groups in the font's lib
-  (`com.mirkovelimirovic.Kinetikern2.spacingGroups`), saved with the UFO.
+  (`com.mirkovelimirovic.Kinetikern3.spacingGroups`), saved with the UFO.
+  Each setting starts from Kinetikern2's until it is changed, and a font
+  with Kinetikern2's groups and none of Kinetikern3's starts from those.
 
 ## Build
 
@@ -164,7 +181,7 @@ A universal build needs rustup's Rust with both macOS targets
 builds arm64 only, which RoboFont 4.4 cannot load: it is an Intel app and
 runs under Rosetta. Use the default universal build for it. `source/lib`
 holds the extension's modules; `build.sh` assembles
-`Kinetikern2.roboFontExt` from them (its `lib` is a build output: edit
+`Kinetikern3.roboFontExt` from them (its `lib` is a build output: edit
 `source/lib`).
 
 An older engine without the connected-script mode, the designer harness
@@ -176,22 +193,22 @@ button, and the checkbox is disabled; spacing groups are not applied.
 ## Modules
 
 The modules that know nothing of the app are the Glyphs plugin's, nearly
-unchanged: `kk2_bridge` (the engine), `kk2_harness` (and its table,
-`kk2_harness.json`), `kk2_punctuation` (and its table,
-`kk2_punctuation.json`), `kk2_groups`, `kk2_proof` (the proof panes) and the
-Pairs, Harness and Spacing Groups windows. `kk2_joins_window` (the Joins
+unchanged: `kk3_bridge` (the engine), `kk3_harness` (and its table,
+`kk3_harness.json`), `kk3_punctuation` (and its table,
+`kk3_punctuation.json`), `kk3_groups`, `kk3_proof` (the proof panes) and the
+Pairs, Harness and Spacing Groups windows. `kk3_joins_window` (the Joins
 window) is the same file in both: a host object opens its proofs, the Space
 Center here and an Edit tab in Glyphs. What is RoboFont's:
 
 | Module | |
 |---|---|
-| `kk2_host` | the fonts that are open, names, preferences, messages, Space Center |
-| `kk2_args` | the parameters of unattended runs (`build.sh --verify`), read from the argument domain only; keeps the extension's folder on `sys.path` |
-| `kk2_snapshot` | a UFO read into engine input: outlines decomposed with a pen, ink measured exactly from the points (curve extremes solved only where a curve reaches past its on-curve points), categories, groups, composites, metrics keys |
-| `kk2_apply` | plan, Apply and Revert on the UFO (defcon underneath, notifications held glyph by glyph and posted in batches, kerning written in one batch, Revert exact to the last bit) |
-| `kk2_window` | the main window, with the Font popup |
-| `kk2_selftest` | the in-RoboFont self-test |
-| `kk2_menu`, `kk2_startup` | the menu item; the startup hook that starts the self-test in a test instance only |
+| `kk3_host` | the fonts that are open, names, preferences, messages, Space Center |
+| `kk3_args` | the parameters of unattended runs (`build.sh --verify`), read from the argument domain only; keeps the extension's folder on `sys.path` |
+| `kk3_snapshot` | a UFO read into engine input: outlines decomposed with a pen, ink measured exactly from the points (curve extremes solved only where a curve reaches past its on-curve points), categories, groups, composites, metrics keys |
+| `kk3_apply` | plan, Apply and Revert on the UFO (defcon underneath, notifications held glyph by glyph and posted in batches, kerning written in one batch, Revert exact to the last bit) |
+| `kk3_window` | the main window, with the Font popup |
+| `kk3_selftest` | the in-RoboFont self-test |
+| `kk3_menu`, `kk3_startup` | the menu item; the startup hook that starts the self-test in a test instance only |
 
 ## Tests
 
@@ -316,9 +333,9 @@ with the self-test's new punctuation stage. Inside RoboFont, on Arial:
 
 The test found two faults in the extension, both fixed:
 
-- `build.sh` did not copy `kk2_punctuation.json` into the extension, so the
+- `build.sh` did not copy `kk3_punctuation.json` into the extension, so the
   switch would have said *rebuild the extension*.
-- The extension's `kk2_bridge` lacked the conventions' engine flags, so
+- The extension's `kk3_bridge` lacked the conventions' engine flags, so
   Handwriting changed nothing. The two plugins' bridges are the same file
   again.
 
@@ -352,7 +369,7 @@ two minutes under Rosetta, so a busy machine can push the test past
 
 Inside RoboFont (`./build.sh --verify FONT --groups`), on a copy of Owners
 XXWide Medium (a UFO of 419 glyphs with 76 kerning groups and 850 pairs):
-**PASSED** in 34 s. Extensions ▸ Kinetikern2… opened the window (and brought
+**PASSED** in 34 s. Extensions ▸ Kinetikern3… opened the window (and brought
 the same window back when chosen again); the preview in 1.9 s; a whole-font
 run cancelled at 35 % stopped in 3 ms; the whole font in 2.7 s (30,000
 entries), applied in 2.1 s: read back 200 kerning entries and every group and
@@ -389,7 +406,7 @@ capitals: −6.00, the limit, measured upright; −0.06 along the angle).
 
 The spacing zones (the engine's, from the base letters since 9 October; see
 the Glyphs plugin's README): in a font with many accented letters, an f's
-hook and the accents of î ï ĩ used to set those sides. Kinetikern2's a–z
+hook and the accents of î ï ĩ used to set those sides. Kinetikern3's a–z
 pairs against the designers' (units per 1000 em, the f row: f before every
 letter): Arial +34.9 → +3.6, Georgia +61.6 → +19.5, Verdana +47.4 → +15.7;
 with italics measured along the angle too, Playfair Display Italic +109 → +7,
@@ -415,7 +432,7 @@ kept), with `test_by_category`, `test_conflict` and, with glyphsLib,
 `build.sh --verify` runs the self-test inside RoboFont, in a temporary
 second instance started with its parameters on the command line (nothing is
 written to your preferences; your own RoboFont is never touched): it opens a
-copy of the font, chooses Extensions ▸ Kinetikern2… as a click does, waits
+copy of the font, chooses Extensions ▸ Kinetikern3… as a click does, waits
 for the preview, checks that a click reaches every control, moves each
 slider and waits for the new preview (with Keep joins too: the Looseness
 moves the rest of the font from the one matched to the joins), cancels a
@@ -424,3 +441,9 @@ every composite moved as one piece, reverts and compares every outline
 coordinate, then the designer harness (and with `--groups` the spacing
 groups and the Pairs window, with `--connected` a connected script),
 measuring the longest main-thread stall throughout.
+
+## License
+
+Copyright 2026 Mirko Velimirovic. Licensed under the
+[Apache License, Version 2.0](../LICENSE) (the extension carries a copy as
+`license`); see also [NOTICE](../NOTICE).

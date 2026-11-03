@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Builds libkinetikern2.dylib and puts it into the Kinetikern2 Glyphs plugin bundle.
+# Builds libkinetikern3.dylib and puts it into the Kinetikern3 Glyphs plugin bundle.
 #
 #   ./build.sh                  native build (arm64 on Apple Silicon)
 #   ./build.sh --test           run the engine's tests first (cargo test --release)
 #   ./build.sh --universal      arm64 + x86_64 (needs: rustup target add x86_64-apple-darwin)
 #   ./build.sh --install        also link the bundle into Glyphs 3's Plugins folder
-#   ./build.sh --verify [font]  then run the in-Glyphs self-test (kk2_selftest) in a
+#   ./build.sh --verify [font]  then run the in-Glyphs self-test (kk3_selftest) in a
 #                               temporary second Glyphs 3 instance; default font:
 #                               /System/Library/Fonts/Supplemental/Arial.ttf
 #   ./build.sh --verify --groups  the self-test also runs its spacing-groups stage
 #                               (frozen capitals, looser figures, the Pairs window)
-#   KK2_SETTINGS="connected NO intensity 200 …" ./build.sh --verify …  the window's settings
+#   KK3_SETTINGS="connected NO intensity 200 …" ./build.sh --verify …  the window's settings
 #                               for the test, as the window stores them (a user's, say)
 #   ./build.sh --verify FONT --connected  and its connected-script stage (FONT must
 #                               be a connected script, e.g. an OFL script from Google
@@ -34,15 +34,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$ROOT/engine"
-BUNDLE="$ROOT/plugin/Kinetikern2.glyphsPlugin"
+BUNDLE="$ROOT/plugin/Kinetikern3.glyphsPlugin"
 RESOURCES="$BUNDLE/Contents/Resources"
-DYLIB="libkinetikern2.dylib"
+DYLIB="libkinetikern3.dylib"
 OUT="$RESOURCES/$DYLIB"
 PLUGINS="$HOME/Library/Application Support/Glyphs 3/Plugins"
-LINK="$PLUGINS/Kinetikern2.glyphsPlugin"
+LINK="$PLUGINS/Kinetikern3.glyphsPlugin"
 GLYPHS_APP="${GLYPHS_APP:-/Applications/Glyphs 3.app}"
 GPY="$HOME/Library/Application Support/Glyphs 3/Repositories/GlyphsPythonPlugin/Python.framework/Versions/3.11/bin/python3"
-KEY="com.mirkovelimirovic.Kinetikern2"
+KEY="com.mirkovelimirovic.Kinetikern3"
 VERIFY_TIMEOUT=600   # seconds for selftest.json to appear
 QUIT_TIMEOUT=60      # seconds for the temporary Glyphs to quit afterwards
 
@@ -180,15 +180,15 @@ EOF
 # these keys on its command line; the user's own Glyphs never does.
 BUSY="$(pgrep -f "$KEY\.(selfTestFont|devScript)" || true)"
 if [ -n "$BUSY" ]; then
-  echo "a temporary Glyphs 3 with a Kinetikern2 test is still running (pid $(echo $BUSY)); try again when it quit" >&2
+  echo "a temporary Glyphs 3 with a Kinetikern3 test is still running (pid $(echo $BUSY)); try again when it quit" >&2
   exit 1
 fi
 
 TMP="${TMPDIR:-/tmp}"
-RESULTS="$(mktemp -d "${TMP%/}/kk2-verify.XXXXXX")"
+RESULTS="$(mktemp -d "${TMP%/}/kk3-verify.XXXXXX")"
 REPORT="$RESULTS/selftest.json"
 # the crash reports there before the run (a crash of this run's instance is reported after it)
-CRASH_TOOL="$ROOT/tools/kk2_crash_report.py"
+CRASH_TOOL="$ROOT/tools/kk3_crash_report.py"
 ls "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep '^Glyphs 3-.*\.ips$' > "$RESULTS/crashes-before.txt" || true
 CLOSE_CRASH=0
 # the results folder is unique, so it identifies this run's instance
@@ -198,9 +198,9 @@ EXTRA=()
 [ "$CONNECTED" = 1 ] && EXTRA+=("-$KEY.selfTestConnected" YES)
 [ -n "$SLANT" ] && EXTRA+=("-$KEY.selfTestSlant" "$SLANT")
 [ -n "$LEAN" ] && EXTRA+=("-$KEY.selfTestLean" "$LEAN")
-# window settings for the test, as the window stores them (KK2_SETTINGS="connected NO intensity 200 …")
-if [ -n "${KK2_SETTINGS:-}" ]; then
-  read -r -a PAIRS <<< "$KK2_SETTINGS"
+# window settings for the test, as the window stores them (KK3_SETTINGS="connected NO intensity 200 …")
+if [ -n "${KK3_SETTINGS:-}" ]; then
+  read -r -a PAIRS <<< "$KK3_SETTINGS"
   for ((i = 0; i + 1 < ${#PAIRS[@]}; i += 2)); do EXTRA+=("-$KEY.${PAIRS[i]}" "${PAIRS[i+1]}"); done
 fi
 echo "self-test: $(basename "$FONT") in a temporary Glyphs 3 (results in $RESULTS)"
@@ -219,7 +219,7 @@ while [ ! -f "$REPORT" ]; do
   [ -n "$PID" ] || PID="$(pgrep -f "$PATTERN" | head -n 1 || true)"
   if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
     # the test writes its verdict before it closes the font: closing a
-    # document can crash the app for a cause outside Kinetikern2
+    # document can crash the app for a cause outside Kinetikern3
     if [ -f "$RESULTS/selftest-before-close.json" ]; then
       echo "the temporary Glyphs 3 quit while closing the font, after the test wrote its verdict" >&2
       REPORT="$RESULTS/selftest-before-close.json"
@@ -267,7 +267,7 @@ import json, sys
 with open(sys.argv[1]) as f:
     r = json.load(f)
 engine = r.get("engine") or {}
-print("Kinetikern2 self-test %s — %s, Glyphs %s, engine %s"
+print("Kinetikern3 self-test %s — %s, Glyphs %s, engine %s"
       % ("PASSED" if r.get("ok") else "FAILED", r.get("font"), r.get("glyphs_version"), engine.get("version", "?")))
 for line in r.get("summary", []):
     print("  " + line)
@@ -278,7 +278,7 @@ for e in r.get("errors", []):
 sys.exit(0 if r.get("ok") else 1)
 EOF
 # a crash of the temporary instance: what crashed. The known PyObjC crash at a
-# font close is outside Kinetikern2 (tools/kk2_crash_report.py); any other
+# font close is outside Kinetikern3 (tools/kk3_crash_report.py); any other
 # crash fails the run.
 CRASH=0
 "$PY" "$CRASH_TOOL" "$RESULTS/crashes-before.txt" "Glyphs 3" --wait "$([ "$CLOSE_CRASH" = 1 ] && echo 20 || echo 0)" || CRASH=$?
@@ -286,7 +286,7 @@ if [ "$CRASH" = 4 ]; then
   echo "error: the temporary Glyphs 3 crashed (above), and not with the known PyObjC crash at a font close" >&2
   STATUS=1
 elif [ "$CRASH" = 3 ]; then
-  echo "warning: the temporary Glyphs 3 crashed closing the font: the known PyObjC crash, outside Kinetikern2; the verdict above was written before the close"
+  echo "warning: the temporary Glyphs 3 crashed closing the font: the known PyObjC crash, outside Kinetikern3; the verdict above was written before the close"
 elif [ "$CLOSE_CRASH" = 1 ]; then
   echo "warning: the temporary Glyphs 3 quit while closing the font, and macOS wrote no crash report"
 fi

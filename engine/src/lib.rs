@@ -1,35 +1,35 @@
-//! # Kinetikern2 — engine and C ABI
+//! # Kinetikern3 — engine and C ABI
 //!
-//! `libkinetikern2.dylib` spaces a font (Pass 1, macro rhythm) and kerns it
+//! `libkinetikern3.dylib` spaces a font (Pass 1, macro rhythm) and kerns it
 //! (Pass 2, SDF contour field) as **asynchronous jobs** on threads it owns:
 //!
 //! ```text
-//! job = kk2_prepare_start(glyphs, n, upm, threads)     // Phase 1/3: analyzing SDFs
-//! poll kk2_job_poll(job, &progress) until state != RUNNING
-//! ctx = kk2_job_take_context(job); kk2_job_free(job)
-//! job = kk2_solve_start(ctx, &params, mask, n)         // Phases 2/3 and 3/3
+//! job = kk3_prepare_start(glyphs, n, upm, threads)     // Phase 1/3: analyzing SDFs
+//! poll kk3_job_poll(job, &progress) until state != RUNNING
+//! ctx = kk3_job_take_context(job); kk3_job_free(job)
+//! job = kk3_solve_start(ctx, &params, mask, n)         // Phases 2/3 and 3/3
 //! … poll …
-//! res = kk2_job_take_result(job); kk2_job_free(job)
-//! read res->metrics / res->entries in place; kk2_result_value(res, a, b)
-//! kk2_result_free(res); kk2_context_free(ctx)
+//! res = kk3_job_take_result(job); kk3_job_free(job)
+//! read res->metrics / res->entries in place; kk3_result_value(res, a, b)
+//! kk3_result_free(res); kk3_context_free(ctx)
 //! ```
 //!
 //! Nothing ever calls back into the caller: progress is a handful of atomics
-//! read by `kk2_job_poll`, so a UI can poll from a timer without blocking.
-//! `kk2_job_cancel` stops a job within one pair's time. `kk2_job_free` never
+//! read by `kk3_job_poll`, so a UI can poll from a timer without blocking.
+//! `kk3_job_cancel` stops a job within one pair's time. `kk3_job_free` never
 //! blocks either: a running job is cancelled and cleans up after itself. A
 //! context is shared (reference counted) by the jobs that use it, so it may
 //! be freed while a solve is still running.
 //!
 //! Results are compact arrays the caller reads in place (no per-pair
 //! objects): metrics per glyph and kerning entries — class pairs, glyph–class
-//! and class–glyph exceptions, glyph pairs. `kk2_result_value` resolves one
+//! and class–glyph exceptions, glyph pairs. `kk3_result_value` resolves one
 //! glyph pair with the usual precedence (glyph–glyph, glyph–class,
 //! class–glyph, class–class).
 //!
 //! Every export catches panics; failures return NULL / 0 and leave a message
-//! for the calling thread in `kk2_last_error` (jobs keep theirs in
-//! `kk2_job_error`).
+//! for the calling thread in `kk3_last_error` (jobs keep theirs in
+//! `kk3_job_error`).
 
 // Negated comparisons such as `!(x > 0.0)` are deliberate: they reject NaN too.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -73,7 +73,7 @@ pub const ABI_VERSION: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Point {
+pub struct KK3Point {
     pub x: f64,
     pub y: f64,
     /// 0 line, 1 curve, 2 off-curve, 3 qcurve.
@@ -81,7 +81,7 @@ pub struct KK2Point {
     pub reserved: u32,
 }
 
-/// Sidebearing rules (`KK2Glyph.lsb_rule` / `rsb_rule`).
+/// Sidebearing rules (`KK3Glyph.lsb_rule` / `rsb_rule`).
 pub const RULE_FREE: u32 = 0;
 /// Keep `*_value` (or the current sidebearing if it is NaN).
 pub const RULE_FIXED: u32 = 1;
@@ -99,8 +99,8 @@ pub const RULE_FOLLOW_OPPOSITE: u32 = 3;
 /// composite's first component.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Glyph {
-    pub points: *const KK2Point,
+pub struct KK3Glyph {
+    pub points: *const KK3Point,
     pub contour_lengths: *const u32,
     pub point_count: u32,
     pub contour_count: u32,
@@ -121,7 +121,7 @@ pub struct KK2Glyph {
     pub cur_rsb: f64,
 }
 
-/// `KK2Params.flags`.
+/// `KK3Params.flags`.
 pub const PARAM_SKIP_PASS2: u32 = 1;
 /// Class kerning (else every glyph pair on its own).
 pub const PARAM_CLASSES: u32 = 2;
@@ -129,7 +129,7 @@ pub const PARAM_CLASSES: u32 = 2;
 pub const PARAM_WINDOW: u32 = 4;
 /// Pairs only within one script plus Common/Inherited.
 pub const PARAM_SCOPE_SCRIPTS: u32 = 8;
-/// With frozen glyphs (`kk2_solve_start2`) or kept joins: first move the
+/// With frozen glyphs (`kk3_solve_start2`) or kept joins: first move the
 /// Looseness to their own tightness, so new glyphs match the spacing that is
 /// already there; the solve's Looseness (the one `spring` stands for,
 /// `physics_for_looseness`) is then an offset from it.
@@ -143,47 +143,70 @@ pub const PARAM_V1_PASS2: u32 = 32;
 pub const PARAM_STYLE_DISPLAY: u32 = 64;
 /// The conventions of handwriting (`Style::Handwriting`).
 pub const PARAM_STYLE_HANDWRITING: u32 = 128;
+/// Keep the font's fit: each category of the glyph options
+/// (`KK3GlyphOpt.fit_group`) at the Looseness that gives its own glyphs their
+/// sidebearings as they are, the params' Looseness an offset from it
+/// (`kk3_result_category_fits`). It replaces `PARAM_FIT_FROZEN`.
+pub const PARAM_FIT_FONT: u32 = 256;
 
-/// `KK2GlyphOpt.flags`: keep the glyph's sidebearings, and never kern a pair
+/// `KK3GlyphOpt.flags`: keep the glyph's sidebearings, and never kern a pair
 /// of two frozen glyphs.
 pub const GLYPHOPT_FROZEN: u32 = 1;
 
-/// Per-solve options of one glyph (`kk2_solve_start2`): its spacing group.
+/// Per-solve options of one glyph (`kk3_solve_start2`): its spacing group.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2GlyphOpt {
+pub struct KK3GlyphOpt {
     pub flags: u32,
-    pub reserved: u32,
+    /// Its category for keeping the font's fit (`PARAM_FIT_FONT`): the low
+    /// byte names the category whose fit it is spaced at (0 none); with 0x100
+    /// it follows that category without counting toward its fit.
+    pub fit_group: u32,
     /// Looseness offset of the glyph's group, slider units (0 = none).
     pub looseness: f64,
     /// Kerning force as a multiple of the solve's intensity (1 = the same;
     /// NaN or negative = 1). A pair kerns with the mean of its glyphs'.
     pub intensity: f64,
+    /// The glyph whose left side the glyph's left side is like, and the glyph
+    /// whose right side its right side is like (`follow` says what follows;
+    /// an index past the glyphs, or the glyph itself: none).
+    pub follow_left: u32,
+    pub follow_right: u32,
+    /// `GLYPHOPT_FOLLOW_SPACING` | `GLYPHOPT_FOLLOW_KERNING` (0: nothing follows).
+    pub follow: u32,
+    pub reserved: u32,
 }
 
-/// The designer harness of a solve (`kk2_solve_start3`): corrections toward
+/// `KK3GlyphOpt.follow`: each free side takes the sidebearing of the glyph it
+/// follows.
+pub const GLYPHOPT_FOLLOW_SPACING: u32 = 1;
+/// `KK3GlyphOpt.follow`: each side kerns as the side of the glyph it follows
+/// does (its kerning class, no exceptions of its own).
+pub const GLYPHOPT_FOLLOW_KERNING: u32 = 2;
+
+/// The designer harness of a solve (`kk3_solve_start3`): corrections toward
 /// what well-spaced fonts do, applied after the solve, in font units. Set
-/// `struct_size = sizeof(KK2Harness)`.
+/// `struct_size = sizeof(KK3Harness)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Harness {
+pub struct KK3Harness {
     pub struct_size: u32,
     /// Entries of `sides` (one per glyph; 0 with `sides` NULL).
     pub glyph_count: u32,
     /// [lsb shift, rsb shift] of each glyph; NULL = none.
     pub sides: *const f64,
-    pub pairs: *const KK2HarnessPair,
+    pub pairs: *const KK3HarnessPair,
     pub pair_count: u32,
     pub reserved: u32,
 }
 
-/// Punctuation by convention (`kk2_solve_start4`): per glyph, the
+/// Punctuation by convention (`kk3_solve_start4`): per glyph, the
 /// coefficients (c, m, r) of its left side's shift and then its right side's
 /// (6 values per glyph, units per 1000 em; see `Conventions`), NaN c for a
 /// glyph without one; and how much Pass 2 kerns each side of a mark.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Punctuation {
+pub struct KK3Punctuation {
     pub struct_size: u32,
     /// Glyphs in `coefs` and `kern` (6 and 2 values each; 0 with both NULL).
     pub glyph_count: u32,
@@ -203,37 +226,37 @@ pub struct KK2Punctuation {
 /// (left, right).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2HarnessPair {
+pub struct KK3HarnessPair {
     pub left: u32,
     pub right: u32,
     pub value: f64,
 }
 
-/// One entry of the font's current kerning (`kk2_measure`): `kind` as the
-/// result entries; class sides are the caller's group ids (`KK2Glyph`
+/// One entry of the font's current kerning (`kk3_measure`): `kind` as the
+/// result entries; class sides are the caller's group ids (`KK3Glyph`
 /// `right_group` on the left of a pair, `left_group` on the right).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2KernIn {
+pub struct KK3KernIn {
     pub kind: u32,
     pub left: u32,
     pub right: u32,
     pub value: f32,
 }
 
-/// A glyph's join bands in a connected script (`kk2_prepare_start2`,
-/// `kk2_detect_joins`): the heights, font units, where its left and right
+/// A glyph's join bands in a connected script (`kk3_prepare_start2`,
+/// `kk3_detect_joins`): the heights, font units, where its left and right
 /// sides' join strokes reach into the neighbour. NaN = no join on that side.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Joins {
+pub struct KK3Joins {
     pub left_y0: f64,
     pub left_y1: f64,
     pub right_y0: f64,
     pub right_y1: f64,
 }
 
-/// `kk2_detect_joins` kinds, one byte per glyph: for the detector only
+/// `kk3_detect_joins` kinds, one byte per glyph: for the detector only
 /// letters join, and the lowercase letters are the partners whose overlaps
 /// are counted (the join checker reads the same kinds; in a design whose
 /// glyphs touch by construction, any glyph joins).
@@ -241,7 +264,7 @@ pub const JOINKIND_OTHER: u8 = 0;
 pub const JOINKIND_UPPER: u8 = 1;
 pub const JOINKIND_LOWER: u8 = 2;
 
-/// `kk2_detect_joins` rules: what makes a join. Ink past the advance (or
+/// `kk3_detect_joins` rules: what makes a join. Ink past the advance (or
 /// before the origin) or overlaps with most partners as kerned …
 pub const JOINRULE_BOTH: u32 = 0;
 /// … ink past the advance only (the kerning is not used) …
@@ -249,14 +272,14 @@ pub const JOINRULE_OVERHANG: u32 = 1;
 /// … overlaps only.
 pub const JOINRULE_OVERLAPS: u32 = 2;
 
-/// `kk2_prepare_start3` flags: keep joins (else space joined letters).
+/// `kk3_prepare_start3` flags: keep joins (else space joined letters).
 pub const PREPARE_KEEP_JOINS: u32 = 1;
 
-/// What a spacing does to a connected script's joins (`kk2_join_check`). Set
-/// `struct_size = sizeof(KK2JoinStats)`.
+/// What a spacing does to a connected script's joins (`kk3_join_check`). Set
+/// `struct_size = sizeof(KK3JoinStats)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2JoinStats {
+pub struct KK3JoinStats {
     pub struct_size: u32,
     /// 1 when the context keeps joins.
     pub keep: u32,
@@ -278,10 +301,10 @@ pub struct KK2JoinStats {
     pub az_crossings_made: u32,
 }
 
-/// A side whose joins a spacing breaks (`kk2_join_check`).
+/// A side whose joins a spacing breaks (`kk3_join_check`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2JoinSide {
+pub struct KK3JoinSide {
     pub glyph: u32,
     /// 0 left side, 1 right side.
     pub side: u32,
@@ -291,7 +314,7 @@ pub struct KK2JoinSide {
     pub delta: f64,
 }
 
-/// `KK2JoinPair.flags`.
+/// `KK3JoinPair.flags`.
 pub const JOINPAIR_JOINS: u32 = 1;
 pub const JOINPAIR_JOINS_AFTER: u32 = 2;
 pub const JOINPAIR_CROSSING: u32 = 4;
@@ -304,10 +327,10 @@ pub const JOINPAIR_FIX_CROSSES: u32 = 32;
 /// nearly touch (not a broken join). Feature 4096.
 pub const JOINPAIR_NEAR: u32 = 64;
 
-/// One pair in detail (`kk2_join_pairs`), font units.
+/// One pair in detail (`kk3_join_pairs`), font units.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2JoinPair {
+pub struct KK3JoinPair {
     pub left: u32,
     pub right: u32,
     pub flags: u32,
@@ -330,11 +353,11 @@ pub struct KK2JoinPair {
     pub delta: f64,
 }
 
-/// One measured pair (`kk2_measure`): the visible gap now and the model's,
+/// One measured pair (`kk3_measure`): the visible gap now and the model's,
 /// and their difference after removing the font's overall offset.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2PairOut {
+pub struct KK3PairOut {
     pub left: u32,
     pub right: u32,
     pub current: f32,
@@ -343,10 +366,10 @@ pub struct KK2PairOut {
     pub reserved: u32,
 }
 
-/// Summary of `kk2_measure`.
+/// Summary of `kk3_measure`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2MeasureStats {
+pub struct KK3MeasureStats {
     pub pairs: u64,
     /// Mean of current − model gaps (the overall tightness difference).
     pub offset: f64,
@@ -357,11 +380,11 @@ pub struct KK2MeasureStats {
     pub tightest_count: u32,
 }
 
-/// Solve parameters. Set `struct_size = sizeof(KK2Params)`; negative or NaN
+/// Solve parameters. Set `struct_size = sizeof(KK3Params)`; negative or NaN
 /// tuning fields keep their defaults.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Params {
+pub struct KK3Params {
     pub struct_size: u32,
     pub flags: u32,
     pub spring: f64,
@@ -387,11 +410,25 @@ pub struct KK2Params {
     pub budget: u32,
     /// Worker threads (0 = all cores but one).
     pub threads: u32,
+    /// Stay close to the font's spacing: each free side moved this fraction
+    /// (0 to 1) of the way back to its sidebearing as it is, before Pass 2
+    /// (NaN or negative: 0).
+    pub keep: f64,
+    /// Classes: a member pair within this many font units of its class pair
+    /// takes the class value instead of an exception (0, NaN or less than
+    /// the threshold: the threshold).
+    pub exception_tolerance: f64,
+    /// Tightness of capitals to lowercase (Looseness offsets, slider units, 0 =
+    /// as the solve; NaN: 0): every capital–lowercase pair (`cap_lower`) and
+    /// lowercase–capital pair (`lower_cap`) is kerned looser or tighter by as
+    /// much as that Looseness moves their rest gap.
+    pub cap_lower: f64,
+    pub lower_cap: f64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2Progress {
+pub struct KK3Progress {
     /// 0 running, 1 done, 2 failed, 3 cancelled.
     pub state: u32,
     /// 1 analyzing SDFs, 2 evaluating pairs, 3 grouping & pruning.
@@ -405,7 +442,7 @@ pub struct KK2Progress {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2Metrics {
+pub struct KK3Metrics {
     pub lsb: f64,
     pub rsb: f64,
     pub advance: f64,
@@ -414,7 +451,10 @@ pub struct KK2Metrics {
     pub y_min: f64,
     pub y_max: f64,
     pub valid: u32,
-    /// 1 LSB follows a rule, 2 RSB follows a rule.
+    /// 1 LSB follows a rule, 2 RSB follows a rule (a metrics key, an aligned
+    /// component, a frozen glyph: the font decides it, not Apply); 4 LSB and 8
+    /// RSB take another glyph's because the glyph's spacing group follows it
+    /// (`KK3GlyphOpt.follow`: Apply writes them).
     pub flags: u32,
 }
 
@@ -428,7 +468,7 @@ pub const ENTRY_CLASS_GLYPH: u32 = KIND_CLASS_GLYPH as u32;
 /// index (class–*), `right` a glyph index or a left-side class index.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2Entry {
+pub struct KK3Entry {
     pub left: u32,
     pub right: u32,
     pub value: f32,
@@ -439,7 +479,7 @@ pub struct KK2Entry {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KK2Stats {
+pub struct KK3Stats {
     pub prep_ms: f64,
     pub pass1_ms: f64,
     pub pass2_ms: f64,
@@ -474,11 +514,11 @@ pub struct KK2Stats {
 }
 
 /// A solve's output; every array has the stated length and lives until
-/// `kk2_result_free`. Class origins: bit 31 set = the caller's group id in the
+/// `kk3_result_free`. Class origins: bit 31 set = the caller's group id in the
 /// low bits; otherwise the glyph whose name names a new group.
 #[repr(C)]
 #[derive(Debug)]
-pub struct KK2Result {
+pub struct KK3Result {
     pub abi_version: u32,
     pub glyph_count: u32,
     pub entry_count: u32,
@@ -488,8 +528,8 @@ pub struct KK2Result {
     pub left_class_count: u32,
     pub reserved0: u32,
     pub reserved1: u32,
-    pub metrics: *const KK2Metrics,
-    pub entries: *const KK2Entry,
+    pub metrics: *const KK3Metrics,
+    pub entries: *const KK3Entry,
     pub glyph_right_class: *const u32,
     pub glyph_left_class: *const u32,
     pub right_class_origin: *const u32,
@@ -499,12 +539,12 @@ pub struct KK2Result {
     /// 1 where the glyph was kerned in this solve.
     pub kern_mask: *const u8,
     pub reserved_ptr: *const u8,
-    pub stats: KK2Stats,
+    pub stats: KK3Stats,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct KK2Ray {
+pub struct KK3Ray {
     pub y: f64,
     pub x: f64,
     pub tier: u32,
@@ -515,35 +555,35 @@ pub struct KK2Ray {
 // pointers, does not use the C functions)
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(size_of::<KK2Point>() == 24);
-    assert!(size_of::<KK2Glyph>() == 104);
-    assert!(size_of::<KK2Params>() == 152);
-    assert!(size_of::<KK2Progress>() == 40);
-    assert!(size_of::<KK2Metrics>() == 64);
-    assert!(size_of::<KK2Entry>() == 24);
-    assert!(size_of::<KK2Stats>() == 352);
-    assert!(size_of::<KK2Result>() == 464);
-    assert!(size_of::<KK2Ray>() == 24);
-    assert!(size_of::<KK2GlyphOpt>() == 24);
-    assert!(size_of::<KK2Harness>() == 32);
-    assert!(size_of::<KK2Punctuation>() == 40);
-    assert!(size_of::<KK2HarnessPair>() == 16);
-    assert!(size_of::<KK2KernIn>() == 16);
-    assert!(size_of::<KK2Joins>() == 32);
-    assert!(size_of::<KK2PairOut>() == 24);
-    assert!(size_of::<KK2MeasureStats>() == 40);
-    assert!(size_of::<KK2JoinStats>() == 64);
-    assert!(size_of::<KK2JoinSide>() == 24);
-    assert!(size_of::<KK2JoinPair>() == 64);
+    assert!(size_of::<KK3Point>() == 24);
+    assert!(size_of::<KK3Glyph>() == 104);
+    assert!(size_of::<KK3Params>() == 184);
+    assert!(size_of::<KK3Progress>() == 40);
+    assert!(size_of::<KK3Metrics>() == 64);
+    assert!(size_of::<KK3Entry>() == 24);
+    assert!(size_of::<KK3Stats>() == 352);
+    assert!(size_of::<KK3Result>() == 464);
+    assert!(size_of::<KK3Ray>() == 24);
+    assert!(size_of::<KK3GlyphOpt>() == 40);
+    assert!(size_of::<KK3Harness>() == 32);
+    assert!(size_of::<KK3Punctuation>() == 40);
+    assert!(size_of::<KK3HarnessPair>() == 16);
+    assert!(size_of::<KK3KernIn>() == 16);
+    assert!(size_of::<KK3Joins>() == 32);
+    assert!(size_of::<KK3PairOut>() == 24);
+    assert!(size_of::<KK3MeasureStats>() == 40);
+    assert!(size_of::<KK3JoinStats>() == 64);
+    assert!(size_of::<KK3JoinSide>() == 24);
+    assert!(size_of::<KK3JoinPair>() == 64);
 };
 
 /// Owns a result's arrays; `c` points into them. `c` is the first field so
 /// the pointer handed out is also the box's address.
 #[repr(C)]
 struct ResultBox {
-    c: KK2Result,
-    metrics: Vec<KK2Metrics>,
-    entries: Vec<KK2Entry>,
+    c: KK3Result,
+    metrics: Vec<KK3Metrics>,
+    entries: Vec<KK3Entry>,
     glyph_right_class: Vec<u32>,
     glyph_left_class: Vec<u32>,
     right_origin: Vec<u32>,
@@ -553,6 +593,8 @@ struct ResultBox {
     kern: Vec<u8>,
     lookup: Lookup,
     fitted: f64,
+    /// With `PARAM_FIT_FONT`, the fitted Looseness of each category.
+    category_fits: Vec<f64>,
     /// Pass 1's wanted (lsb, rsb) per glyph.
     wanted: Vec<f64>,
 }
@@ -571,7 +613,7 @@ struct Lookup {
 }
 
 /// Opaque prepared geometry, shared by the jobs that use it.
-pub struct KK2Context(Arc<Context>);
+pub struct KK3Context(Arc<Context>);
 
 enum JobKind {
     Prepare(Job<Arc<Context>>),
@@ -579,7 +621,7 @@ enum JobKind {
 }
 
 /// Opaque job handle.
-pub struct KK2Job {
+pub struct KK3Job {
     kind: JobKind,
     error: Mutex<CString>,
 }
@@ -607,7 +649,7 @@ fn guard<T>(fallback: T, f: impl FnOnce() -> Result<T, String>) -> T {
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".into());
-            set_error(format!("internal error in Kinetikern2 engine: {msg}"));
+            set_error(format!("internal error in Kinetikern3 engine: {msg}"));
             fallback
         }
     }
@@ -633,7 +675,7 @@ fn rule(kind: u32, glyph: u32, value: f64) -> SideRule {
     }
 }
 
-unsafe fn read_inputs(glyphs: *const KK2Glyph, count: u32) -> Result<Vec<GlyphInput>, String> {
+unsafe fn read_inputs(glyphs: *const KK3Glyph, count: u32) -> Result<Vec<GlyphInput>, String> {
     if count > 0 && glyphs.is_null() {
         return Err("glyphs is NULL".into());
     }
@@ -686,13 +728,13 @@ unsafe fn read_inputs(glyphs: *const KK2Glyph, count: u32) -> Result<Vec<GlyphIn
     Ok(out)
 }
 
-unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
+unsafe fn read_params(upm: f64, p: *const KK3Params) -> Result<Params, String> {
     if p.is_null() {
         return Err("params is NULL".into());
     }
     let c = &*p;
-    if (c.struct_size as usize) < size_of::<KK2Params>() {
-        return Err(format!("params.struct_size {} < {}", c.struct_size, size_of::<KK2Params>()));
+    if (c.struct_size as usize) < size_of::<KK3Params>() {
+        return Err(format!("params.struct_size {} < {}", c.struct_size, size_of::<KK3Params>()));
     }
     let mut o = SolveOptions::defaults(upm);
     let pick = |v: f64, d: f64| if v.is_finite() && v >= 0.0 { v } else { d };
@@ -737,6 +779,15 @@ unsafe fn read_params(upm: f64, p: *const KK2Params) -> Result<Params, String> {
         glyph_opts: None,
         fit_frozen: c.flags & PARAM_FIT_FROZEN != 0,
         looseness,
+        fit_font: c.flags & PARAM_FIT_FONT != 0,
+        keep: if c.keep.is_finite() && c.keep > 0.0 { c.keep.min(1.0) } else { 0.0 },
+        exception_tolerance: if c.exception_tolerance.is_finite() && c.exception_tolerance > 0.0 {
+            c.exception_tolerance
+        } else {
+            0.0
+        },
+        cap_lower: if c.cap_lower.is_finite() { c.cap_lower.clamp(-3.0, 3.0) } else { 0.0 },
+        lower_cap: if c.lower_cap.is_finite() { c.lower_cap.clamp(-3.0, 3.0) } else { 0.0 },
         harness: None,
         keep_bare: false,
         conventions: None,
@@ -755,10 +806,10 @@ fn looseness_of(spring: f64) -> f64 {
 
 fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
     let p1 = &out.pass1;
-    let metrics: Vec<KK2Metrics> = p1
+    let metrics: Vec<KK3Metrics> = p1
         .metrics
         .iter()
-        .map(|m| KK2Metrics {
+        .map(|m| KK3Metrics {
             lsb: m.lsb,
             rsb: m.rsb,
             advance: m.advance,
@@ -770,10 +821,10 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
             flags: m.flags,
         })
         .collect();
-    let entries: Vec<KK2Entry> = out
+    let entries: Vec<KK3Entry> = out
         .entries
         .iter()
-        .map(|e| KK2Entry {
+        .map(|e| KK3Entry {
             left: e.left,
             right: e.right,
             value: e.value as f32,
@@ -796,7 +847,7 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         map.insert((e.left, e.right), e.value);
     }
     let s = &out.stats;
-    let stats = KK2Stats {
+    let stats = KK3Stats {
         prep_ms: ctx.prep_ms,
         pass1_ms: p1.ms,
         pass2_ms: s.pass2_ms,
@@ -830,7 +881,7 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         rhythm_scale: p1.rhythm_scale,
     };
     let mut b = Box::new(ResultBox {
-        c: KK2Result {
+        c: KK3Result {
             abi_version: ABI_VERSION,
             glyph_count: metrics.len() as u32,
             entry_count: entries.len() as u32,
@@ -862,6 +913,7 @@ fn build_result(ctx: &Context, out: Outcome) -> Box<ResultBox> {
         kern: out.kern.iter().map(|&k| k as u8).collect(),
         lookup,
         fitted: out.fitted,
+        category_fits: out.category_fits.clone(),
         wanted: p1.wanted_lsb.iter().zip(&p1.wanted_rsb).flat_map(|(&l, &r)| [l, r]).collect(),
     });
     let ptr = |v: &[u32]| if v.is_empty() { std::ptr::null() } else { v.as_ptr() };
@@ -909,49 +961,49 @@ impl ResultBox {
 // ------------------------------------------------------------------ exports
 
 #[no_mangle]
-pub extern "C" fn kk2_abi_version() -> u32 {
+pub extern "C" fn kk3_abi_version() -> u32 {
     ABI_VERSION
 }
 
 /// Static, NUL-terminated version string.
 #[no_mangle]
-pub extern "C" fn kk2_engine_version() -> *const c_char {
-    concat!("kinetikern2 ", env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
+pub extern "C" fn kk3_engine_version() -> *const c_char {
+    concat!("kinetikern3 ", env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
 /// Message of the last failure on the calling thread (empty if none).
 #[no_mangle]
-pub extern "C" fn kk2_last_error() -> *const c_char {
+pub extern "C" fn kk3_last_error() -> *const c_char {
     LAST_ERROR.with(|e| e.borrow().as_ptr())
 }
 
 #[no_mangle]
-pub extern "C" fn kk2_cpu_count() -> u32 {
+pub extern "C" fn kk3_cpu_count() -> u32 {
     job::cpu_count() as u32
 }
 
 /// Worker threads used for `threads = 0`.
 #[no_mangle]
-pub extern "C" fn kk2_default_threads() -> u32 {
+pub extern "C" fn kk3_default_threads() -> u32 {
     job::default_threads() as u32
 }
 
 /// Starts the geometry pre-compute (Phase 1/3). The input is copied before
-/// the call returns. Returns a job, or NULL (see `kk2_last_error`).
+/// the call returns. Returns a job, or NULL (see `kk3_last_error`).
 #[no_mangle]
-pub unsafe extern "C" fn kk2_prepare_start(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_prepare_start(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     threads: u32,
-) -> *mut KK2Job {
+) -> *mut KK3Job {
     guard(null_mut(), || {
         let inputs = read_inputs(glyphs, glyph_count)?;
         Ok(spawn_prepare(inputs, units_per_em, threads))
     })
 }
 
-fn spawn_prepare(inputs: Vec<GlyphInput>, units_per_em: f64, threads: u32) -> *mut KK2Job {
+fn spawn_prepare(inputs: Vec<GlyphInput>, units_per_em: f64, threads: u32) -> *mut KK3Job {
     spawn_prepare_with(inputs, units_per_em, threads, None)
 }
 
@@ -960,24 +1012,24 @@ fn spawn_prepare_with(
     units_per_em: f64,
     threads: u32,
     setup: Option<checker::JoinSetup>,
-) -> *mut KK2Job {
-    let job = Job::spawn("kinetikern2-prepare", move |progress| {
+) -> *mut KK3Job {
+    let job = Job::spawn("kinetikern3-prepare", move |progress| {
         Context::prepare_with_joins(inputs, units_per_em, threads as usize, progress, setup.as_ref())
             .map(Arc::new)
             .map_err(JobError::from)
     });
-    Box::into_raw(Box::new(KK2Job { kind: JobKind::Prepare(job), error: Mutex::new(CString::default()) }))
+    Box::into_raw(Box::new(KK3Job { kind: JobKind::Prepare(job), error: Mutex::new(CString::default()) }))
 }
 
-unsafe fn read_joins(inputs: &mut [GlyphInput], joins: *const KK2Joins, joins_size: u32) -> Result<(), String> {
+unsafe fn read_joins(inputs: &mut [GlyphInput], joins: *const KK3Joins, joins_size: u32) -> Result<(), String> {
     if joins.is_null() {
         return Ok(());
     }
-    if (joins_size as usize) < size_of::<KK2Joins>() {
-        return Err(format!("joins_size {joins_size} < {}", size_of::<KK2Joins>()));
+    if (joins_size as usize) < size_of::<KK3Joins>() {
+        return Err(format!("joins_size {joins_size} < {}", size_of::<KK3Joins>()));
     }
     for (k, inp) in inputs.iter_mut().enumerate() {
-        let j = std::ptr::read_unaligned((joins as *const u8).add(k * joins_size as usize) as *const KK2Joins);
+        let j = std::ptr::read_unaligned((joins as *const u8).add(k * joins_size as usize) as *const KK3Joins);
         inp.join_left = join_band(j.left_y0, j.left_y1);
         inp.join_right = join_band(j.right_y0, j.right_y1);
     }
@@ -992,7 +1044,7 @@ fn join_kind(k: u8) -> joins::JoinKind {
     }
 }
 
-unsafe fn read_kerning(kerning: *const KK2KernIn, count: u32) -> Vec<measure::KernIn> {
+unsafe fn read_kerning(kerning: *const KK3KernIn, count: u32) -> Vec<measure::KernIn> {
     slice(kerning, count)
         .iter()
         .map(|k| measure::KernIn { kind: k.kind as u8, left: k.left, right: k.right, value: k.value as f64 })
@@ -1003,22 +1055,22 @@ fn join_band(y0: f64, y1: f64) -> Option<(f64, f64)> {
     (y0.is_finite() && y1.is_finite() && y1 > y0).then_some((y0, y1))
 }
 
-/// `kk2_prepare_start` for a connected script: `joins` (NULL = none) holds
+/// `kk3_prepare_start` for a connected script: `joins` (NULL = none) holds
 /// each glyph's join bands, `glyph_count` records of `joins_size` bytes (set
-/// it to `sizeof(KK2Joins)`). A joining side's body is spaced without its
+/// it to `sizeof(KK3Joins)`). A joining side's body is spaced without its
 /// join stroke, which overhangs like the hook of a j, and a pair whose facing
 /// sides both join gets no kerning: its joins overlap as drawn. Every other
 /// pair keeps the usual rules (a letter next to a period keeps its
 /// clearance from the join stroke).
 #[no_mangle]
-pub unsafe extern "C" fn kk2_prepare_start2(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_prepare_start2(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     threads: u32,
-    joins: *const KK2Joins,
+    joins: *const KK3Joins,
     joins_size: u32,
-) -> *mut KK2Job {
+) -> *mut KK3Job {
     guard(null_mut(), || {
         let mut inputs = read_inputs(glyphs, glyph_count)?;
         read_joins(&mut inputs, joins, joins_size)?;
@@ -1026,27 +1078,27 @@ pub unsafe extern "C" fn kk2_prepare_start2(
     })
 }
 
-/// `kk2_prepare_start2` with the join checker: `kinds` (one `JOINKIND_*`
+/// `kk3_prepare_start2` with the join checker: `kinds` (one `JOINKIND_*`
 /// byte per glyph) names the letters, `kerning` is the font's kerning now
-/// (as `kk2_measure` takes it). Every glyph with an outline is measured for
-/// `kk2_join_check` / `kk2_join_pairs`. With `PREPARE_KEEP_JOINS` in `flags`
+/// (as `kk3_measure` takes it). Every glyph with an outline is measured for
+/// `kk3_join_check` / `kk3_join_pairs`. With `PREPARE_KEEP_JOINS` in `flags`
 /// (Keep joins) every side with a join band or a join in the font keeps its
 /// sidebearing, and every pair of two such sides the font's kerning: the
 /// joins stay as drawn and the model spaces the rest. Without it the joined
-/// letters' bodies are spaced as `kk2_prepare_start2` does.
+/// letters' bodies are spaced as `kk3_prepare_start2` does.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_prepare_start3(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_prepare_start3(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     threads: u32,
-    joins: *const KK2Joins,
+    joins: *const KK3Joins,
     joins_size: u32,
     kinds: *const u8,
-    kerning: *const KK2KernIn,
+    kerning: *const KK3KernIn,
     kerning_count: u32,
     flags: u32,
-) -> *mut KK2Job {
+) -> *mut KK3Job {
     guard(null_mut(), || {
         if glyph_count > 0 && kinds.is_null() {
             return Err("kinds is NULL".into());
@@ -1064,23 +1116,23 @@ pub unsafe extern "C" fn kk2_prepare_start3(
 
 /// A connected script's joins, found in the font's own spacing (the rule
 /// Spacing QA uses): `kinds` one `JOINKIND_*` byte per glyph, `x_height` in
-/// font units, `kerning` the font's current kerning as `kk2_measure` takes it
+/// font units, `kerning` the font's current kerning as `kk3_measure` takes it
 /// (NULL = none; `JOINRULE_OVERHANG` does not use it), `rule` a
 /// `JOINRULE_*`. Fills `out` (`glyph_count` records, NaN = no join) and
 /// returns the number of glyphs with a join: 0 when the font is not a
 /// connected script (text faces never are), 0xFFFFFFFF on failure (see
-/// `kk2_last_error`). Runs on the calling thread.
+/// `kk3_last_error`). Runs on the calling thread.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_detect_joins(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_detect_joins(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     x_height: f64,
     kinds: *const u8,
-    kerning: *const KK2KernIn,
+    kerning: *const KK3KernIn,
     kerning_count: u32,
     rule: u32,
-    out: *mut KK2Joins,
+    out: *mut KK3Joins,
 ) -> u32 {
     guard(u32::MAX, || {
         if glyph_count > 0 && (kinds.is_null() || out.is_null()) {
@@ -1113,7 +1165,7 @@ pub unsafe extern "C" fn kk2_detect_joins(
         for (k, (l, r)) in bands.iter().enumerate() {
             let (l0, l1) = l.unwrap_or((f64::NAN, f64::NAN));
             let (r0, r1) = r.unwrap_or((f64::NAN, f64::NAN));
-            *out.add(k) = KK2Joins { left_y0: l0, left_y1: l1, right_y0: r0, right_y1: r1 };
+            *out.add(k) = KK3Joins { left_y0: l0, left_y1: l1, right_y0: r0, right_y1: r1 };
             joined += (l.is_some() || r.is_some()) as u32;
         }
         Ok(joined)
@@ -1123,17 +1175,17 @@ pub unsafe extern "C" fn kk2_detect_joins(
 /// The decoration test on the glyphs alone (`checker::decorated_design`):
 /// 1 when the glyphs touch by construction — a line, a grid, a background or
 /// an effect runs through every glyph, figures included — else 0; -1 on
-/// failure. For a font whose letters `kk2_detect_joins` finds unjoined
+/// failure. For a font whose letters `kk3_detect_joins` finds unjoined
 /// because nothing overlaps (an underline drawn exactly from edge to edge):
 /// prepared with the join checker and Keep joins, it keeps every side that
-/// touches. `kinds`, `kerning`: as for `kk2_detect_joins`.
+/// touches. `kinds`, `kerning`: as for `kk3_detect_joins`.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_detect_decorated(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_detect_decorated(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     kinds: *const u8,
-    kerning: *const KK2KernIn,
+    kerning: *const KK3KernIn,
     kerning_count: u32,
 ) -> i32 {
     guard(-1, || {
@@ -1152,15 +1204,15 @@ pub unsafe extern "C" fn kk2_detect_decorated(
 /// right side that touches at least half the a–z as the font sets them, and
 /// writes how many were measured to `measured` (may be NULL); -1 on
 /// failure. When at least half do, the font is connected even where nothing
-/// overlaps (strokes that meet flush), which `kk2_detect_joins` does not
-/// find. `kinds`, `kerning`: as for `kk2_detect_joins`.
+/// overlaps (strokes that meet flush), which `kk3_detect_joins` does not
+/// find. `kinds`, `kerning`: as for `kk3_detect_joins`.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_detect_contact(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_detect_contact(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     kinds: *const u8,
-    kerning: *const KK2KernIn,
+    kerning: *const KK3KernIn,
     kerning_count: u32,
     measured: *mut u32,
 ) -> i32 {
@@ -1190,13 +1242,13 @@ pub unsafe extern "C" fn kk2_detect_contact(
 /// pairs measured and joined, stem pairs measured and joined. Prepared with
 /// the join checker and Keep joins, such a font keeps every side that joins.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_detect_partly(
-    glyphs: *const KK2Glyph,
+pub unsafe extern "C" fn kk3_detect_partly(
+    glyphs: *const KK3Glyph,
     glyph_count: u32,
     units_per_em: f64,
     x_height: f64,
     letters: *const u8,
-    kerning: *const KK2KernIn,
+    kerning: *const KK3KernIn,
     kerning_count: u32,
     counts: *mut u32,
 ) -> i32 {
@@ -1219,12 +1271,12 @@ pub unsafe extern "C" fn kk2_detect_partly(
 /// Starts a solve (Phases 2/3 and 3/3) on a prepared context. `kern_mask`
 /// (NULL = every glyph) selects the glyphs to kern; `params` is copied.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_solve_start(
-    ctx: *const KK2Context,
-    params: *const KK2Params,
+pub unsafe extern "C" fn kk3_solve_start(
+    ctx: *const KK3Context,
+    params: *const KK3Params,
     kern_mask: *const u8,
     mask_len: u32,
-) -> *mut KK2Job {
+) -> *mut KK3Job {
     guard(null_mut(), || {
         if ctx.is_null() {
             return Err("context is NULL".into());
@@ -1232,27 +1284,27 @@ pub unsafe extern "C" fn kk2_solve_start(
         let ctx = (*ctx).0.clone();
         let p = read_params(ctx.upm, params)?;
         let mask: Option<Vec<u8>> = if kern_mask.is_null() { None } else { Some(slice(kern_mask, mask_len).to_vec()) };
-        let job = Job::spawn("kinetikern2-solve", move |progress| {
+        let job = Job::spawn("kinetikern3-solve", move |progress| {
             let out = run::run(&ctx, &p, mask.as_deref(), progress)?;
             Ok(build_result(&ctx, out))
         });
-        Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
+        Ok(Box::into_raw(Box::new(KK3Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
     })
 }
 
-/// `kk2_solve_start` with per-glyph options (`opts`, `opt_count` entries,
+/// `kk3_solve_start` with per-glyph options (`opts`, `opt_count` entries,
 /// one per glyph; NULL = none): frozen glyphs and section Looseness offsets.
 /// With `PARAM_FIT_FROZEN` the Looseness is first fitted to the frozen
-/// glyphs (`kk2_result_fitted_looseness`).
+/// glyphs (`kk3_result_fitted_looseness`).
 #[no_mangle]
-pub unsafe extern "C" fn kk2_solve_start2(
-    ctx: *const KK2Context,
-    params: *const KK2Params,
+pub unsafe extern "C" fn kk3_solve_start2(
+    ctx: *const KK3Context,
+    params: *const KK3Params,
     kern_mask: *const u8,
     mask_len: u32,
-    opts: *const KK2GlyphOpt,
+    opts: *const KK3GlyphOpt,
     opt_count: u32,
-) -> *mut KK2Job {
+) -> *mut KK3Job {
     guard(null_mut(), || {
         if ctx.is_null() {
             return Err("context is NULL".into());
@@ -1266,49 +1318,53 @@ pub unsafe extern "C" fn kk2_solve_start2(
                     frozen: o.flags & GLYPHOPT_FROZEN != 0,
                     looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
                     intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
+                    fit_group: o.fit_group,
+                    follow_left: o.follow_left,
+                    follow_right: o.follow_right,
+                    follow: o.follow & (GLYPHOPT_FOLLOW_SPACING | GLYPHOPT_FOLLOW_KERNING),
                 })
                 .collect();
             p.glyph_opts = Some(Arc::new(v));
         }
         let mask: Option<Vec<u8>> = if kern_mask.is_null() { None } else { Some(slice(kern_mask, mask_len).to_vec()) };
-        let job = Job::spawn("kinetikern2-solve", move |progress| {
+        let job = Job::spawn("kinetikern3-solve", move |progress| {
             let out = run::run(&ctx, &p, mask.as_deref(), progress)?;
             Ok(build_result(&ctx, out))
         });
-        Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
+        Ok(Box::into_raw(Box::new(KK3Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
     })
 }
 
-/// `kk2_solve_start2` with the designer harness (`harness`, NULL = none):
+/// `kk3_solve_start2` with the designer harness (`harness`, NULL = none):
 /// glyph sides shifted and pair kerning corrected after the solve, frozen
 /// glyphs left as they are.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_solve_start3(
-    ctx: *const KK2Context,
-    params: *const KK2Params,
+pub unsafe extern "C" fn kk3_solve_start3(
+    ctx: *const KK3Context,
+    params: *const KK3Params,
     kern_mask: *const u8,
     mask_len: u32,
-    opts: *const KK2GlyphOpt,
+    opts: *const KK3GlyphOpt,
     opt_count: u32,
-    harness: *const KK2Harness,
-) -> *mut KK2Job {
-    kk2_solve_start4(ctx, params, kern_mask, mask_len, opts, opt_count, harness, null())
+    harness: *const KK3Harness,
+) -> *mut KK3Job {
+    kk3_solve_start4(ctx, params, kern_mask, mask_len, opts, opt_count, harness, null())
 }
 
-/// `kk2_solve_start3` with punctuation by convention (`punct`, NULL = none):
+/// `kk3_solve_start3` with punctuation by convention (`punct`, NULL = none):
 /// each punctuation mark's sides moved toward what designers do, in Pass 1,
 /// and each side kerned with its own share in Pass 2.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_solve_start4(
-    ctx: *const KK2Context,
-    params: *const KK2Params,
+pub unsafe extern "C" fn kk3_solve_start4(
+    ctx: *const KK3Context,
+    params: *const KK3Params,
     kern_mask: *const u8,
     mask_len: u32,
-    opts: *const KK2GlyphOpt,
+    opts: *const KK3GlyphOpt,
     opt_count: u32,
-    harness: *const KK2Harness,
-    punct: *const KK2Punctuation,
-) -> *mut KK2Job {
+    harness: *const KK3Harness,
+    punct: *const KK3Punctuation,
+) -> *mut KK3Job {
     guard(null_mut(), || {
         if ctx.is_null() {
             return Err("context is NULL".into());
@@ -1322,14 +1378,18 @@ pub unsafe extern "C" fn kk2_solve_start4(
                     frozen: o.flags & GLYPHOPT_FROZEN != 0,
                     looseness: if o.looseness.is_finite() { o.looseness } else { 0.0 },
                     intensity: if o.intensity.is_finite() && o.intensity >= 0.0 { o.intensity } else { 1.0 },
+                    fit_group: o.fit_group,
+                    follow_left: o.follow_left,
+                    follow_right: o.follow_right,
+                    follow: o.follow & (GLYPHOPT_FOLLOW_SPACING | GLYPHOPT_FOLLOW_KERNING),
                 })
                 .collect();
             p.glyph_opts = Some(Arc::new(v));
         }
         if !harness.is_null() {
             let h = &*harness;
-            if (h.struct_size as usize) < size_of::<KK2Harness>() {
-                return Err(format!("KK2Harness.struct_size {} < {}", h.struct_size, size_of::<KK2Harness>()));
+            if (h.struct_size as usize) < size_of::<KK3Harness>() {
+                return Err(format!("KK3Harness.struct_size {} < {}", h.struct_size, size_of::<KK3Harness>()));
             }
             let sides: Vec<[f64; 2]> = if h.sides.is_null() || h.glyph_count == 0 {
                 Vec::new()
@@ -1345,8 +1405,8 @@ pub unsafe extern "C" fn kk2_solve_start4(
         }
         if !punct.is_null() {
             let c = &*punct;
-            if (c.struct_size as usize) < size_of::<KK2Punctuation>() {
-                return Err(format!("KK2Punctuation.struct_size {} < {}", c.struct_size, size_of::<KK2Punctuation>()));
+            if (c.struct_size as usize) < size_of::<KK3Punctuation>() {
+                return Err(format!("KK3Punctuation.struct_size {} < {}", c.struct_size, size_of::<KK3Punctuation>()));
             }
             let sides: Vec<[[f64; 3]; 2]> = if c.coefs.is_null() || c.glyph_count == 0 {
                 Vec::new()
@@ -1367,11 +1427,11 @@ pub unsafe extern "C" fn kk2_solve_start4(
             p.conventions = Some(Arc::new(Conventions { sides, kern, kern_scale, follow }));
         }
         let mask: Option<Vec<u8>> = if kern_mask.is_null() { None } else { Some(slice(kern_mask, mask_len).to_vec()) };
-        let job = Job::spawn("kinetikern2-solve", move |progress| {
+        let job = Job::spawn("kinetikern3-solve", move |progress| {
             let out = run::run(&ctx, &p, mask.as_deref(), progress)?;
             Ok(build_result(&ctx, out))
         });
-        Ok(Box::into_raw(Box::new(KK2Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
+        Ok(Box::into_raw(Box::new(KK3Job { kind: JobKind::Solve(job), error: Mutex::new(CString::default()) })))
     })
 }
 
@@ -1379,11 +1439,29 @@ pub unsafe extern "C" fn kk2_solve_start4(
 /// glyphs and kept joins: the solve ran at it plus the Looseness of its
 /// params. NaN if it did not fit.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_result_fitted_looseness(res: *const KK2Result) -> f64 {
+pub unsafe extern "C" fn kk3_result_fitted_looseness(res: *const KK3Result) -> f64 {
     if res.is_null() {
         return f64::NAN;
     }
     (*(res as *const ResultBox)).fitted
+}
+
+/// With `PARAM_FIT_FONT`, the fitted Looseness (slider units, from 0) of
+/// each category of the glyph options: index = category, NaN for one without
+/// enough sides. Copies up to `n` values to `out` (NULL: none) and returns
+/// how many there are (0 without `PARAM_FIT_FONT`).
+#[no_mangle]
+pub unsafe extern "C" fn kk3_result_category_fits(res: *const KK3Result, out: *mut f64, n: u32) -> u32 {
+    if res.is_null() {
+        return 0;
+    }
+    let fits = &(*(res as *const ResultBox)).category_fits;
+    if !out.is_null() {
+        for (k, v) in fits.iter().take(n as usize).enumerate() {
+            *out.add(k) = *v;
+        }
+    }
+    fits.len() as u32
 }
 
 /// The Looseness offset (slider units, relative to `params`) at which Pass 1
@@ -1391,9 +1469,9 @@ pub unsafe extern "C" fn kk2_result_fitted_looseness(res: *const KK2Result) -> f
 /// sidebearings they have now. NaN with fewer than three such glyphs.
 /// Synchronous: Pass 1 only, a few milliseconds per step.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_fit_looseness(
-    ctx: *const KK2Context,
-    params: *const KK2Params,
+pub unsafe extern "C" fn kk3_fit_looseness(
+    ctx: *const KK3Context,
+    params: *const KK3Params,
     which: *const u8,
     which_len: u32,
 ) -> f64 {
@@ -1420,18 +1498,18 @@ pub unsafe extern "C" fn kk2_fit_looseness(
 /// tightest pairs relative to the font's own overall tightness (sorted,
 /// most extreme first) and `stats`. Returns the number of pairs measured.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_measure(
-    ctx: *const KK2Context,
-    res: *const KK2Result,
-    current: *const KK2KernIn,
+pub unsafe extern "C" fn kk3_measure(
+    ctx: *const KK3Context,
+    res: *const KK3Result,
+    current: *const KK3KernIn,
     current_count: u32,
     mask: *const u8,
     mask_len: u32,
     scope_scripts: u32,
-    loosest: *mut KK2PairOut,
-    tightest: *mut KK2PairOut,
+    loosest: *mut KK3PairOut,
+    tightest: *mut KK3PairOut,
     cap: u32,
-    stats: *mut KK2MeasureStats,
+    stats: *mut KK3MeasureStats,
 ) -> u64 {
     guard(0, || {
         if ctx.is_null() || res.is_null() {
@@ -1462,10 +1540,10 @@ pub unsafe extern "C" fn kk2_measure(
             }
         };
         let out = measure::measure(c, &lsb, &rsb, &model, &cur, &m, scope_scripts != 0, cap as usize);
-        let write = |dst: *mut KK2PairOut, src: &[measure::PairOut]| {
+        let write = |dst: *mut KK3PairOut, src: &[measure::PairOut]| {
             if !dst.is_null() {
                 for (k, p) in src.iter().enumerate() {
-                    *dst.add(k) = KK2PairOut {
+                    *dst.add(k) = KK3PairOut {
                         left: p.left,
                         right: p.right,
                         current: p.current as f32,
@@ -1479,7 +1557,7 @@ pub unsafe extern "C" fn kk2_measure(
         write(loosest, &out.loosest);
         write(tightest, &out.tightest);
         if !stats.is_null() {
-            *stats = KK2MeasureStats {
+            *stats = KK3MeasureStats {
                 pairs: out.pairs,
                 offset: out.offset,
                 mae: out.mae,
@@ -1493,46 +1571,53 @@ pub unsafe extern "C" fn kk2_measure(
 }
 
 /// Bit set of optional features: 1 per-glyph options and the frozen-glyph
-/// Looseness fit (`kk2_solve_start2`, `kk2_fit_looseness`), 2 `kk2_measure`,
-/// 4 the designer harness (`kk2_solve_start3`), 8 connected scripts
-/// (`kk2_prepare_start2`, `kk2_detect_joins`), 16 spacing zones from the base
+/// Looseness fit (`kk3_solve_start2`, `kk3_fit_looseness`), 2 `kk3_measure`,
+/// 4 the designer harness (`kk3_solve_start3`), 8 connected scripts
+/// (`kk3_prepare_start2`, `kk3_detect_joins`), 16 spacing zones from the base
 /// letters (`GLYPH_ZONE`), 32 the join checker and Keep joins
-/// (`kk2_prepare_start3`, `kk2_join_check`, `kk2_join_pairs`,
-/// `kk2_join_sides`, `kk2_result_wanted`), 64 the decoration test
-/// (`kk2_join_decorated`, `kk2_detect_decorated`; the join checker measures
+/// (`kk3_prepare_start3`, `kk3_join_check`, `kk3_join_pairs`,
+/// `kk3_join_sides`, `kk3_result_wanted`), 64 the decoration test
+/// (`kk3_join_decorated`, `kk3_detect_decorated`; the join checker measures
 /// every glyph, and in a design whose glyphs touch by construction keeps
 /// every touching side; glyph flag 64 marks the default figures), 128 letters
-/// that join by touching (`kk2_detect_contact`), 256 hands that join only in
-/// part (`kk2_detect_partly`), 512 the Looseness of the params as an offset
-/// from the one fitted with `PARAM_FIT_FROZEN` (`kk2_result_fitted_looseness`
+/// that join by touching (`kk3_detect_contact`), 256 hands that join only in
+/// part (`kk3_detect_partly`), 512 the Looseness of the params as an offset
+/// from the one fitted with `PARAM_FIT_FROZEN` (`kk3_result_fitted_looseness`
 /// is the fitted Looseness itself), 1024 the slant a design's stems show and
-/// when to measure along it (`kk2_stem_glyphs`, `kk2_stem_slant`,
-/// `kk2_lean_wins`), 2048 punctuation by convention and Pass 2's pair
-/// classes (`kk2_solve_start4`, `KK2Punctuation`, `PARAM_V1_PASS2`,
+/// when to measure along it (`kk3_stem_glyphs`, `kk3_stem_slant`,
+/// `kk3_lean_wins`), 2048 punctuation by convention and Pass 2's pair
+/// classes (`kk3_solve_start4`, `KK3Punctuation`, `PARAM_V1_PASS2`,
 /// `PARAM_STYLE_DISPLAY`, `PARAM_STYLE_HANDWRITING`), 4096 the join
-/// checker's shortest line (`KK2JoinPair.clearance`, `JOINPAIR_NEAR`: a join
+/// checker's shortest line (`KK3JoinPair.clearance`, `JOINPAIR_NEAR`: a join
 /// is broken only when its strokes stay 3 units per 1000 em apart along the
-/// shortest line between them, as Spacing QA judges it).
+/// shortest line between them, as Spacing QA judges it), 8192 keeping the
+/// font's fit and staying close to its spacing (`PARAM_FIT_FONT`,
+/// `KK3GlyphOpt.fit_group`, `kk3_result_category_fits`, `KK3Params.keep`; a
+/// glyph's Looseness offset counts in full on punctuation by convention),
+/// 16384 sides that follow another glyph's spacing and kerning
+/// (`KK3GlyphOpt.follow_left`, `follow_right`, `follow`) and the exception
+/// tolerance (`KK3Params.exception_tolerance`), 32768 the tightness of
+/// capitals to lowercase (`KK3Params.cap_lower`, `lower_cap`).
 #[no_mangle]
-pub extern "C" fn kk2_features() -> u32 {
-    8191
+pub extern "C" fn kk3_features() -> u32 {
+    65535
 }
 
-/// The glyphs `kk2_stem_slant` reads, by name, space separated and in its
+/// The glyphs `kk3_stem_slant` reads, by name, space separated and in its
 /// order (static, NUL-terminated).
 #[no_mangle]
-pub extern "C" fn kk2_stem_glyphs() -> *const c_char {
+pub extern "C" fn kk3_stem_glyphs() -> *const c_char {
     static NAMES: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     NAMES.get_or_init(|| CString::new(slant::STEMS.join(" ")).unwrap_or_default()).as_ptr()
 }
 
 /// tan of the slant a design's stems show (+ leans right), or 0 for an
 /// upright design (`slant::stem_slant`): `glyphs` holds the outlines of the
-/// glyphs `kk2_stem_glyphs` names, `glyph_count` of them in that order (no
+/// glyphs `kk3_stem_glyphs` names, `glyph_count` of them in that order (no
 /// points for a glyph the font lacks; only the outlines are read), and
-/// `x_height` is the top of the x. NaN on failure (`kk2_last_error`).
+/// `x_height` is the top of the x. NaN on failure (`kk3_last_error`).
 #[no_mangle]
-pub unsafe extern "C" fn kk2_stem_slant(glyphs: *const KK2Glyph, glyph_count: u32, x_height: f64, units_per_em: f64) -> f64 {
+pub unsafe extern "C" fn kk3_stem_slant(glyphs: *const KK3Glyph, glyph_count: u32, x_height: f64, units_per_em: f64) -> f64 {
     guard(f64::NAN, || {
         let inputs = read_inputs(glyphs, glyph_count)?;
         let stems: Vec<&[Vec<(Vec2, u32)>]> = inputs.iter().map(|g| &g.contours[..]).collect();
@@ -1544,7 +1629,7 @@ pub unsafe extern "C" fn kk2_stem_slant(glyphs: *const KK2Glyph, glyph_count: u3
 /// along the slant its stems show (`slant::lean_wins`), from the shape error
 /// and the best-fit Looseness of a check upright and along the slant: 1 or 0.
 #[no_mangle]
-pub extern "C" fn kk2_lean_wins(upright_shape: f64, upright_fit: f64, lean_shape: f64, lean_fit: f64) -> u32 {
+pub extern "C" fn kk3_lean_wins(upright_shape: f64, upright_fit: f64, lean_shape: f64, lean_fit: f64) -> u32 {
     slant::lean_wins((upright_shape, upright_fit), (lean_shape, lean_fit)) as u32
 }
 
@@ -1568,26 +1653,26 @@ fn result_spacing(r: &ResultBox) -> (Vec<f64>, Vec<f64>) {
 /// the glyphs that take the solve, the rest keeping their sides and kerning.
 /// Fills `stats` and up to `side_cap` sides with breaks (most first) and
 /// returns how many it wrote; 0xFFFFFFFF on failure. A context prepared
-/// without `kk2_prepare_start3` has no joins (stats.joins = 0).
+/// without `kk3_prepare_start3` has no joins (stats.joins = 0).
 #[no_mangle]
-pub unsafe extern "C" fn kk2_join_check(
-    ctx: *const KK2Context,
-    res: *const KK2Result,
+pub unsafe extern "C" fn kk3_join_check(
+    ctx: *const KK3Context,
+    res: *const KK3Result,
     scope: *const u8,
     scope_len: u32,
-    stats: *mut KK2JoinStats,
-    sides: *mut KK2JoinSide,
+    stats: *mut KK3JoinStats,
+    sides: *mut KK3JoinSide,
     side_cap: u32,
 ) -> u32 {
     guard(u32::MAX, || {
         if ctx.is_null() || stats.is_null() {
             return Err("context or stats is NULL".into());
         }
-        if ((*stats).struct_size as usize) < size_of::<KK2JoinStats>() {
-            return Err(format!("KK2JoinStats.struct_size {} < {}", (*stats).struct_size, size_of::<KK2JoinStats>()));
+        if ((*stats).struct_size as usize) < size_of::<KK3JoinStats>() {
+            return Err(format!("KK3JoinStats.struct_size {} < {}", (*stats).struct_size, size_of::<KK3JoinStats>()));
         }
         let c = &(*ctx).0;
-        let mut st = KK2JoinStats { struct_size: size_of::<KK2JoinStats>() as u32, ..KK2JoinStats::default() };
+        let mut st = KK3JoinStats { struct_size: size_of::<KK3JoinStats>() as u32, ..KK3JoinStats::default() };
         let Some(fj) = c.joins.as_ref() else {
             *stats = st;
             return Ok(0);
@@ -1630,7 +1715,7 @@ pub unsafe extern "C" fn kk2_join_check(
         if !sides.is_null() {
             for (k, s) in check.sides.iter().take(side_cap as usize).enumerate() {
                 *sides.add(k) =
-                    KK2JoinSide { glyph: s.glyph, side: s.right as u32, breaks: s.breaks, reserved: 0, delta: s.delta };
+                    KK3JoinSide { glyph: s.glyph, side: s.right as u32, breaks: s.breaks, reserved: 0, delta: s.delta };
                 written += 1;
             }
         }
@@ -1640,17 +1725,17 @@ pub unsafe extern "C" fn kk2_join_check(
 
 /// Pairs in detail (`pairs`: `count` (left, right) glyph index pairs): as
 /// the font sets them, and under `res` (NULL: as drawn; `scope` as in
-/// `kk2_join_check`). Fills `out` (`count` records) and returns `count`;
+/// `kk3_join_check`). Fills `out` (`count` records) and returns `count`;
 /// 0xFFFFFFFF on failure, 0 without a join checker.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_join_pairs(
-    ctx: *const KK2Context,
-    res: *const KK2Result,
+pub unsafe extern "C" fn kk3_join_pairs(
+    ctx: *const KK3Context,
+    res: *const KK3Result,
     pairs: *const u32,
     count: u32,
     scope: *const u8,
     scope_len: u32,
-    out: *mut KK2JoinPair,
+    out: *mut KK3JoinPair,
 ) -> u32 {
     guard(u32::MAX, || {
         if ctx.is_null() || (count > 0 && (pairs.is_null() || out.is_null())) {
@@ -1704,7 +1789,7 @@ pub unsafe extern "C" fn kk2_join_pairs(
             if d.near {
                 flags |= JOINPAIR_NEAR;
             }
-            *out.add(k) = KK2JoinPair {
+            *out.add(k) = KK3JoinPair {
                 left: d.left,
                 right: d.right,
                 flags,
@@ -1721,7 +1806,7 @@ pub unsafe extern "C" fn kk2_join_pairs(
     })
 }
 
-/// `kk2_join_sides` bits per glyph.
+/// `kk3_join_sides` bits per glyph.
 pub const JOINSIDE_LEFT_JOINS: u8 = 1;
 pub const JOINSIDE_RIGHT_JOINS: u8 = 2;
 pub const JOINSIDE_LEFT_KEPT: u8 = 4;
@@ -1733,7 +1818,7 @@ pub const JOINSIDE_RIGHT_BAND: u8 = 32;
 /// `JOINSIDE_*` bits): joins in the font, kept (Keep joins), with a join
 /// band. Returns the number of glyphs with any bit; 0xFFFFFFFF on failure.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_join_sides(ctx: *const KK2Context, out: *mut u8) -> u32 {
+pub unsafe extern "C" fn kk3_join_sides(ctx: *const KK3Context, out: *mut u8) -> u32 {
     guard(u32::MAX, || {
         if ctx.is_null() || out.is_null() {
             return Err("context or out is NULL".into());
@@ -1761,7 +1846,7 @@ pub unsafe extern "C" fn kk2_join_sides(ctx: *const KK2Context, out: *mut u8) ->
 /// keeps every side that touches the a–z, letter or not: 1, else 0 (also
 /// without the join checker); -1 on failure.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_join_decorated(ctx: *const KK2Context) -> i32 {
+pub unsafe extern "C" fn kk3_join_decorated(ctx: *const KK3Context) -> i32 {
     guard(-1, || {
         if ctx.is_null() {
             return Err("context is NULL".into());
@@ -1776,7 +1861,7 @@ pub unsafe extern "C" fn kk2_join_decorated(ctx: *const KK2Context) -> i32 {
 /// is this minus the side now). Writes (lsb, rsb) for up to `count` glyphs
 /// to `out` (2·count doubles) and returns how many glyphs it wrote.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_result_wanted(res: *const KK2Result, out: *mut f64, count: u32) -> u32 {
+pub unsafe extern "C" fn kk3_result_wanted(res: *const KK3Result, out: *mut f64, count: u32) -> u32 {
     if res.is_null() || out.is_null() {
         return 0;
     }
@@ -1786,7 +1871,7 @@ pub unsafe extern "C" fn kk2_result_wanted(res: *const KK2Result, out: *mut f64,
     k as u32
 }
 
-fn progress_of(job: &KK2Job) -> &job::Progress {
+fn progress_of(job: &KK3Job) -> &job::Progress {
     match &job.kind {
         JobKind::Prepare(j) => &j.shared.progress,
         JobKind::Solve(j) => &j.shared.progress,
@@ -1796,7 +1881,7 @@ fn progress_of(job: &KK2Job) -> &job::Progress {
 /// Fills `out` (may be NULL) and returns the job state: 0 running, 1 done,
 /// 2 failed, 3 cancelled. Never blocks.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_poll(job: *const KK2Job, out: *mut KK2Progress) -> u32 {
+pub unsafe extern "C" fn kk3_job_poll(job: *const KK3Job, out: *mut KK3Progress) -> u32 {
     guard(STATE_FAILED, || {
         if job.is_null() {
             return Err("job is NULL".into());
@@ -1804,7 +1889,7 @@ pub unsafe extern "C" fn kk2_job_poll(job: *const KK2Job, out: *mut KK2Progress)
         let p = progress_of(&*job);
         let state = p.state.load(Relaxed);
         if !out.is_null() {
-            *out = KK2Progress {
+            *out = KK3Progress {
                 state,
                 phase: p.phase.load(Relaxed),
                 phases: p.phases.load(Relaxed),
@@ -1820,7 +1905,7 @@ pub unsafe extern "C" fn kk2_job_poll(job: *const KK2Job, out: *mut KK2Progress)
 
 /// Asks a running job to stop. Never blocks.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_cancel(job: *const KK2Job) {
+pub unsafe extern "C" fn kk3_job_cancel(job: *const KK3Job) {
     if !job.is_null() {
         progress_of(&*job).cancel();
     }
@@ -1829,7 +1914,7 @@ pub unsafe extern "C" fn kk2_job_cancel(job: *const KK2Job) {
 /// Blocks until the job leaves the running state or `timeout_s` passes
 /// (≤ 0: no limit). For tools and tests; a UI should poll instead.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_wait(job: *const KK2Job, timeout_s: f64) -> u32 {
+pub unsafe extern "C" fn kk3_job_wait(job: *const KK3Job, timeout_s: f64) -> u32 {
     guard(STATE_FAILED, || {
         if job.is_null() {
             return Err("job is NULL".into());
@@ -1843,9 +1928,9 @@ pub unsafe extern "C" fn kk2_job_wait(job: *const KK2Job, timeout_s: f64) -> u32
 
 /// Error message of a failed job (empty otherwise); valid until the job is freed.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_error(job: *const KK2Job) -> *const c_char {
+pub unsafe extern "C" fn kk3_job_error(job: *const KK3Job) -> *const c_char {
     if job.is_null() {
-        return kk2_last_error();
+        return kk3_last_error();
     }
     let j = &*job;
     let msg = match &j.kind {
@@ -1858,16 +1943,16 @@ pub unsafe extern "C" fn kk2_job_error(job: *const KK2Job) -> *const c_char {
     slot.as_ptr()
 }
 
-/// The context of a finished prepare job (once); free with `kk2_context_free`.
+/// The context of a finished prepare job (once); free with `kk3_context_free`.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_take_context(job: *const KK2Job) -> *mut KK2Context {
+pub unsafe extern "C" fn kk3_job_take_context(job: *const KK3Job) -> *mut KK3Context {
     guard(null_mut(), || {
         if job.is_null() {
             return Err("job is NULL".into());
         }
         match &(*job).kind {
             JobKind::Prepare(j) => match j.take() {
-                Some(ctx) => Ok(Box::into_raw(Box::new(KK2Context(ctx)))),
+                Some(ctx) => Ok(Box::into_raw(Box::new(KK3Context(ctx)))),
                 None => Err("the job has no context (still running, failed, cancelled or already taken)".into()),
             },
             JobKind::Solve(_) => Err("not a prepare job".into()),
@@ -1875,16 +1960,16 @@ pub unsafe extern "C" fn kk2_job_take_context(job: *const KK2Job) -> *mut KK2Con
     })
 }
 
-/// The result of a finished solve job (once); free with `kk2_result_free`.
+/// The result of a finished solve job (once); free with `kk3_result_free`.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_take_result(job: *const KK2Job) -> *mut KK2Result {
+pub unsafe extern "C" fn kk3_job_take_result(job: *const KK3Job) -> *mut KK3Result {
     guard(null_mut(), || {
         if job.is_null() {
             return Err("job is NULL".into());
         }
         match &(*job).kind {
             JobKind::Solve(j) => match j.take() {
-                Some(b) => Ok(Box::into_raw(b) as *mut KK2Result),
+                Some(b) => Ok(Box::into_raw(b) as *mut KK3Result),
                 None => Err("the job has no result (still running, failed, cancelled or already taken)".into()),
             },
             JobKind::Prepare(_) => Err("not a solve job".into()),
@@ -1894,7 +1979,7 @@ pub unsafe extern "C" fn kk2_job_take_result(job: *const KK2Job) -> *mut KK2Resu
 
 /// Releases a job handle. A running job is cancelled and finishes on its own.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_job_free(job: *mut KK2Job) {
+pub unsafe extern "C" fn kk3_job_free(job: *mut KK3Job) {
     if !job.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let j = Box::from_raw(job);
@@ -1905,14 +1990,14 @@ pub unsafe extern "C" fn kk2_job_free(job: *mut KK2Job) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kk2_context_free(ctx: *mut KK2Context) {
+pub unsafe extern "C" fn kk3_context_free(ctx: *mut KK3Context) {
     if !ctx.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(ctx))));
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kk2_context_glyph_count(ctx: *const KK2Context) -> u32 {
+pub unsafe extern "C" fn kk3_context_glyph_count(ctx: *const KK3Context) -> u32 {
     if ctx.is_null() {
         0
     } else {
@@ -1921,7 +2006,7 @@ pub unsafe extern "C" fn kk2_context_glyph_count(ctx: *const KK2Context) -> u32 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kk2_context_prep_ms(ctx: *const KK2Context) -> f64 {
+pub unsafe extern "C" fn kk3_context_prep_ms(ctx: *const KK3Context) -> f64 {
     if ctx.is_null() {
         0.0
     } else {
@@ -1932,11 +2017,11 @@ pub unsafe extern "C" fn kk2_context_prep_ms(ctx: *const KK2Context) -> f64 {
 /// Copies glyph `glyph`'s adaptive rays of one side (0 left, 1 right) into
 /// `out` (capacity `cap`); returns how many there are.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_context_rays(
-    ctx: *const KK2Context,
+pub unsafe extern "C" fn kk3_context_rays(
+    ctx: *const KK3Context,
     glyph: u32,
     side: u32,
-    out: *mut KK2Ray,
+    out: *mut KK3Ray,
     cap: u32,
 ) -> u32 {
     guard(0, || {
@@ -1949,7 +2034,7 @@ pub unsafe extern "C" fn kk2_context_rays(
         debug_assert!(matches!(p.side, Side::Left | Side::Right));
         if !out.is_null() {
             for (k, r) in p.rays.iter().take(cap as usize).enumerate() {
-                *out.add(k) = KK2Ray { y: r.y, x: r.x, tier: r.tier as u32, reserved: 0 };
+                *out.add(k) = KK3Ray { y: r.y, x: r.x, tier: r.tier as u32, reserved: 0 };
             }
         }
         Ok(p.rays.len() as u32)
@@ -1957,7 +2042,7 @@ pub unsafe extern "C" fn kk2_context_rays(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kk2_result_free(res: *mut KK2Result) {
+pub unsafe extern "C" fn kk3_result_free(res: *mut KK3Result) {
     if !res.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(res as *mut ResultBox))));
     }
@@ -1966,17 +2051,17 @@ pub unsafe extern "C" fn kk2_result_free(res: *mut KK2Result) {
 /// Kerning of glyph pair (left, right) with entry precedence; NaN if either
 /// glyph was not kerned in this solve.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_result_value(res: *const KK2Result, left: u32, right: u32) -> f32 {
+pub unsafe extern "C" fn kk3_result_value(res: *const KK3Result, left: u32, right: u32) -> f32 {
     if res.is_null() {
         return f32::NAN;
     }
     (*(res as *const ResultBox)).value(left, right)
 }
 
-/// `kk2_result_value` for `count` pairs.
+/// `kk3_result_value` for `count` pairs.
 #[no_mangle]
-pub unsafe extern "C" fn kk2_result_values(
-    res: *const KK2Result,
+pub unsafe extern "C" fn kk3_result_values(
+    res: *const KK3Result,
     lefts: *const u32,
     rights: *const u32,
     count: u32,
@@ -1994,6 +2079,6 @@ pub unsafe extern "C" fn kk2_result_values(
 
 /// Max rhythm groups (for callers sizing per-group arrays).
 #[no_mangle]
-pub extern "C" fn kk2_max_groups() -> u32 {
+pub extern "C" fn kk3_max_groups() -> u32 {
     MAX_GROUPS
 }

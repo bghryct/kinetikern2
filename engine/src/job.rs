@@ -129,7 +129,7 @@ pub fn pool(threads: usize) -> Arc<rayon::ThreadPool> {
             Arc::new(
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(n)
-                    .thread_name(|i| format!("kinetikern2-{i}"))
+                    .thread_name(|i| format!("kinetikern3-{i}"))
                     .start_handler(|_| below_main_thread())
                     .build()
                     .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("rayon pool")),
@@ -190,7 +190,7 @@ impl<T: Send + 'static> Job<T> {
                         .map(|s| s.to_string())
                         .or_else(|| panic.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".into());
-                    (STATE_FAILED, Some(Output::Error(format!("internal error in Kinetikern2 engine: {msg}"))))
+                    (STATE_FAILED, Some(Output::Error(format!("internal error in Kinetikern3 engine: {msg}"))))
                 }
             };
             *worker.output.lock().unwrap_or_else(|e| e.into_inner()) = out;

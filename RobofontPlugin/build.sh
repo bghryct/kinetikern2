@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Kinetikern2 extension for RoboFont: Kinetikern2.roboFontExt.
+# Builds the Kinetikern3 extension for RoboFont: Kinetikern3.roboFontExt.
 #
 #   ./build.sh                  build the engine (universal: arm64 + x86_64) and the extension
 #   ./build.sh --native         the engine for this Mac's architecture only (quicker; on Apple
@@ -9,7 +9,7 @@
 #   ./build.sh --engine DIR     the engine's source (default: ../engine)
 #   ./build.sh --test           the headless tests first (python3 with fontParts, defcon, fontTools)
 #   ./build.sh --install        also link the extension into RoboFont's plugins folder
-#   ./build.sh --verify [font]  then run the in-RoboFont self-test (kk2_selftest) in a
+#   ./build.sh --verify [font]  then run the in-RoboFont self-test (kk3_selftest) in a
 #                               temporary second RoboFont instance; default font:
 #                               /System/Library/Fonts/Supplemental/Arial.ttf (any .ttf, .otf
 #                               or .ufo; a .ufo is copied first)
@@ -34,15 +34,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$ROOT/../engine"
 SOURCE="$ROOT/source/lib"
-BUNDLE="$ROOT/Kinetikern2.roboFontExt"
+BUNDLE="$ROOT/Kinetikern3.roboFontExt"
 LIB="$BUNDLE/lib"
-DYLIB="libkinetikern2.dylib"
+DYLIB="libkinetikern3.dylib"
 OUT="$LIB/$DYLIB"
 PLUGINS="$HOME/Library/Application Support/RoboFont/plugins"
-LINK="$PLUGINS/Kinetikern2.roboFontExt"
+LINK="$PLUGINS/Kinetikern3.roboFontExt"
 ROBOFONT_APP="${ROBOFONT_APP:-/Applications/RoboFont.app}"
-KEY="com.mirkovelimirovic.Kinetikern2"
-VERSION="2.0.0"
+KEY="com.mirkovelimirovic.Kinetikern3"
+VERSION="3.0.0"
 VERIFY_TIMEOUT=600   # seconds for selftest.json to appear
 QUIT_TIMEOUT=60      # seconds for the temporary RoboFont to quit afterwards
 
@@ -145,22 +145,22 @@ fi
 # lib: the extension's modules and their tables, the harness's and the
 # punctuation conventions' (the library stays)
 find "$LIB" -maxdepth 1 \( -name '*.py' -o -name '*.json' \) -delete
-cp "$SOURCE"/*.py "$SOURCE"/kk2_harness.json "$SOURCE"/kk2_punctuation.json "$LIB/"
+cp "$SOURCE"/*.py "$SOURCE"/kk3_harness.json "$SOURCE"/kk3_punctuation.json "$LIB/"
 rm -rf "$LIB/__pycache__"
 [ -f "$ROOT/../LICENSE" ] && cp "$ROOT/../LICENSE" "$BUNDLE/license"
 "$PY" - "$BUNDLE/info.plist" "$VERSION" <<'EOF'
 import plistlib, sys, time
 path, version = sys.argv[1], sys.argv[2]
 info = {
-    "name": "Kinetikern2",
+    "name": "Kinetikern3",
     "developer": "Mirko Velimirovic",
-    "developerURL": "https://github.com/bghryct/kinetikern2",
+    "developerURL": "https://github.com/bghryct/kinetikern3",
     "version": version,
     "html": False,
     "launchAtStartUp": True,
-    "mainScript": "kk2_startup.py",
+    "mainScript": "kk3_startup.py",
     "uninstallScript": "",
-    "addToMenu": [{"path": "kk2_menu.py", "preferredName": "Kinetikern2…", "shortKey": ""}],
+    "addToMenu": [{"path": "kk3_menu.py", "preferredName": "Kinetikern3…", "shortKey": ""}],
     "requiresVersionMajor": "4",
     "requiresVersionMinor": "0",
     "timeStamp": time.time(),
@@ -216,15 +216,15 @@ EOF
 # these keys on its command line; the user's own RoboFont never does.
 BUSY="$(pgrep -f "$KEY\.(selfTestFont|devScript)" || true)"
 if [ -n "$BUSY" ]; then
-  echo "a temporary RoboFont with a Kinetikern2 test is still running (pid $(echo $BUSY)); try again when it quit" >&2
+  echo "a temporary RoboFont with a Kinetikern3 test is still running (pid $(echo $BUSY)); try again when it quit" >&2
   exit 1
 fi
 
 TMP="${TMPDIR:-/tmp}"
-RESULTS="$(mktemp -d "${TMP%/}/kk2rf-verify.XXXXXX")"
+RESULTS="$(mktemp -d "${TMP%/}/kk3rf-verify.XXXXXX")"
 REPORT="$RESULTS/selftest.json"
 # the crash reports there before the run (a crash of this run's instance is reported after it)
-CRASH_TOOL="$ROOT/../tools/kk2_crash_report.py"
+CRASH_TOOL="$ROOT/../tools/kk3_crash_report.py"
 ls "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep '^RoboFont-.*\.ips$' > "$RESULTS/crashes-before.txt" || true
 CLOSE_CRASH=0
 # the results folder is unique, so it identifies this run's instance
@@ -251,7 +251,7 @@ while [ ! -f "$REPORT" ]; do
   [ -n "$PID" ] || PID="$(pgrep -f "$PATTERN" | head -n 1 || true)"
   if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
     # the test writes its verdict before it closes the font: closing a
-    # document can crash the app for a cause outside Kinetikern2
+    # document can crash the app for a cause outside Kinetikern3
     if [ -f "$RESULTS/selftest-before-close.json" ]; then
       echo "the temporary RoboFont quit while closing the font, after the test wrote its verdict" >&2
       REPORT="$RESULTS/selftest-before-close.json"
@@ -299,7 +299,7 @@ import json, sys
 with open(sys.argv[1]) as f:
     r = json.load(f)
 engine = r.get("engine") or {}
-print("Kinetikern2 self-test %s — %s, RoboFont %s, engine %s"
+print("Kinetikern3 self-test %s — %s, RoboFont %s, engine %s"
       % ("PASSED" if r.get("ok") else "FAILED", r.get("font"), r.get("robofont_version"), engine.get("version", "?")))
 for line in r.get("summary", []):
     print("  " + line)
@@ -310,7 +310,7 @@ for e in r.get("errors", []):
 sys.exit(0 if r.get("ok") else 1)
 EOF
 # a crash of the temporary instance: what crashed. The known PyObjC crash at a
-# font close is outside Kinetikern2 (tools/kk2_crash_report.py); any other
+# font close is outside Kinetikern3 (tools/kk3_crash_report.py); any other
 # crash fails the run.
 CRASH=0
 "$PY" "$CRASH_TOOL" "$RESULTS/crashes-before.txt" "RoboFont" --wait "$([ "$CLOSE_CRASH" = 1 ] && echo 20 || echo 0)" || CRASH=$?
@@ -318,7 +318,7 @@ if [ "$CRASH" = 4 ]; then
   echo "error: the temporary RoboFont crashed (above), and not with the known PyObjC crash at a font close" >&2
   STATUS=1
 elif [ "$CRASH" = 3 ]; then
-  echo "warning: the temporary RoboFont crashed closing the font: the known PyObjC crash, outside Kinetikern2; the verdict above was written before the close"
+  echo "warning: the temporary RoboFont crashed closing the font: the known PyObjC crash, outside Kinetikern3; the verdict above was written before the close"
 elif [ "$CLOSE_CRASH" = 1 ]; then
   echo "warning: the temporary RoboFont quit while closing the font, and macOS wrote no crash report"
 fi

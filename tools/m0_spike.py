@@ -1,13 +1,13 @@
 # encoding: utf-8
 """
-M0 — facts about the Glyphs 3 API that Kinetikern2's Apply and snapshot rely on.
+M0 — facts about the Glyphs 3 API that Kinetikern3's Apply and snapshot rely on.
 
 Runs inside a temporary Glyphs 3 instance (never the user's):
 
     open -n -a "Glyphs 3" --args -ApplePersistenceIgnoreState YES \
-        -com.mirkovelimirovic.Kinetikern2.devScript  $PWD/Kinetikern2/tools/m0_spike.py \
-        -com.mirkovelimirovic.Kinetikern2.devOut     /tmp/m0.json \
-        -com.mirkovelimirovic.Kinetikern2.devFont    /System/Library/Fonts/Supplemental/Arial.ttf
+        -com.mirkovelimirovic.Kinetikern3.devScript  $PWD/Kinetikern3/tools/m0_spike.py \
+        -com.mirkovelimirovic.Kinetikern3.devOut     /tmp/m0.json \
+        -com.mirkovelimirovic.Kinetikern3.devFont    /System/Library/Fonts/Supplemental/Arial.ttf
 
 Imports the font without a window, measures outline reading, kerning writes
 (Python wrapper, direct Objective-C, bulk dictionary), group writes, undo and
@@ -22,7 +22,7 @@ import traceback
 from AppKit import NSApp, NSMutableDictionary
 from GlyphsApp import LTR, RTL, Glyphs
 
-PREFIX = "com.mirkovelimirovic.Kinetikern2."
+PREFIX = "com.mirkovelimirovic.Kinetikern3."
 out_path = Glyphs.defaults[PREFIX + "devOut"]
 font_path = Glyphs.defaults[PREFIX + "devFont"]
 facts = {"errors": []}

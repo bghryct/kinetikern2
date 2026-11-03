@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Headless tests of the Kinetikern2 extension: everything but the windows
+Headless tests of the Kinetikern3 extension: everything but the windows
 (the Joins window's rows are checked with vanilla stubbed), outside
 RoboFont, on in-memory UFO fonts (fontParts' fontshell over defcon, what
 RoboFont edits) with the real engine.
@@ -72,17 +72,18 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-LIB = os.path.join(ROOT, "Kinetikern2.roboFontExt", "lib")
+LIB = os.path.join(ROOT, "Kinetikern3.roboFontExt", "lib")
 SOURCE = os.path.join(ROOT, "source", "lib")
 sys.path.insert(0, SOURCE)
 
 import fontParts.fontshell as fontshell  # noqa: E402
 
-import kk2_apply as ka  # noqa: E402
-import kk2_bridge as kb  # noqa: E402
-import kk2_groups as kg  # noqa: E402
-import kk2_harness as kh  # noqa: E402
-import kk2_snapshot as ks  # noqa: E402
+import kk3_apply as ka  # noqa: E402
+import kk3_bridge as kb  # noqa: E402
+import kk3_groups as kg  # noqa: E402
+import kk3_harness as kh  # noqa: E402
+import kk3_punctuation as kpu  # noqa: E402
+import kk3_snapshot as ks  # noqa: E402
 
 FAILURES = []
 
@@ -545,6 +546,139 @@ def test_slant(engine):
     apply_and_revert(engine, italic_font(12.0), "the synthetic font at 12°")
 
 
+def blank_info(info):
+    """As the window's _blank_info: no outline, or one of no size."""
+    b = info.bounds
+    return info.empty or (b is not None and b[2] == 0 and b[3] == 0)
+
+
+def word_space_arg(snap, mode="step"):
+    """The word space setting for Apply as the window builds it (kk3_window._word_space_apply_arg): the blank
+    word space, a blank no-break space as wide, the n; None without them."""
+    space, n = snap.char_map.get(" "), snap.char_map.get("n")
+    si, ni = (snap.glyph_info(space) if space else None), (snap.glyph_info(n) if n else None)
+    if si is None or ni is None or not blank_info(si) or not (si.width > 0 and ni.width > 0):
+        return None
+    nbsp = snap.char_map.get("\u00a0")
+    bi = snap.glyph_info(nbsp) if nbsp and nbsp != space else None
+    if bi is None or not blank_info(bi) or abs(bi.width - si.width) >= 0.5:
+        nbsp = None
+    return {"space": space, "nbsp": nbsp, "n": n, "mode": mode, "style": "text", "before": float(si.width),
+            "n_before": float(ni.width)}
+
+
+def test_word_spaces():
+    """kk3_apply._word_spaces: which spaces the word space setting sets, and to what."""
+    print("\n== the word space")
+    f = fontshell.RFont()
+    f.info.unitsPerEm = 1000
+    for name, cp, width in (("space", 0x20, 250), ("nbspace", 0xA0, 250), ("n", 0x6E, 500), ("thin", 0x2009, 250)):
+        g = f.newGlyph(name)
+        g.unicodes = [cp]
+        g.width = width
+    pen = f["n"].getPen()
+    _box(pen, 50, 0, 450, 500)
+    layer = f.naked().layers.defaultLayer
+    arg = {"space": "space", "nbsp": "nbspace", "n": "n", "mode": "step", "style": "text", "before": 250.0,
+           "n_before": 500.0}
+    out, notes = ka._word_spaces(layer, arg, 520.0)
+    check(out == {"space": ("n", 0.5), "nbspace": ("n", 0.5)} and "260" in notes["space"][0],
+          "in step with the n: the word space keeps half the n's advance, the no-break space with it (%s; %s)"
+          % (out, notes.get("space", ("",))[0]))
+    out, _notes = ka._word_spaces(layer, arg, 500.0)
+    check(out == {}, "in step with an n that keeps its advance: nothing to set (%s)" % out)
+    out, notes = ka._word_spaces(layer, dict(arg, mode="convention"), 500.0)
+    share = kpu.WORD_SPACE["text"][0]
+    check(out.get("space") == ("n", share) and "%d" % math.floor(share * 500 + 0.5) in notes["space"][0],
+          "as designers set it: %.3f of the n's advance (%s; %s)" % (share, out, notes.get("space", ("",))[0]))
+    check(ka._word_spaces(layer, dict(arg, mode="keep"), 520.0) == ({}, {}), "as it is: nothing to set")
+    check(ka._word_spaces(layer, arg, 520.0, frozen=set(["space"])) == ({}, {}),
+          "a frozen word space keeps its advance")
+    f["nbspace"].width = 300
+    out, _notes = ka._word_spaces(layer, arg, 520.0)
+    check(out == {"space": ("n", 0.5)}, "a no-break space of another width keeps it (%s)" % out)
+    f["nbspace"].width = 250
+    _box(f["space"].getPen(), 0, 0, 10, 10)
+    check(ka._word_spaces(layer, arg, 520.0) == ({}, {}), "a word space with an outline is left alone")
+    check(ka._space_width_for(520, 0.5) == 260 and ka._space_width_for(521, 0.5) == 261
+          and ka._space_width_for(300, None) == 300 and isinstance(ka._space_width_for(521.0, 0.5), int),
+          "a share of an advance is set in whole units")
+
+
+def ufo_kern(f, a, b):
+    """The kerning of glyph pair (a, b) in a UFO, with the usual precedence."""
+    kern1 = next((g for g, m in f.groups.items() if g.startswith("public.kern1.") and a in m), None)
+    kern2 = next((g for g, m in f.groups.items() if g.startswith("public.kern2.") and b in m), None)
+    for pair in ((a, b), (a, kern2), (kern1, b), (kern1, kern2)):
+        if None not in pair and pair in f.kerning:
+            return f.kerning[pair]
+    return 0
+
+
+def test_follow(engine):
+    """Spacing groups that follow a glyph (kinetikern2#16): the comma like the
+    period, x's right side like n's, Ograve's right side like o's (out of the
+    O group it shares). The solve spaces and kerns them as their glyphs
+    (Ograve's metrics keys, =O, keep its sides O's; it kerns as o); Apply
+    writes their glyphs' sidebearings and kerning groups, so that every pair
+    of theirs kerns as their glyph's; Revert is exact."""
+    print("\n== spacing groups that follow a glyph")
+    f = synthetic_font()
+    before = copy.deepcopy(font_state(f))
+    snap, _ms = read(f)
+    groups = kg.GroupSet()
+    # (glyph, left side like, right side like, the glyph whose sides it takes: a metrics key keeps its own)
+    follows = (("comma", "period", "period", "period"), ("x", "", "n", "n"), ("Ograve", "", "o", "O"))
+    for name, like_l, like_r, _spaced in follows:
+        g = groups.add_group(name, kg.MODE_FOLLOW)
+        groups.update(g.gid, like_left=like_l, like_right=like_r)
+        groups.assign([name], g.gid)
+    context, result = solve_whole(engine, snap, None, groups.opts_for(snap.names))
+    at = snap.index
+    m = result.metrics
+    names = [n for n in snap.names if m[at[n]].valid]
+    for name, like_l, like_r, spaced in follows:
+        i = at[name]
+        for like, side in ((like_l, "left"), (like_r, "right")):
+            if not like:
+                continue
+            k = at[like]
+            spacer = at[spaced]
+            mine, theirs = (m[i].lsb, m[spacer].lsb) if side == "left" else (m[i].rsb, m[spacer].rsb)
+            cls = result.glyph_left_class if side == "left" else result.glyph_right_class
+            pairs = [(x, result.value(i, at[x]), result.value(k, at[x])) if side == "right" else
+                     (x, result.value(at[x], i), result.value(at[x], k)) for x in names if x not in (name, like)]
+            apart = [x for x, a, b in pairs if not ((a != a and b != b) or a == b)]
+            check(mine == theirs and cls[i] == cls[k] and not apart,
+                  "the solve: %s's %s side spaced as %s's, kerned as %s's (%d pairs apart, e.g. %s)"
+                  % (name, side, spaced, like, len(apart), apart[:3]))
+    following = dict((n, (l, r)) for n, (l, r, _s, k) in groups.followers().items() if k)
+    p = ka.plan(snap, result, True, following=following)
+    summary, point = ka.apply(f, snap, p)
+    check(summary["ok"] and p.counts.get("follow_moves") == 1,
+          "Apply reads back as planned; Ograve moves out of the O group (%d moves)" % p.counts.get("follow_moves", 0))
+    layer = f.naked().layers.defaultLayer
+    left_of, right_of, _d = ks.kerning_group_maps(f.naked().groups)
+    for name, like_l, like_r, spaced in follows:
+        mine, theirs = ks.ink_metrics(layer[name], layer), ks.ink_metrics(layer[spaced], layer)
+        others = [x for x in f.keys() if x not in (name, like_r)]
+        apart = [x for x in others if ufo_kern(f, name, x) != ufo_kern(f, like_r, x)]
+        ok = right_of.get(name) == right_of.get(like_r) and abs(mine[1] - theirs[1]) <= 0.5 and not apart
+        if like_l:
+            apart_l = [x for x in others if ufo_kern(f, x, name) != ufo_kern(f, x, like_l)]
+            ok = ok and left_of.get(name) == left_of.get(like_l) and abs(mine[0] - theirs[0]) <= 0.5 and not apart_l
+            apart += apart_l
+        check(ok, "the font: %s spaced as %s, kerned as %s (group %s, %s's %s; %d pairs apart, e.g. %s)"
+              % (name, spaced, like_r, right_of.get(name), like_r, right_of.get(like_r), len(apart), apart[:3]))
+    check(left_of.get("Ograve") == "O", "Ograve's left side stays in the O group (%s)" % left_of.get("Ograve"))
+    point.restore(overwrite=False)
+    diff = diff_state(before, font_state(f))
+    check(not diff, "Revert puts every glyph, the kerning and the groups back exactly (%d differences, e.g. %s)"
+          % (len(diff), diff[:4]))
+    result.close()
+    context.close()
+
+
 def apply_and_revert(engine, f, label, harness=False, groups=None):
     print("\n== %s: whole font, Apply, read back, Revert" % label)
     before = copy.deepcopy(font_state(f))
@@ -561,8 +695,13 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
     composites = [n for n in layer.keys() if len(layer[n].components)]
     shapes = dict((n, outline(layer, n)) for n in composites)
     t = time.perf_counter()
-    p = ka.plan(snap, result, True, frozen=frozen)
+    word_space = word_space_arg(snap)
+    p = ka.plan(snap, result, True, frozen=frozen, word_space=word_space)
     plan_ms = (time.perf_counter() - t) * 1000.0
+    word_was = None
+    if word_space is not None:
+        nb = word_space["nbsp"]
+        word_was = (f[word_space["space"]].width, f[word_space["n"]].width, f[nb].width if nb else None)
     space, period = snap.char_map.get("\u2008"), snap.char_map.get(".")
     space_was = (f[space].width, f[period].width) if space is not None and period is not None else None
     fspace, zero = snap.char_map.get("\u2007"), snap.char_map.get("0")
@@ -590,6 +729,20 @@ def apply_and_revert(engine, f, label, harness=False, groups=None):
             check(p.spaces.get(fspace) == zero and abs(f[fspace].width - f[zero].width) < 1e-6,
                   "%s: the figure space keeps the zero's advance (before %s and %s, after %s and %s)"
                   % (label, figure_was[0], figure_was[1], f[fspace].width, f[zero].width))
+    # the word space keeps its share of the n's advance (the window's default), a no-break space as wide with it
+    if word_was is not None:
+        ws, wn, nb = word_space["space"], word_space["n"], word_space["nbsp"]
+        share = word_was[0] / word_was[1]
+        want = int(math.floor(share * f[wn].width + 0.5))
+        moved = abs(want - word_was[0]) >= 0.5
+        target = p.spaces.get(ws)
+        check((target is not None and target[0] == wn and abs(f[ws].width - want) < 1e-9) if moved
+              else (target is None and f[ws].width == word_was[0]),
+              "%s: the word space keeps its share of the n's advance (space %s → %s, n %s → %s)"
+              % (label, word_was[0], f[ws].width, word_was[1], f[wn].width))
+        if nb:
+            check(f[nb].width == f[ws].width and type(f[nb].width) is type(f[ws].width),
+                  "%s: the no-break space goes with it (%s → %s)" % (label, word_was[2], f[nb].width))
     check(summary["ok"] and not summary.get("error"),
           "%s: Apply reads back as planned (%d kerning pairs, %d removed, %d group sides, %d glyphs re-spaced; "
           "examples %s)" % (label, summary["kerning_entries"], summary["entries_removed"], summary["group_sides_set"],
@@ -796,7 +949,7 @@ def _stub_vanilla():
         def makeKey(self):
             pass
 
-    for name in ("FloatingWindow", "TextBox", "SegmentedButton", "Button", "List"):
+    for name in ("Window", "FloatingWindow", "TextBox", "SegmentedButton", "Button", "List"):
         setattr(stub, name, type(name, (Control,), {}))
     sys.modules["vanilla"] = stub
 
@@ -810,7 +963,7 @@ def test_joins_window(engine):
         check(False, "this engine build has no join checker")
         return
     _stub_vanilla()
-    import kk2_joins_window as kj
+    import kk3_joins_window as kj
     f = script_font(broken=True)
     snap, _ms = read(f)
     n = len(snap.names)
@@ -926,7 +1079,7 @@ def test_joins_window(engine):
 def test_glyphs_categories():
     """The snapshot's categories against Glyphs' own glyph database (when
     glyphsLib is here): the encoded glyphs of the scripts and the
-    punctuation and symbols Kinetikern2 spaces."""
+    punctuation and symbols Kinetikern3 spaces."""
     try:
         import glyphsLib.glyphdata as gd
     except ImportError:
@@ -1276,6 +1429,8 @@ def main():
         apply_and_revert(engine, f, "synthetic font")
         apply_and_revert(engine, synthetic_font(), "synthetic font with the designer harness", harness=True)
         test_figure_space(engine)
+        test_word_spaces()
+        test_follow(engine)
         test_groups(engine)
         test_by_category(engine)
         test_conflict(engine)

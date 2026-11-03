@@ -34,8 +34,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
-name = "kinetikern2"
-version = "2.0.0"
+name = "kinetikern3"
+version = "3.0.0"
 dependencies = [
  "rayon",
 ]
