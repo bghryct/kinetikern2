@@ -2529,6 +2529,59 @@ class SelfTest(object):
                 with_it = "no blank no-break space as wide"
             self.feat_notes.append("the word space as designers set it: %s %s → %s in Kinetikern3's pane (%.2f of "
                                    "the n), %s" % (space, _num(before), _num(after), share, with_it))
+        self.features_case()
+
+    def _case_values(self):
+        """(capital–lowercase pairs, every other pair, the sides) of the sample, as the result shows them."""
+        res = self.win.result
+        caps, lows = self.case_caps, self.case_lows
+        cl = dict(((a, b), float(res.value(a, b))) for a in caps for b in lows)
+        other = dict(((a, b), float(res.value(a, b))) for a in caps + lows for b in caps + lows
+                     if not (a in caps and b in lows))
+        return cl, other, [(m.lsb, m.rsb) for m in res.metrics]
+
+    def features_case(self):
+        """Capitals to lowercase, as a user sets it in the Categories window:
+        every capital–lowercase pair of the sample kerned tighter; every other
+        pair and every sidebearing as it was."""
+        win = self.win
+        if not hasattr(win, "set_case_offset") or not win.case_pairs_available():
+            self.feat_notes.append("capitals to lowercase: this build cannot, not tested")
+            self.features_done()
+            return
+        cats = win._glyph_categories()
+        sample = sorted(win._sample_indices())
+        self.case_caps = [i for i in sample if cats[i] == "capitals"]
+        self.case_lows = [i for i in sample if cats[i] == "lowercase"]
+        self.case_before = self._case_values()
+        self.call_window(FEATURES, win.set_case_offset, "capsToLowercase", -0.6)
+        self.wait(self._features_ready, self.features_case_ready, 120.0,
+                  "the preview with the capitals tighter to the lowercase")
+
+    def features_case_ready(self):
+        win = self.win
+        snap = win.snapshot
+        per = 1000.0 / snap.upm
+        cl0, other0, sides0 = self.case_before
+        cl1, other1, sides1 = self._case_values()
+        z = lambda v: v if v == v else 0.0
+        tighter = [k for k in cl0 if z(cl1[k]) < z(cl0[k]) - 0.5]
+        moved = [k for k in other0 if not _same(other0[k], other1[k])]
+        sides = [snap.names[i] for i, (a, b) in enumerate(zip(sides0, sides1)) if not (_same(a[0], b[0]) and _same(a[1], b[1]))]
+        if not cl0 or len(tighter) < 0.9 * len(cl0):
+            self.error("capitals to lowercase at -0.6: only %d of %d capital–lowercase pairs of the sample tighter"
+                       % (len(tighter), len(cl0)))
+        if moved or sides:
+            self.error("capitals to lowercase moved %d other pairs (e.g. %s) and %d glyphs' sides (e.g. %s)"
+                       % (len(moved), [(snap.names[a], snap.names[b]) for a, b in moved[:3]], len(sides), sides[:3]))
+        examples = []
+        for a, b in (("T", "o"), ("H", "a"), ("V", "o"), ("Y", "o")):
+            ia, ib = snap.index.get(snap.char_map.get(a)), snap.index.get(snap.char_map.get(b))
+            if (ia, ib) in cl0:
+                examples.append("%s%s %+.0f→%+.0f" % (a, b, z(cl0[(ia, ib)]) * per, z(cl1[(ia, ib)]) * per))
+        self.feat_notes.append("capitals to lowercase at -0.6: %d of %d capital–lowercase pairs of the sample tighter "
+                               "(%s), every other pair and side as it was" % (len(tighter), len(cl0),
+                                                                             ", ".join(examples)))
         self.features_done()
 
     def features_done(self):

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::classes::{Classes, PART_FROZEN};
 use crate::engine::{
     follow_roots, Context, Conventions, GlyphOpt, Pass1, PreparedGlyph, SideRule, SolveOptions, FIT_FOLLOW,
-    FIT_GROUP_MASK, FOLLOW_KERNING, FOLLOW_SPACING, GLYPH_RTL, GLYPH_ZONE, NONE,
+    FIT_GROUP_MASK, FOLLOW_KERNING, FOLLOW_SPACING, GLYPH_RTL, GLYPH_ZONE, NONE, PAIR_CAP_LOWER, PAIR_LOWER_CAP,
 };
 use crate::job::{pool, Cancelled, JobError, Progress};
 use crate::pass2::{
@@ -82,6 +82,12 @@ pub struct Params {
     /// takes the class value; an exception only past it (at least the
     /// threshold; 0 = the threshold).
     pub exception_tolerance: f64,
+    /// Tightness of capitals to lowercase, Looseness offsets (slider units;
+    /// 0 = as the solve): the gap of every capital–lowercase pair (`cap_lower`)
+    /// and lowercase–capital pair (`lower_cap`) moves by as much as that
+    /// Looseness moves their rest gap, as kerning before the floors.
+    pub cap_lower: f64,
+    pub lower_cap: f64,
 }
 
 /// The designer harness: where the model consistently spaces differently from
@@ -354,7 +360,10 @@ pub fn run(ctx: &Context, p: &Params, mask: Option<&[u8]>, progress: &Progress) 
     let t2 = Instant::now();
     let pool = pool(p.threads);
     let fields = Fields::new(ctx, &p.options);
-    let knobs = Knobs::new(&p.options, ctx.upm, p.threshold);
+    let mut knobs = Knobs::new(&p.options, ctx.upm, p.threshold);
+    // capitals to lowercase: a bias on those pairs' kerning, before the floors
+    knobs.response[PAIR_CAP_LOWER].bias = ctx.case_pair_bias(&p.options, p.cap_lower);
+    knobs.response[PAIR_LOWER_CAP].bias = ctx.case_pair_bias(&p.options, p.lower_cap);
     let frozen_ref: Option<&[bool]> = if any_frozen { Some(&frozen) } else { None };
     let entries = pool.install(|| match p.mode {
         Mode::Pairs => run_pairs(ctx, p, &pass1, &kern, frozen_ref, force.as_deref(), &fields, knobs, progress, &mut stats)

@@ -110,6 +110,11 @@ pub struct Settings {
     /// Classes: a member pair within this many units per 1000 em of its class
     /// pair takes the class value (0: the threshold).
     pub exception_tolerance_per_1000: f64,
+    /// Tightness of capitals to lowercase (`run::Params::cap_lower`,
+    /// `lower_cap`): Looseness offsets of capital–lowercase and
+    /// lowercase–capital pairs.
+    pub cap_lower: f64,
+    pub lower_cap: f64,
 }
 
 impl Settings {
@@ -136,6 +141,8 @@ impl Settings {
             fit_font: false,
             keep: 0.0,
             exception_tolerance_per_1000: 0.0,
+            cap_lower: 0.0,
+            lower_cap: 0.0,
         }
     }
 
@@ -339,6 +346,8 @@ impl Engine {
             fit_font: s.fit_font,
             keep: s.keep,
             exception_tolerance: s.exception_tolerance_per_1000.max(0.0) * ctx.upm / 1000.0,
+            cap_lower: s.cap_lower,
+            lower_cap: s.lower_cap,
         };
         let mask: Option<Vec<u8>> = s.kern_mask.as_ref().map(|m| m.iter().map(|&b| b as u8).collect());
         let progress = Progress::new();
@@ -1444,6 +1453,53 @@ mod tests {
         for a in 0..8 {
             for b in 0..8 {
                 assert!((fuzzy.kerning(a, b) - strict.kerning(a, b)).abs() < 40.0, "{a} {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn capitals_to_lowercase_move_their_pairs_alone() {
+        // quotes_font: H (6) and the lowercase o, n, d (2, 3, 4)
+        let e = quotes_font(false);
+        let lower = [2usize, 3, 4];
+        for mode in [Mode::Pairs, Mode::Classes] {
+            let base = Settings { mode, ..Settings::new() };
+            let o = base.options(e.ctx.upm);
+            let plain = e.solve(&base).unwrap();
+            let tight = e.solve(&Settings { cap_lower: -0.6, ..base.clone() }).unwrap();
+            let bias = e.ctx.case_pair_bias(&o, -0.6);
+            assert!(bias < -5.0, "{mode:?}: -0.6 tightens by {bias}");
+            // H before a lowercase letter: tighter by the gap the Looseness takes (H's stem faces n's and d's)
+            for p in lower {
+                let d = tight.kerning(6, p) - plain.kerning(6, p);
+                assert!(d < -5.0, "{mode:?} H {p}: {d}");
+            }
+            for p in [3, 4] {
+                let d = tight.kerning(6, p) - plain.kerning(6, p);
+                assert!((d - bias).abs() < 0.5, "{mode:?} H {p}: {d} for {bias}");
+            }
+            // every other pair, and every sidebearing, as before
+            for a in 0..7 {
+                assert_eq!((tight.lsb[a], tight.rsb[a]), (plain.lsb[a], plain.rsb[a]), "{mode:?} sides {a}");
+                for b in 0..7 {
+                    if a == 6 && lower.contains(&b) {
+                        continue;
+                    }
+                    assert_eq!(tight.kerning(a, b).to_bits(), plain.kerning(a, b).to_bits(), "{mode:?} {a} {b}");
+                }
+            }
+            // lowercase before a capital: its own setting
+            let loose = e.solve(&Settings { lower_cap: 0.5, ..base.clone() }).unwrap();
+            for p in lower {
+                assert!(loose.kerning(p, 6) > plain.kerning(p, 6) + 2.0, "{mode:?} {p} H");
+                assert_eq!(loose.kerning(6, p).to_bits(), plain.kerning(6, p).to_bits(), "{mode:?} H {p}");
+            }
+            // 0: the solve as it was
+            let zero = e.solve(&Settings { cap_lower: 0.0, lower_cap: 0.0, ..base.clone() }).unwrap();
+            for a in 0..7 {
+                for b in 0..7 {
+                    assert_eq!(zero.kerning(a, b).to_bits(), plain.kerning(a, b).to_bits());
+                }
             }
         }
     }

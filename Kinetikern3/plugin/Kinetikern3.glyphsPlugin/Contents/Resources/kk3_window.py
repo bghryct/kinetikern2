@@ -75,7 +75,7 @@ LEGACY_PREFIX = "com.mirkovelimirovic.Kinetikern2."  # read while Kinetikern3 ha
 # preferences the window remembers between sessions (keys under PREFIX)
 PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "view",
              "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "wordSpace", "exceptions",
-             "sample", "replace")
+             "capsToLowercase", "lowercaseToCaps", "sample", "replace")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -347,6 +347,9 @@ class KK3Window(object):
         self.keep_fit = self._setting("keepFit", False, bool)
         self.stay_close = min(100.0, max(0.0, self._setting("stayClose", 0.0)))
         self.word_space = self._word_space_setting()
+        # the tightness of capitals to lowercase, and of lowercase to capitals (Looseness offsets of their pairs)
+        self.caps_to_lower = self._case_setting("capsToLowercase")
+        self.lower_to_caps = self._case_setting("lowercaseToCaps")
         self.categories_window = None
         self._categories = None  # (snapshot, the category of each of its glyphs)
         self._category_fits = {}  # the last result's fitted Looseness per engine fit group
@@ -875,9 +878,40 @@ class KK3Window(object):
 
     def _categories_active(self):
         """How many adjustments the Categories window makes (offsets, the fit, staying close, the word space as
-        designers set it)."""
+        designers set it, capitals to lowercase and back)."""
         return len([v for v in self.category_offsets.values() if v]) + int(self._keep_fit_on()) + int(
-            self.stay_close > 0) + int(self.word_space == "convention")
+            self.stay_close > 0) + int(self.word_space == "convention") + int(bool(self.caps_to_lower)) + int(
+            bool(self.lower_to_caps))
+
+    # ------------------------------------------------- capitals to lowercase
+    CASE_KEYS = ("capsToLowercase", "lowercaseToCaps")
+
+    def case_pairs_available(self):
+        return bool(self.engine.features & kb.FEATURE_CASE_PAIRS)
+
+    def _case_setting(self, key):
+        lo, hi = kg.OFFSET_RANGE
+        v = self._setting(key, 0.0)
+        return min(hi, max(lo, v)) if v == v else 0.0
+
+    def case_offset(self, key):
+        return self.caps_to_lower if key == "capsToLowercase" else self.lower_to_caps
+
+    def set_case_offset(self, key, value):
+        """The Looseness of the gap between a capital and a lowercase letter (capsToLowercase: Ha, To) or a
+        lowercase letter and a capital (lowercaseToCaps: aH), on top of everything else; kerned, so a capital's
+        own sides and every other pair stay."""
+        if key not in self.CASE_KEYS:
+            return
+        lo, hi = kg.OFFSET_RANGE
+        v = min(hi, max(lo, float(value)))
+        v = 0.0 if abs(v) < 1e-9 else round(v, 4)
+        if key == "capsToLowercase":
+            self.caps_to_lower = v
+        else:
+            self.lower_to_caps = v
+        self._save(key, v)
+        self._categories_changed()
 
     # ---------------------------------------------------------- word space
     def _word_space_setting(self):
@@ -980,8 +1014,8 @@ class KK3Window(object):
         n = self._categories_active()
         self.w.categoriesButton.setTitle("Categories (%d)…" % n if n else "Categories…")
         lines = ["Tightness by category: a Looseness for capitals, lowercase, figures, quotes, brackets and the "
-                 "rest on top of the main one; Keep the font's fit; Stay close to the font's spacing; the word "
-                 "space."]
+                 "rest on top of the main one; capitals to lowercase; Keep the font's fit; Stay close to the "
+                 "font's spacing; the word space."]
         if self._keep_fit_on():
             lines.append(self.font_fit_note())
         if self.stay_close > 0:
@@ -991,6 +1025,9 @@ class KK3Window(object):
             lines.append("Offsets: " + ", ".join("%s %+.2f" % (labels[k], v)
                                                 for k, v in sorted(self.category_offsets.items())))
         lines.append("Word space: %s." % kpu.WORD_SPACE_LABELS[kpu.WORD_SPACE_MODES.index(self.word_space)].lower())
+        if self.caps_to_lower or self.lower_to_caps:
+            lines.append("Capitals to lowercase %+.2f, lowercase to capitals %+.2f." % (self.caps_to_lower,
+                                                                                     self.lower_to_caps))
         self.w.categoriesButton.getNSButton().setToolTip_("\n".join(lines))
 
     def font_fit_note(self):
@@ -1051,7 +1088,9 @@ class KK3Window(object):
                               budget=budget, threads=self._threads(), fit_frozen=fit, style=self._style(),
                               fit_font=self._keep_fit_on(),
                               keep=self.stay_close / 100.0 if self.font_fit_available() else 0.0,
-                              exception_tolerance=self._exceptions() * self._upm() / 1000.0)
+                              exception_tolerance=self._exceptions() * self._upm() / 1000.0,
+                              cap_lower=self.caps_to_lower if self.case_pairs_available() else 0.0,
+                              lower_cap=self.lower_to_caps if self.case_pairs_available() else 0.0)
 
     def _solve_key(self, whole):
         """What a result depends on, to tell whether it can be reused (the
@@ -1061,7 +1100,7 @@ class KK3Window(object):
                 round(self._threshold(), 6), self._budget() if whole else 0, self.groups.key(),
                 self.join_count, self._join_mode(),
                 tuple(sorted(self.category_offsets.items())), self._keep_fit_on(), round(self.stay_close, 3),
-                round(self._exceptions(), 3),
+                round(self._exceptions(), 3), round(self.caps_to_lower, 4), round(self.lower_to_caps, 4),
                 # the last five as they are: the self-tests read them from the end
                 self._small_caps_on(), self._figures_on(), self._punctuation_on(),
                 self._style(),
@@ -2510,6 +2549,8 @@ class KK3Window(object):
             "stayClose": round(self.stay_close, 1),
             "categories": dict(sorted(self.category_offsets.items())),
             "wordSpace": self.word_space,
+            "capsToLowercase": self.caps_to_lower,
+            "lowercaseToCaps": self.lower_to_caps,
         }
 
     @staticmethod
@@ -2521,7 +2562,7 @@ class KK3Window(object):
                 "alongSlant": True, "maxPairs": DEFAULT_MAX_PAIRS, "threads": 0, "applyTo": "sample",
                 "replaceKerning": True, "textSize": DEFAULT_SIZE, "view": "side", "overlay": "red",
                 "alignWords": True, "keepFit": False, "stayClose": 0.0, "categories": {},
-                "wordSpace": kpu.WORD_SPACE_DEFAULT}
+                "wordSpace": kpu.WORD_SPACE_DEFAULT, "capsToLowercase": 0.0, "lowercaseToCaps": 0.0}
 
     def apply_settings(self, d):
         """Sets the controls from a settings dict (settings()) the way a user would: each change goes through
@@ -2646,6 +2687,10 @@ class KK3Window(object):
         v = choice("wordSpace", kpu.WORD_SPACE_MODES)
         if v is not None:
             self.set_word_space(kpu.WORD_SPACE_MODES[v])
+        for key in self.CASE_KEYS:
+            v = number(key, kg.OFFSET_RANGE[0], kg.OFFSET_RANGE[1])
+            if v is not None:
+                self.set_case_offset(key, v)
         if self.categories_window is not None:
             self.categories_window.refresh()
         # the ones that start the engine again, only when they change

@@ -79,8 +79,9 @@ window, the same controls and the same tools:
   not float, a field beside each slider, the Looseness from −3 to +2, a
   kerning switch, a text size slider (and pinch to zoom), the Toggle and
   Overlay views, settings copied, pasted, saved and loaded as JSON, and
-  **Categories…** (a Looseness for each category, Keep the font's fit, Stay
-  close to the font's spacing, the word space), and the **Exceptions** field
+  **Categories…** (a Looseness for each category, capitals to lowercase and
+  lowercase to capitals, Keep the font's fit, Stay close to the font's
+  spacing, the word space), and the **Exceptions** field
   (a glyph of a kerning class gets an exception only past that difference
   from its class);
 - an unattended self-test inside RoboFont (`build.sh --verify`).

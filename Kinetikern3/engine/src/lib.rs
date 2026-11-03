@@ -418,6 +418,12 @@ pub struct KK3Params {
     /// takes the class value instead of an exception (0, NaN or less than
     /// the threshold: the threshold).
     pub exception_tolerance: f64,
+    /// Tightness of capitals to lowercase (Looseness offsets, slider units, 0 =
+    /// as the solve; NaN: 0): every capital–lowercase pair (`cap_lower`) and
+    /// lowercase–capital pair (`lower_cap`) is kerned looser or tighter by as
+    /// much as that Looseness moves their rest gap.
+    pub cap_lower: f64,
+    pub lower_cap: f64,
 }
 
 #[repr(C)]
@@ -551,7 +557,7 @@ pub struct KK3Ray {
 const _: () = {
     assert!(size_of::<KK3Point>() == 24);
     assert!(size_of::<KK3Glyph>() == 104);
-    assert!(size_of::<KK3Params>() == 168);
+    assert!(size_of::<KK3Params>() == 184);
     assert!(size_of::<KK3Progress>() == 40);
     assert!(size_of::<KK3Metrics>() == 64);
     assert!(size_of::<KK3Entry>() == 24);
@@ -780,6 +786,8 @@ unsafe fn read_params(upm: f64, p: *const KK3Params) -> Result<Params, String> {
         } else {
             0.0
         },
+        cap_lower: if c.cap_lower.is_finite() { c.cap_lower.clamp(-3.0, 3.0) } else { 0.0 },
+        lower_cap: if c.lower_cap.is_finite() { c.lower_cap.clamp(-3.0, 3.0) } else { 0.0 },
         harness: None,
         keep_bare: false,
         conventions: None,
@@ -1588,10 +1596,11 @@ pub unsafe extern "C" fn kk3_measure(
 /// glyph's Looseness offset counts in full on punctuation by convention),
 /// 16384 sides that follow another glyph's spacing and kerning
 /// (`KK3GlyphOpt.follow_left`, `follow_right`, `follow`) and the exception
-/// tolerance (`KK3Params.exception_tolerance`).
+/// tolerance (`KK3Params.exception_tolerance`), 32768 the tightness of
+/// capitals to lowercase (`KK3Params.cap_lower`, `lower_cap`).
 #[no_mangle]
 pub extern "C" fn kk3_features() -> u32 {
-    32767
+    65535
 }
 
 /// The glyphs `kk3_stem_slant` reads, by name, space separated and in its

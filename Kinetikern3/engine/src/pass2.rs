@@ -79,6 +79,8 @@ pub struct Knobs {
     pub tol: f64,
     /// Results with |value| below this are zero (at least v1's 0.5 rounding).
     pub threshold: f64,
+    /// Added to the pre-floor value (font units; `PairResponse::bias`).
+    pub bias: f64,
 }
 
 impl Knobs {
@@ -99,6 +101,7 @@ impl Knobs {
             tail_slope: 0.0,
             tol: 0.2 * upm / 1000.0,
             threshold: if threshold.is_finite() { threshold.max(0.5) } else { 0.5 },
+            bias: 0.0,
         }
     }
 
@@ -111,14 +114,15 @@ impl Knobs {
         let saturated = shrunk < -self.neg || shrunk > self.pos;
         if shrunk < -self.tail_knee {
             let at = soft_clip(-self.tail_knee, self.neg, self.pos);
-            return (at + self.tail_slope * (shrunk + self.tail_knee), saturated);
+            return (at + self.tail_slope * (shrunk + self.tail_knee) + self.bias, saturated);
         }
-        (soft_clip(shrunk, self.neg, self.pos), saturated)
+        (soft_clip(shrunk, self.neg, self.pos) + self.bias, saturated)
     }
 
     /// The raw-contrast interval whose pre-floor values lie in [lo, hi]
     /// (the pipeline is monotone; its dead zone maps a whole interval to 0).
     pub fn raw_window(&self, lo: f64, hi: f64) -> (f64, f64) {
+        let (lo, hi) = (lo - self.bias, hi - self.bias);
         let c = self.coupling.max(1e-12);
         // inverse of soft_clip on (-neg, pos), and of the tail below its knee
         let knee_value = if self.tail_knee.is_finite() { soft_clip(-self.tail_knee, self.neg, self.pos) } else { f64::NEG_INFINITY };
@@ -1071,6 +1075,7 @@ impl<'a> Kernel<'a> {
             tail_knee: if tail { r.tail_knee.max(0.0) } else { f64::INFINITY },
             tail_slope: if tail { r.tail_slope } else { 0.0 },
             crevice: r.crevice,
+            bias: if r.bias.is_finite() { r.bias } else { 0.0 },
             ..base
         }
     }
@@ -1170,6 +1175,7 @@ impl<'a> Kernel<'a> {
             }
         } else {
             out.flags |= PAIR_DISJOINT;
+            out.pre = k.bias; // nothing to balance: the class's bias alone
         }
         let (value, fl) = self.floors(k, a, b, macro_gap, out.pre);
         out.flags |= fl;
@@ -1235,8 +1241,10 @@ impl<'a> Kernel<'a> {
             (-t, t)
         };
         if !self.band(a, b, f, sc) {
-            // nothing to balance: its pre-floor value is 0
-            return (if middle { Verify::Within } else { Verify::Differs }, 0, false);
+            // nothing to balance: its pre-floor value is its class's bias (0 for most)
+            let own = self.knobs_for(ia, ib).bias;
+            let within = if middle { own > -t && own < t } else { own >= lo && own <= hi };
+            return (if within { Verify::Within } else { Verify::Differs }, 0, false);
         }
         let weight: f64 = sc.band.wa.iter().chain(&sc.band.wb).sum();
         let ftol = 1e-6 * weight.max(1e-9);

@@ -180,7 +180,7 @@ other two.
 | **Replace existing kerning** | On by default. Removes the master's existing entries between the glyphs and groups that get new kerning. Existing pairs across scripts, which the engine never evaluates, are kept. Off: existing glyph pairs stay and keep overriding new class pairs (the dialog counts them). |
 | **Apply to Font** | Plans the writes, asks once in a dialog that lists what will change, then writes in slices with a progress bar. |
 | **Revert Last Apply** | Puts the kerning, groups and sidebearings back as they were before the last Apply. |
-| **Categories…** | Opens *Tightness by Category* (see below): a Looseness for each category, Keep the font's fit, Stay close to the font's spacing, the word space. Its title counts the adjustments in use: *Categories (2)…*. |
+| **Categories…** | Opens *Tightness by Category* (see below): a Looseness for each category, capitals to lowercase (and lowercase to capitals), Keep the font's fit, Stay close to the font's spacing, the word space. Its title counts the adjustments in use: *Categories (2)…*. |
 | **⋯** | Copy Settings, Paste Settings, Save Settings…, Load Settings…, Reset Settings (see *Settings* below). |
 | **Spacing Groups…** | Opens the group picker (see *Spacing groups* below): freeze parts of the font, or space them with their own Looseness and kerning force. |
 | **Pairs…** | Opens the Pairs window (see *Pairs, loosest to tightest* below). |
@@ -255,6 +255,16 @@ settings are saved with the window's others and copied with them.
   convention (punctuation, figures, small caps) gets its offset after its
   convention. **0** puts a category back, **All categories to 0** all of
   them.
+- **Capitals to lowercase,** and **Lowercase to capitals:** how tight a
+  capital sits to a lowercase letter (Ha, To, Wo), and a lowercase letter to
+  a capital (aH, oT), on top of everything above. Each is a Looseness on the
+  main slider's scale: the gap of every such pair moves by as much as that
+  Looseness moves the letters' own gaps. It works through their kerning, so a
+  capital's own sidebearings, the capitals among themselves and the
+  lowercase among itself stay as they are, and the collision floors still
+  hold (T and o get no closer than they may). At −0.6 on Arial, 1,599 of the
+  1,600 capital–lowercase pairs of the smoke test's sample come out tighter
+  and no other pair moves. With kerning off it shows nothing: it is kerning.
 - **Keep the font's fit.** The engine fits capitals, lowercase, small caps
   and letters without case each to the tightness of the font's own spacing:
   the Looseness at which Kinetikern3's sidebearings for them average the
@@ -1224,7 +1234,7 @@ class pairs and 25,166 exceptions.
 | `kk3_bridge.py` | ctypes structs, with their sizes checked against the library; `Engine`, `InputPacker`, `Job`, `Context`, `Result`. It has no Glyphs imports, so the tools use it too. |
 | `kk3_args.py` | Reads test parameters from the argument domain only, so a stray preference can never turn a normal launch into a test run. |
 | `kk3_groups.py` | The spacing-groups model (no AppKit): groups, members, per-glyph engine options, sections, saving in `font.userData`; each glyph's category for the Categories window and its fit group. |
-| `kk3_categories_window.py` | The Tightness by Category window: a Looseness offset per category, Keep the font's fit, Stay close to the font's spacing, the word space. It keeps no state: the main window holds the settings and runs the preview. |
+| `kk3_categories_window.py` | The Tightness by Category window: a Looseness offset per category, capitals to lowercase and back, Keep the font's fit, Stay close to the font's spacing, the word space. It keeps no state: the main window holds the settings and runs the preview. |
 | `kk3_groups_window.py` | The Spacing Groups window: sections list, glyph grid (a custom NSView), group rows and settings. |
 | `kk3_pairs_window.py` | The Pairs window: measurement through the engine, the list and the pair preview. |
 | `kk3_harness.py` | The designer harness: the learned table (`kk3_harness.json`), the glyphs it applies to, the stem, and each glyph side's shift and the pair corrections for a master, Looseness and strength (`Plan`). |
@@ -1468,7 +1478,9 @@ in Glyphs' import):
    - Stay close at 100 %: every free glyph must keep the font's
      sidebearings;
    - the word space as designers set it must show in Kinetikern3's pane at
-     once.
+     once;
+   - capitals to lowercase at −0.6: the sample's capital–lowercase pairs must
+     kern tighter, and every other pair and every sidebearing stay exactly.
 9. Tests spacing groups that follow a glyph: the double quote like the single
    quote, and a letter's right side like another letter's (two whose classes
    differ). The preview must space and kern each exactly as its glyph with

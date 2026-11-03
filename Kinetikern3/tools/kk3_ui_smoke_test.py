@@ -2162,6 +2162,57 @@ class SmokeTest(object):
         self.wait_for("the panes of the sample as it was", shown(text_before), timeout,
                       stage="preview after a category change")
 
+        if getattr(self.args, "categories_png", None):
+            write_png(nsw, self.args.categories_png)
+            rep.info("the Categories window: %s" % self.args.categories_png)
+        # capitals to lowercase: a Looseness for the gap of every capital–lowercase pair (kerning); a capital's
+        # own sides and every other kind of pair stay
+        if win.case_pairs_available():
+            sample = sorted(win._sample_indices())
+            caps = [i for i in sample if cats[i] == "capitals"][:40]
+            lows = [i for i in sample if cats[i] == "lowercase"][:40]
+
+            def values(res):
+                cl = dict(((a, b), res.value(a, b)) for a in caps for b in lows)
+                other = dict(((a, b), res.value(a, b)) for a in caps + lows for b in caps + lows
+                             if not (a in caps and b in lows))
+                return cl, other, [(m.lsb, m.rsb) for m in res.metrics]
+
+            cl0, other0, sides0 = values(win.result)
+            slider = cw.w.caseSlider_capsToLowercase.getNSSlider()
+            preview("Capitals to lowercase slider", set_slider, slider, -0.6)
+            cl1, other1, sides1 = values(win.result)
+
+            def same(a, b):
+                return (a != a and b != b) or a == b
+
+            tighter = sum(1 for k in cl0 if (cl1[k] if cl1[k] == cl1[k] else 0.0) < (cl0[k] if cl0[k] == cl0[k] else 0.0) - 1.0)
+            moved = [k for k in other0 if not same(other0[k], other1[k])]
+            saved = MockGlyphs.defaults.get(PREFIX + "capsToLowercase")
+            rep.check(win.caps_to_lower == -0.6 and saved == -0.6 and tighter > 0.9 * len(cl0) and not moved
+                      and sides1 == sides0 and str(main_button.title()).startswith("Categories ("),
+                      "capitals to lowercase at -0.6: capital–lowercase pairs tighter, every other pair and side "
+                      "as before",
+                      "%d of %d tighter; %d other pairs moved %s; saved %r; button %r"
+                      % (tighter, len(cl0), len(moved), moved[:3], saved, str(main_button.title())))
+            field = cw.w.caseField_capsToLowercase.getNSTextField()
+            preview("Capitals to lowercase field", enter_into, field, "+0.4")
+            cl2, _other2, _sides2 = values(win.result)
+            looser = sum(1 for k in cl0 if (cl2[k] if cl2[k] == cl2[k] else 0.0) > (cl0[k] if cl0[k] == cl0[k] else 0.0) + 1.0)
+            rep.check(win.caps_to_lower == 0.4 and abs(slider.doubleValue() - 0.4) < 1e-6 and looser > 0.5 * len(cl0),
+                      "its field: +0.4 loosens them, the slider follows",
+                      "%d of %d looser; offset %r, slider %r, field %r" % (looser, len(cl0), win.caps_to_lower,
+                                                                        slider.doubleValue(), str(field.stringValue())))
+            preview("Capitals to lowercase 0", cw.w.caseReset_capsToLowercase.getNSButton().performClick_, None)
+            cl3, other3, sides3 = values(win.result)
+            back = [k for k in cl0 if not same(cl0[k], cl3[k])]
+            rep.check(win.caps_to_lower == 0.0 and not back and sides3 == sides0,
+                      "0 puts them back: the preview as before, exactly", "%d pairs differ" % len(back))
+            rep.check(win.settings().get("capsToLowercase") == 0.0 and "lowercaseToCaps" in win.settings(),
+                      "the setting is in the window's settings (Copy and Save Settings)")
+        else:
+            rep.info("capitals to lowercase: an engine without it, not checked")
+
         self.act("close the Categories window", nsw.performClose_, None)
         rep.check(win.categories_window is None and not nsw.isVisible(), "the Categories window closes")
 
@@ -2828,6 +2879,7 @@ def main():
                     help="longest tolerated slice of outline reading in ms (default 25: 8 ms plus one glyph)")
     ap.add_argument("--timeout", type=float, default=300.0, help="seconds to wait for any one step (default 300)")
     ap.add_argument("--png", default=None, help="save the window as a PNG before it closes")
+    ap.add_argument("--categories-png", default=None, help="save the Categories window as a PNG while it is open")
     args = ap.parse_args()
     sys.exit(SmokeTest(args).run())
 

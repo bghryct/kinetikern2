@@ -104,6 +104,8 @@ FEATURE_FONT_FIT = 8192
 # a spacing group that follows a glyph (KK3GlyphOpt.follow_left, follow_right, follow: its sides spaced and kerned
 # as that glyph's), and the exception tolerance (KK3Params.exception_tolerance)
 FEATURE_FOLLOW = 16384
+# the tightness of capitals to lowercase (KK3Params.cap_lower, lower_cap)
+FEATURE_CASE_PAIRS = 32768
 
 # kk3_prepare_start3 flags: keep joins (else space joined letters)
 PREPARE_KEEP_JOINS = 1
@@ -155,7 +157,9 @@ class KK3Params(Structure):
         "min_clearance", "crevice_pressure", "max_negative_kern", "max_positive_kern", "min_kern", "field_cap",
         "field_decay", "field_core", "threshold", "radius_ratio")] + [("budget", c_uint32), ("threads", c_uint32),
                                                                       ("keep", c_double),
-                                                                      ("exception_tolerance", c_double)]
+                                                                      ("exception_tolerance", c_double),
+                                                                      ("cap_lower", c_double),
+                                                                      ("lower_cap", c_double)]
 
 
 class KK3Progress(Structure):
@@ -262,7 +266,7 @@ class KK3MeasureStats(Structure):
                 ("loosest_count", c_uint32), ("tightest_count", c_uint32)]
 
 
-_SIZES = {KK3Point: 24, KK3Glyph: 104, KK3Params: 168, KK3Progress: 40, KK3Metrics: 64, KK3Entry: 24,
+_SIZES = {KK3Point: 24, KK3Glyph: 104, KK3Params: 184, KK3Progress: 40, KK3Metrics: 64, KK3Entry: 24,
           KK3Stats: 352, KK3Result: 464, KK3Ray: 24, KK3GlyphOpt: 40, KK3KernIn: 16, KK3PairOut: 24,
           KK3MeasureStats: 40, KK3Harness: 32, KK3HarnessPair: 16, KK3Joins: 32, KK3JoinStats: 64,
           KK3JoinSide: 24, KK3JoinPair: 64, KK3Punctuation: 40}
@@ -423,12 +427,15 @@ def pack_joins(joins, n):
 
 def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=True, scope_scripts=True,
                 threshold=0.5, budget=0, threads=0, radius_ratio=-1.0, skip_pass2=False, fit_frozen=False,
-                v1_pass2=False, style=None, fit_font=False, keep=0.0, exception_tolerance=0.0, **tuning):
+                v1_pass2=False, style=None, fit_font=False, keep=0.0, exception_tolerance=0.0, cap_lower=0.0,
+                lower_cap=0.0, **tuning):
     """`style`: Pass 2's conventions, "display" or "handwriting" (None or
     "text": text faces'). `fit_font`: keep the font's fit (the glyph options'
     fit groups); `keep`: stay close to the font's spacing, 0 to 1.
     `exception_tolerance`: a member pair within this many font units of its
-    class pair takes the class value (0: the threshold)."""
+    class pair takes the class value (0: the threshold). `cap_lower`,
+    `lower_cap`: the tightness of capitals to lowercase and of lowercase to
+    capitals, Looseness offsets of those pairs' gaps (kerning)."""
     p = KK3Params()
     p.struct_size = sizeof(KK3Params)
     p.flags = ((PARAM_CLASSES if classes else 0) | (PARAM_WINDOW if window else 0) |
@@ -448,6 +455,8 @@ def make_params(spring=1.0, repulsion=3.86, coupling=1.0, classes=True, window=T
     p.threads = int(threads)
     p.keep = max(0.0, min(1.0, float(keep or 0.0)))
     p.exception_tolerance = max(0.0, float(exception_tolerance or 0.0))
+    p.cap_lower = float(cap_lower or 0.0)
+    p.lower_cap = float(lower_cap or 0.0)
     return p
 
 

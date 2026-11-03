@@ -15,6 +15,12 @@ main Looseness and the offsets move from there. Stay close to the font's
 spacing: every free sidebearing goes that far back to what it is in the font
 before Kinetikern3 kerns (100 %: the font's spacing, only kerned).
 
+Capitals to lowercase: a Looseness for the gap between a capital and a
+lowercase letter (Ha, To, Wo), and one for a lowercase letter and a capital
+(aH), on top of everything above. It works through their kerning, so a
+capital's own sides, the capitals among themselves and the lowercase among
+itself stay as they are.
+
 Word space: as it is, in step with the n (its share of the n's advance),
 or as designers of the font's kind set it (kk3_punctuation.WORD_SPACE). The
 preview shows it; Apply sets it, and a no-break space as wide follows.
@@ -34,6 +40,9 @@ import kk3_host as host
 OFFSET_MIN, OFFSET_MAX = kg.OFFSET_RANGE  # a category's Looseness offset, slider units
 ROW_TOP, ROW_HEIGHT = 186, 30
 WORD_SPACE_HEIGHT = 96  # the word space's line, pop-up and note under the rows
+CASE_HEIGHT = 2 * ROW_HEIGHT + 50  # capitals to lowercase and back: a line, a note, two rows
+CASE_ROWS = (("capsToLowercase", "Capitals to lowercase", "Ha To Wo"),
+             ("lowercaseToCaps", "Lowercase to capitals", "aH oT"))
 
 
 def _number(text):
@@ -50,6 +59,7 @@ class CategoriesWindow(object):
         self.main = main
         self._closed = False
         self._rows = []  # [(key, slider, field)]
+        self._case_rows = []  # [(key, slider, field, reset)]: capitals to lowercase and back
         self._build()
 
     def _title(self):
@@ -59,7 +69,7 @@ class CategoriesWindow(object):
         main = self.main
         counts = main.category_counts()
         keys = [k for k in kg.CATEGORY_KEYS if counts is None or counts.get(k)]
-        height = ROW_TOP + ROW_HEIGHT * len(keys) + WORD_SPACE_HEIGHT + 50
+        height = ROW_TOP + ROW_HEIGHT * len(keys) + CASE_HEIGHT + WORD_SPACE_HEIGHT + 50
         w = vanilla.Window((640, max(420, height)), self._title(), minSize=(560, 420))
         self.w = w
         w.keepFit = vanilla.CheckBox((14, 12, 300, 20), "Keep the font's fit", value=main.keep_fit,
@@ -103,7 +113,33 @@ class CategoriesWindow(object):
             setattr(w, "field_" + key, field)
             setattr(w, "reset_" + key, reset)
             self._rows.append((key, slider, field))
+        # capitals to lowercase, and back: a Looseness for those pairs' gaps (kerning)
         y = ROW_TOP + ROW_HEIGHT * len(keys) + 6
+        w.caseLine = vanilla.HorizontalLine((14, y, -14, 1))
+        w.caseNote = vanilla.TextBox((14, y + 10, -14, 30),
+                                     "How tight a capital sits to a lowercase letter, on top of everything above: "
+                                     "their kerning moves, a capital's own sides stay.", sizeStyle="small")
+        self._case_rows = []
+        for n, (key, label, example) in enumerate(CASE_ROWS):
+            yy = y + 44 + ROW_HEIGHT * n
+            setattr(w, "caseLabel_" + key, vanilla.TextBox((14, yy + 3, 170, 17), label, sizeStyle="small"))
+            setattr(w, "caseExample_" + key, vanilla.TextBox((186, yy + 4, 56, 17), example, sizeStyle="mini",
+                                                             alignment="right"))
+            slider = vanilla.Slider((248, yy, -146, 22), minValue=OFFSET_MIN, maxValue=OFFSET_MAX,
+                                    value=main.case_offset(key), callback=lambda sender, key=key: self.caseChanged(key))
+            field = vanilla.EditText((-136, yy, 58, 21), "", continuous=False, sizeStyle="small",
+                                     callback=lambda sender, key=key: self.caseFieldChanged(key))
+            reset = vanilla.Button((-70, yy - 1, 56, 22), "0", sizeStyle="small",
+                                   callback=lambda sender, key=key: self.caseReset(key))
+            reset.getNSButton().setToolTip_("Back to 0: as the rest of the spacing has it.")
+            slider.getNSSlider().setToolTip_(
+                "Tighter to the left, looser to the right: the gap moves by as much as this Looseness moves the "
+                "letters' own gaps. It is kerning, held back by the collision floors.")
+            setattr(w, "caseSlider_" + key, slider)
+            setattr(w, "caseField_" + key, field)
+            setattr(w, "caseReset_" + key, reset)
+            self._case_rows.append((key, slider, field, reset))
+        y += CASE_HEIGHT
         w.wordSpaceLine = vanilla.HorizontalLine((14, y, -14, 1))
         w.wordSpaceLabel = vanilla.TextBox((14, y + 15, 110, 17), "Word space", sizeStyle="small")
         w.wordSpace = vanilla.PopUpButton((124, y + 12, 200, 22), list(kpu.WORD_SPACE_LABELS),
@@ -137,6 +173,13 @@ class CategoriesWindow(object):
         w.keepFitNote.set(main.font_fit_note())
         w.wordSpace.set(kpu.WORD_SPACE_MODES.index(main.word_space))
         w.wordSpaceNote.set(self._word_space_text())
+        able = main.case_pairs_available()
+        for key, slider, field, reset in self._case_rows:
+            v = main.case_offset(key)
+            slider.set(v)
+            field.set("%+.2f" % v)
+            for c in (slider, field, reset):
+                c.enable(able)
 
     def _word_space_text(self):
         note = self.main._word_space_note()
@@ -164,6 +207,28 @@ class CategoriesWindow(object):
         v = _number(self.w.stayCloseField.get())
         if v is not None:
             self.main.set_stay_close(v)
+        self.refresh()
+
+    def _case_row(self, key):
+        return next((r for r in self._case_rows if r[0] == key), None)
+
+    def caseChanged(self, key):
+        row = self._case_row(key)
+        if row is not None:
+            self.main.set_case_offset(key, round(float(row[1].get()), 2))
+            self.refresh()
+
+    def caseFieldChanged(self, key):
+        row = self._case_row(key)
+        if row is None:
+            return
+        v = _number(row[2].get())
+        if v is not None:
+            self.main.set_case_offset(key, v)
+        self.refresh()
+
+    def caseReset(self, key):
+        self.main.set_case_offset(key, 0.0)
         self.refresh()
 
     def wordSpaceChanged(self, sender):

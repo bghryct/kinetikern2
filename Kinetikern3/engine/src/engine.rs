@@ -163,10 +163,15 @@ pub struct PairResponse {
     pub tail_slope: f64,
     /// The crevice floor applies (no neighbour pressed into a pocket).
     pub crevice: bool,
+    /// Added to the pre-floor value of every pair of the class (font units),
+    /// before the floors: the user's tightness of capitals to lowercase
+    /// (`Params::cap_lower`, `lower_cap`). 0 for the conventions.
+    pub bias: f64,
 }
 
 impl PairResponse {
-    pub const BASE: PairResponse = PairResponse { scale: 1.0, tail_knee: f64::INFINITY, tail_slope: 0.0, crevice: true };
+    pub const BASE: PairResponse =
+        PairResponse { scale: 1.0, tail_knee: f64::INFINITY, tail_slope: 0.0, crevice: true, bias: 0.0 };
 }
 
 /// Whose conventions a font follows (the plugins' Conventions menu, Spacing
@@ -210,11 +215,11 @@ pub fn style_response(style: Style, upm: f64) -> [PairResponse; PAIR_CLASSES] {
     match style {
         Style::Text => {}
         Style::Display => {
-            r[PAIR_CAP_LOWER] = PairResponse { scale: 1.0, tail_knee: knee, tail_slope: 0.85, crevice: false };
+            r[PAIR_CAP_LOWER] = PairResponse { scale: 1.0, tail_knee: knee, tail_slope: 0.85, crevice: false, bias: 0.0 };
             r[PAIR_CAP_CAP] = PairResponse { tail_knee: knee, tail_slope: 1.0, ..PairResponse::BASE };
         }
         Style::Handwriting => {
-            r[PAIR_CAP_LOWER] = PairResponse { scale: 1.0, tail_knee: knee, tail_slope: 1.0, crevice: false };
+            r[PAIR_CAP_LOWER] = PairResponse { scale: 1.0, tail_knee: knee, tail_slope: 1.0, crevice: false, bias: 0.0 };
             r[PAIR_CAP_CAP] = PairResponse { tail_knee: knee, tail_slope: 1.0, ..PairResponse::BASE };
         }
     }
@@ -906,6 +911,23 @@ impl Context {
     /// to a glyph without one (so the letter rhythm they follow moves with
     /// it) and after them to a glyph with one, or that follows a base mark
     /// (so the offset counts in full there too).
+    /// How much a Looseness offset `t` (slider units) moves the gap between a
+    /// capital and a lowercase letter, in font units: their pair's rest gap
+    /// at the solve's Looseness plus `t`, minus at its own (the main
+    /// slider's scale). 0 without capitals or lowercase.
+    pub fn case_pair_bias(&self, o: &SolveOptions, t: f64) -> f64 {
+        if !(t.is_finite() && t != 0.0) {
+            return 0.0;
+        }
+        let scale = |id: u32| self.group_ids.iter().position(|&g| g == id).map(|k| self.rhythm_scale[k]);
+        let (Some(u), Some(l)) = (scale(GROUP_UPPERCASE), scale(GROUP_LOWERCASE)) else {
+            return 0.0;
+        };
+        let lam = 0.5 * (u + l);
+        let s = o.shifted(t);
+        rest_gap(lam, s.spring.max(1e-9), s.repulsion.max(0.0)) - rest_gap(lam, o.spring.max(1e-9), o.repulsion.max(0.0))
+    }
+
     pub fn pass1_full(&self, o: &SolveOptions, opts: Option<&[GlyphOpt]>, conv: Option<&Conventions>, keep: f64) -> Pass1 {
         let t1 = Instant::now();
         let spring = o.spring.max(1e-9);
