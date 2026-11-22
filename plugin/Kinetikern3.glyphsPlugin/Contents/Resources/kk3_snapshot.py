@@ -180,6 +180,43 @@ def zone_reference(name, codepoint, flags_codepoint, category):
         return False
 
 
+_quad_reader = None
+
+
+def _quad_points(path, index):
+    """(control point, end point) of the quadratic element `index` of an
+    NSBezierPath, as (x, y) pairs.
+
+    Glyphs 4 keeps a TrueType outline's quadratic curves in a layer's
+    NSBezierPath (Glyphs 3 handed them over as cubic curves). PyObjC (10.2
+    and 12.2 alike) sizes the points of elementAtIndex:associatedPoints: by
+    the element types it knows and returns a quadratic element's control
+    point alone, without its end point. So this calls the method itself,
+    through the Objective-C runtime, with room for three points."""
+    global _quad_reader
+    if _quad_reader is None:
+        import ctypes
+        import objc
+
+        class _Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+        lib = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        lib.sel_registerName.restype = ctypes.c_void_p
+        lib.sel_registerName.argtypes = [ctypes.c_char_p]
+        sel = lib.sel_registerName(b"elementAtIndex:associatedPoints:")
+        send = ctypes.CFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long,
+                                ctypes.POINTER(_Point))(ctypes.cast(lib.objc_msgSend, ctypes.c_void_p).value)
+
+        def read(p, i):
+            buf = (_Point * 3)()
+            send(objc.pyobjc_id(p), sel, i, buf)
+            return (buf[0].x, buf[0].y), (buf[1].x, buf[1].y)
+
+        _quad_reader = read
+    return _quad_reader(path, index)
+
+
 def bezier_contours(path):
     """Closed contours of an NSBezierPath as lists of (x, y, node kind)."""
     contours = []
@@ -188,6 +225,11 @@ def bezier_contours(path):
         return contours
     for i in range(path.elementCount()):
         kind, points = path.elementAtIndex_associatedPoints_(i)
+        if kind == _QUAD and len(points) < 2:
+            (cx, cy), (px, py) = _quad_points(path, i)
+            if current is not None:
+                current.extend([(cx, cy, 2), (px, py, 3)])
+            continue
         if kind == _MOVE:
             p = points[0]
             current = [(p.x, p.y, 0)]  # the start node's kind is settled at closePath
@@ -551,6 +593,9 @@ class Snapshot(object):
         self.metrics_keyed = set()  # spacing glyphs with a metrics key on this master
         self.aligned = set()  # auto-aligned composites
         self.pinned = set()  # glyphs that keep their sidebearings (keeps_sidebearings)
+        # glyphs of the spacing set with contours or components but no outline from Glyphs: Glyphs 4.2 gives some
+        # TrueType contours an empty layer path (and zero bounds); they are left as Glyphs gives them (blank)
+        self.unreadable = []
         self.component_users = {}  # glyph → glyphs (any, on this master) with a component of it
         self.read_ms = 0.0  # main-thread time spent reading
         self.wall_ms = 0.0  # from the first slice to the last
@@ -821,6 +866,12 @@ class SnapshotReader(object):
             snap.glyph_count_skipped += 1
             return
         info = read_glyph_info(glyph, layer, name, category, cp, snap.flags_codepoint(name), spacing=True)
+        if info.empty and (info.path is None or not info.path.elementCount()):
+            try:
+                if len(layer.shapes):
+                    snap.unreadable.append(name)
+            except Exception:
+                pass
         flags = 0
         if info.kern:
             flags |= kb.GLYPH_KERN

@@ -52,9 +52,12 @@ import kk3_punctuation as kpu
 import kk3_snapshot as ks
 
 try:
-    from GlyphsApp import LTR
-except ImportError:  # outside Glyphs (tools, tests)
-    LTR = 0
+    from GlyphsApp import GSLTR as LTR  # Glyphs 3.2 and later, Glyphs 4 (which has no LTR)
+except ImportError:
+    try:
+        from GlyphsApp import LTR
+    except ImportError:  # outside Glyphs (tools, tests)
+        LTR = 0
 
 # KK3Metrics.flags: the side follows a metrics key or an aligned component
 # instead of Pass 1. Glyphs computes those sides; Apply leaves them alone.
@@ -273,9 +276,10 @@ def _word_spaces(font, master_id, word_space, n_after, frozen=()):
         return out, notes
     space, nbsp, n = word_space.get("space"), word_space.get("nbsp"), word_space.get("n")
     before = word_space.get("before")
-    target = kpu.word_space_target(word_space.get("mode"), before, word_space.get("n_before"), n_after,
-                                   word_space.get("style"))
-    if not space or not n or space in frozen or target is None:
+    mode = word_space.get("mode")
+    target = kpu.word_space_target(mode, before, word_space.get("n_before"), n_after, word_space.get("style"),
+                                   word_space.get("value"), word_space.get("unit", "units"))
+    if not space or (not n and mode != "custom") or space in frozen or target is None:
         return out, notes
     share, after = target
     if abs(after - before) < 0.5:
@@ -283,8 +287,15 @@ def _word_spaces(font, master_id, word_space, n_after, frozen=()):
     layer = _layer(_glyph(font, space), master_id)
     if layer is None or not _blank(layer) or abs(float(layer.width) - before) >= 0.5:
         return out, notes
-    out[space] = (n, share)
-    if word_space.get("mode") == "convention":
+    # a share of the n's advance as Apply leaves it, or a width of its own (custom, in font units)
+    goal = (n, share) if share is not None else float(after)
+    out[space] = goal
+    if mode == "custom":
+        how = ("%g %% of the n's advance" % (100.0 * share)) if share is not None else "%d units" % round(after)
+        notes[space] = ("The word space is set to %s: %d → %d%s." % (how, round(before), round(after),
+                                                                      " or so" if share is not None else ""),
+                        "the word space as set")
+    elif mode == "convention":
         who = kpu.WORD_SPACE_WHO.get(word_space.get("style"), kpu.WORD_SPACE_WHO["text"])
         notes[space] = ("The word space becomes %.2f of the n's advance, as %s designers set it: %d → about %d."
                         % (share, who, round(before), round(after)), "the word space as designers set it")
@@ -293,17 +304,31 @@ def _word_spaces(font, master_id, word_space, n_after, frozen=()):
                         % (share, round(before), round(after)), "the word space follows the n")
     nb = _layer(_glyph(font, nbsp), master_id) if nbsp and nbsp != space and nbsp not in frozen else None
     if nb is not None and _blank(nb) and abs(float(nb.width) - float(layer.width)) < 0.5:
-        out[nbsp] = (n, share)
+        out[nbsp] = goal
         notes[nbsp] = ("The no-break space keeps the word space's width.", "the no-break space with it")
     return out, notes
 
 
 def _space_target(target):
     """(glyph, share of its advance or None) of a plan.spaces target: a glyph
-    (the space takes its advance) or (glyph, share)."""
+    (the space takes its advance) or (glyph, share); (None, None) for a width
+    of its own (a number)."""
     if isinstance(target, tuple):
         return target[0], target[1]
+    if isinstance(target, (int, float)):
+        return None, None
     return target, None
+
+
+def _space_goal(font, master_id, target):
+    """The advance a plan.spaces target gives its space: a width of its own
+    (a number: the word space set to a width), its glyph's advance, or its
+    share of it. None without that glyph."""
+    if isinstance(target, (int, float)) and not isinstance(target, bool):
+        return float(target)
+    follow, share = _space_target(target)
+    layer = _layer(_glyph(font, follow), master_id) if follow else None
+    return _space_width_for(layer.width, share) if layer is not None else None
 
 
 def _space_width_for(width, share):
@@ -550,9 +575,10 @@ class ApplyPlan(object):
     sync           glyphs following others (keys, aligned components),
                    targets first; follow {glyph: [targets]}
     removals       [(left key, right key)] existing entries Replace removes
-    spaces         {blank space: glyph or (glyph, share)}: spaces that keep
-                   their glyph's advance (SPACES_IN_STEP) or a share of it
-                   (the word space and the no-break space: the n's), written
+    spaces         {blank space: glyph, (glyph, share) or a width}: spaces
+                   that keep their glyph's advance (SPACES_IN_STEP), a share
+                   of it (the word space and the no-break space: the n's), or
+                   a width of their own (the word space set to one), written
                    after the sidebearings; space_notes {blank space: (the
                    dialog's line, the status line's words)}
     groups_to_move {glyph: (left group or None, right group or None)}: sides
@@ -1855,9 +1881,7 @@ class Applier(_Stepper):
                 if len(self._examples) < EXAMPLES:
                     self._examples.append(("removal", lk, rk, None, have))
         for name, target in getattr(p, "spaces", {}).items():
-            follow, share = _space_target(target)
-            have, want = revert.space_width(name), _layer(_glyph(font, follow), mid)
-            want = _space_width_for(want.width, share) if want is not None else None
+            have, want = revert.space_width(name), _space_goal(font, mid, target)
             detail["readback_metrics"] += 1
             if have is None or want is None or abs(have - want) > 1e-6:
                 self._bad[0] += 1
@@ -1877,11 +1901,9 @@ class Applier(_Stepper):
         (plan.spaces). True if it changed."""
         glyph = _glyph(self.font, name)
         layer = _layer(glyph, self.plan.master_id)
-        follow, share = _space_target(target)
-        t_layer = _layer(_glyph(self.font, follow), self.plan.master_id)
-        if layer is None or t_layer is None or name not in revert.spaces:
+        width = _space_goal(self.font, self.plan.master_id, target)
+        if layer is None or width is None or name not in revert.spaces:
             return False
-        width = _space_width_for(t_layer.width, share)
         if abs(float(layer.width) - width) <= 1e-9:
             return False
         self._undo.add(glyph)

@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Kinetikern3 — Glyphs 3 plugin shim.
+Kinetikern3 — the plugin shim, for Glyphs 3 and Glyphs 4 alike.
 
 Filter ▸ Kinetikern3… opens the spacing and kerning window. All heavy work
 runs in libkinetikern3.dylib on threads the library owns; this file only
@@ -44,7 +44,7 @@ class Kinetikern3Plugin(GeneralPlugin):
         except Exception:
             Message(traceback.format_exc(), title="Kinetikern3 menu error")
         # Unattended runs (build.sh --verify, tools): parameters arrive in the
-        # argument domain (`open -n -a "Glyphs 3" --args -<key> <value>`) and
+        # argument domain (`open -n -a "Glyphs 3" --args -<key> <value>`, or "Glyphs 4") and
         # are read from there only (kk3_args), so a key in the preferences
         # never turns a normal launch into a test run.
         try:

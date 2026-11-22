@@ -28,6 +28,7 @@ from AppKit import (NSAffineTransform, NSBezierPath, NSColor, NSColorSpace, NSFo
                     NSForegroundColorAttributeName, NSGraphicsContext, NSMakeRect, NSRectFill, NSString, NSView)
 
 import kk3_groups as kg
+import kk3_ui
 
 GRID_LABEL_H = 14
 MODIFIER_SHIFT = 1 << 17
@@ -533,7 +534,7 @@ class GroupsWindow(object):
                                       "Looseness slider is then an offset from them.", sizeStyle="mini")
         w.summary = vanilla.TextBox((x, 576, -12, -12), "", sizeStyle="mini")
         w.bind("resize", self.resized)
-        w.bind("close", self.closed)
+        kk3_ui.on_close(w, self.closed)
         w.open()
         self._sync_controls()
 
@@ -857,7 +858,4 @@ class GroupsWindow(object):
         self.main.groups_window_closed()
 
     def close(self):
-        try:
-            self.w.close()
-        except Exception:
-            pass
+        kk3_ui.close(self.w)

@@ -58,11 +58,13 @@ from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 import kk3_apply as ka
 import kk3_args
 import kk3_bridge as kb
+import kk3_features as kf
 import kk3_groups as kg
 import kk3_harness as kh
 import kk3_punctuation as kpu
 import kk3_proof as kp
 import kk3_snapshot as ks
+import kk3_ui
 
 try:
     from GlyphsApp import Glyphs, Message
@@ -75,7 +77,8 @@ LEGACY_PREFIX = "com.mirkovelimirovic.Kinetikern2."  # read while Kinetikern3 ha
 # preferences the window remembers between sessions (keys under PREFIX)
 PERSISTED = ("tightness", "intensity", "kerning", "threshold", "maxPairs", "threads", "scope", "size", "view",
              "overlayStyle", "alignWords", "keepFit", "stayClose", "categoryOffsets", "wordSpace", "exceptions",
-             "capsToLowercase", "lowercaseToCaps", "sample", "replace")
+             "capsToLowercase", "lowercaseToCaps", "sample", "replace", "features", "wordSpaceValue", "wordSpaceUnit",
+             "wordSpaceNbsp")
 SAMPLE_TEXT = (
     "Hamburgefonstiv HOHOHOHO nonononono\n"
     "AVATAR TYPE WAVE LT Tolerance Yo Ta Te Vo P. F, L’\n"
@@ -328,6 +331,12 @@ class KK3Window(object):
         self._font_metrics = {}
         self._applied_names = set()
         self._kerning = FontKerning(self.font)
+        # the OpenType features the sample text is set with (the Features window), and Glyphs' composer
+        self.features = self._features_setting()
+        self.features_window = None
+        self._shaper = kf.Shaper(self.font, space=ks.SPACE, newline=ks.NEWLINE, missing=ks.MISSING)
+        self._font_features = None  # the font's substitution features, [(tag, label)], read when asked
+        self._typed_tokens = []  # the sample as typed, before the features set it
         # spacing groups (kept in the font's userData) and their windows
         self.groups = kg.GroupSet.load(self.font)
         self.groups_window = None
@@ -347,6 +356,13 @@ class KK3Window(object):
         self.keep_fit = self._setting("keepFit", False, bool)
         self.stay_close = min(100.0, max(0.0, self._setting("stayClose", 0.0)))
         self.word_space = self._word_space_setting()
+        # the word space set to a width of one's own (mode "custom"): the value, in font units or % of the n
+        self.word_space_unit = self._setting("wordSpaceUnit", "units", str)
+        if self.word_space_unit not in kpu.WORD_SPACE_UNITS:
+            self.word_space_unit = "units"
+        self.word_space_value = self._word_space_value_setting()
+        # the no-break space goes with the word space (off: the space character alone)
+        self.word_space_nbsp = self._setting("wordSpaceNbsp", True, bool)
         # the tightness of capitals to lowercase, and of lowercase to capitals (Looseness offsets of their pairs)
         self.caps_to_lower = self._case_setting("capsToLowercase")
         self.lower_to_caps = self._case_setting("lowercaseToCaps")
@@ -693,9 +709,13 @@ class KK3Window(object):
         ], isVertical=True, dividerStyle="thin")
 
         input_group = vanilla.Group((0, 0, -0, -0))
-        input_group.caption = vanilla.TextBox((10, 4, -10, 16),
+        input_group.caption = vanilla.TextBox((10, 4, -230, 16),
                                               "Sample text (multi-paragraph; /glyphname inserts a glyph)",
                                               sizeStyle="small")
+        # the OpenType features the sample is set with: which are on, and the window that switches them
+        input_group.featuresNote = vanilla.TextBox((-222, 5, -112, 14), "", sizeStyle="mini", alignment="right")
+        input_group.featuresButton = vanilla.Button((-106, 2, -10, 18), "Features…", callback=self.openFeatures,
+                                                    sizeStyle="mini")
         input_group.editor = vanilla.TextEditor((0, 22, -0, -0), self._setting("sample", SAMPLE_TEXT, str),
                                                 callback=self.textChanged)
         self.editor = input_group.editor
@@ -710,8 +730,9 @@ class KK3Window(object):
             dict(view=input_group, identifier="input", size=190, minSize=90),
         ], isVertical=False, dividerStyle="thin")
         self.left_group, self.right_group, self.input_group = left_group, right_group, input_group
+        self._update_features_button()
 
-        w.bind("close", self.windowClosed)
+        kk3_ui.on_close(w, self.windowClosed)
         w.open()
         panes = [left_group.scroll.getNSScrollView(), right_group.scroll.getNSScrollView()]
         self.sync.attach(panes + [self.editor.getNSScrollView()], fit_width=panes)
@@ -880,8 +901,8 @@ class KK3Window(object):
         """How many adjustments the Categories window makes (offsets, the fit, staying close, the word space as
         designers set it, capitals to lowercase and back)."""
         return len([v for v in self.category_offsets.values() if v]) + int(self._keep_fit_on()) + int(
-            self.stay_close > 0) + int(self.word_space == "convention") + int(bool(self.caps_to_lower)) + int(
-            bool(self.lower_to_caps))
+            self.stay_close > 0) + int(self.word_space in ("convention", "custom")) + int(
+            bool(self.caps_to_lower)) + int(bool(self.lower_to_caps))
 
     # ------------------------------------------------- capitals to lowercase
     CASE_KEYS = ("capsToLowercase", "lowercaseToCaps")
@@ -918,11 +939,58 @@ class KK3Window(object):
         mode = self._setting("wordSpace", kpu.WORD_SPACE_DEFAULT, str)
         return mode if mode in kpu.WORD_SPACE_MODES else kpu.WORD_SPACE_DEFAULT
 
-    def set_word_space(self, mode):
-        """As it is, in step with the n, or as designers set it (kk3_punctuation.WORD_SPACE_MODES): the preview
-        shows it at once (nothing is solved again), Apply writes it."""
+    def _word_space_value_setting(self):
+        """The word space's own width (mode "custom"), or None before one is set."""
+        v = self._setting("wordSpaceValue", -1.0)
+        return self._valid_word_space_value(v, self.word_space_unit)
+
+    def _valid_word_space_value(self, v, unit):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        if v != v or v < 0.0:
+            return None
+        top = kpu.WORD_SPACE_MAX_SHARE if unit == "n" else kpu.WORD_SPACE_MAX_UNITS * max(self._upm(), 1.0)
+        return round(min(v, top), 2)
+
+    def set_word_space(self, mode, value=None, unit=None, nbsp=None):
+        """As it is, in step with the n, as designers set it, or set to a width (`value`, in font units or in
+        % of the n's advance by `unit`): kk3_punctuation.WORD_SPACE_MODES. `nbsp`: whether a no-break space as
+        wide goes with it (off: the space character alone). The preview shows it at once (nothing is solved
+        again), Apply writes it."""
         if mode not in kpu.WORD_SPACE_MODES:
             return
+        if unit is not None and unit in kpu.WORD_SPACE_UNITS and unit != self.word_space_unit:
+            # the same width in the other unit, so that the space does not jump
+            now = self.word_space_for()
+            info = self._word_space_info()
+            self.word_space_unit = unit
+            self._save("wordSpaceUnit", unit)
+            if value is None and now is not None and info is not None and info[3]:
+                n_now = self._n_advance(self.result, info[3], info[4])
+                value = now[3] if unit == "units" else (100.0 * now[3] / n_now if n_now else None)
+            if value is None:
+                self.word_space_value = None  # the old value means another width in this unit
+        if value is not None:
+            v = self._valid_word_space_value(value, self.word_space_unit)
+            if v is not None:
+                self.word_space_value = v
+                self._save("wordSpaceValue", v)
+        if mode == "custom" and self.word_space_value is None:
+            # set to a width before one is typed: the width the space has now
+            info = self._word_space_info()
+            if info is not None:
+                if self.word_space_unit == "n" and info[3]:
+                    n_now = self._n_advance(self.result, info[3], info[4])
+                    self.word_space_value = round(100.0 * info[1] / n_now, 1) if n_now else None
+                else:
+                    self.word_space_value = round(info[1])
+                if self.word_space_value is not None:
+                    self._save("wordSpaceValue", self.word_space_value)
+        if nbsp is not None:
+            self.word_space_nbsp = bool(nbsp)
+            self._save("wordSpaceNbsp", self.word_space_nbsp)
         self.word_space = mode
         self._save("wordSpace", mode)
         self._update_labels()
@@ -931,8 +999,9 @@ class KK3Window(object):
             self.categories_window.result_ready()
 
     def _word_space_info(self):
-        """(the word space, its advance, a blank no-break space as wide or None, the n, its advance) as the font
-        was read; None without a blank word space and an n."""
+        """(the word space, its advance, a blank no-break space as wide or None, the n or None, its advance or
+        None) as the font was read; None without a blank word space. Without an n the word space can only be set
+        to a width in font units."""
         snap = self.snapshot
         if snap is None:
             return None
@@ -940,14 +1009,17 @@ class KK3Window(object):
         # glyph_info: a space is outside the spacing set, read when asked for
         si = snap.glyph_info(space) if space else None
         ni = snap.glyph_info(n) if n else None
-        if si is None or ni is None or not _blank_info(si):
+        if si is None or not _blank_info(si):
             return None
         try:
-            width, n_width = float(si.width), float(ni.width)
+            width = float(si.width)
+            n_width = float(ni.width) if ni is not None else None
         except (TypeError, ValueError):
             return None
-        if not (width > 0.0 and n_width > 0.0):
+        if not width > 0.0:
             return None
+        if n_width is None or not n_width > 0.0:
+            n, n_width = None, None
         nbsp = snap.char_map.get("\u00a0")
         bi = snap.glyph_info(nbsp) if nbsp and nbsp != space else None
         if bi is None or not _blank_info(bi) or abs(float(bi.width) - width) >= 0.5:
@@ -955,9 +1027,15 @@ class KK3Window(object):
         return space, width, nbsp, n, n_width
 
     def _n_advance(self, res, n, n_width):
+        if n is None:
+            return n_width
         i = self.snapshot.index.get(n) if self.snapshot is not None else None
         m = res.metrics[i] if res is not None and res.ptr is not None and i is not None else None
         return float(m.advance) if m is not None and m.valid else n_width
+
+    def _word_space_target(self, width, n_width, n_after):
+        return kpu.word_space_target(self.word_space, width, n_width, n_after, self._style(),
+                                     self.word_space_value, self.word_space_unit)
 
     def word_space_for(self, res=None):
         """What the word space setting makes of the word space with result `res` (the one shown): (the word
@@ -968,10 +1046,10 @@ class KK3Window(object):
         if info is None or res is None or res.ptr is None:
             return None
         space, width, nbsp, n, n_width = info
-        t = kpu.word_space_target(self.word_space, width, n_width, self._n_advance(res, n, n_width), self._style())
+        t = self._word_space_target(width, n_width, self._n_advance(res, n, n_width))
         if t is None:
             return None
-        return space, nbsp, width, t[1], t[0]
+        return space, nbsp if self.word_space_nbsp else None, width, t[1], t[0]
 
     def _kerning_followers(self):
         """{glyph: (the glyph its left side kerns as, the one for its right side)} of the Follow groups whose
@@ -986,11 +1064,14 @@ class KK3Window(object):
     def _word_space_apply_arg(self):
         """The word space setting for Apply (kk3_apply.Planner's word_space), or None."""
         info = self._word_space_info()
-        if info is None or self.word_space not in ("step", "convention"):
+        if info is None or self.word_space not in ("step", "convention", "custom"):
             return None
         space, width, nbsp, n, n_width = info
-        return {"space": space, "nbsp": nbsp, "n": n, "mode": self.word_space, "style": self._style(),
-                "before": width, "n_before": n_width}
+        if n is None and not (self.word_space == "custom" and self.word_space_unit == "units"):
+            return None
+        return {"space": space, "nbsp": nbsp if self.word_space_nbsp else None, "n": n, "mode": self.word_space,
+                "style": self._style(), "before": width, "n_before": n_width, "value": self.word_space_value,
+                "unit": self.word_space_unit}
 
     def _word_space_note(self):
         """The font's word space against what designers of its kind set for its n as the result spaces it, and
@@ -1002,11 +1083,165 @@ class KK3Window(object):
                 return None
             space, width, _nbsp, n, n_width = info
             ws = self.word_space_for(res)
-            return kpu.word_space_note(width, self._n_advance(res, n, n_width), self._style(),
-                                       ws[3] if ws is not None else None, self.word_space)
+            new = ws[3] if ws is not None else None
+            note = kpu.word_space_note(width, self._n_advance(res, n, n_width), self._style(), new,
+                                       self.word_space)
+            if note is None and new is not None and abs(new - width) >= 0.5:
+                note = "word space %d → %d as set" % (round(width), round(new))  # no n to compare with
+            return note
         except Exception:
             print(traceback.format_exc())
             return None
+
+    # ------------------------------------------------------ OpenType features
+    def _features_setting(self):
+        value = self._setting("features", "", str)
+        try:
+            tags = json.loads(value) if value.strip().startswith("[") else value.split()
+        except ValueError:
+            tags = []
+        return self._valid_features(tags) or []
+
+    @staticmethod
+    def _valid_features(tags):
+        """Feature tags as a list (each once, in order), or None when `tags` is not a list of tags."""
+        if not isinstance(tags, (list, tuple)):
+            return None
+        out = []
+        for t in tags:
+            if not isinstance(t, str) or not 1 <= len(t.strip()) <= 4:
+                return None
+            t = t.strip()
+            if t not in out:
+                out.append(t)
+        return out
+
+    def font_feature_list(self):
+        """The font's substitution features [(tag, label or None)], as kk3_features reads them."""
+        if self._font_features is None:
+            self._font_features = kf.font_features(self.font) if self.font is not None else []
+        return self._font_features
+
+    def _active_features(self):
+        """The features switched on that the font has, in the font's order."""
+        on = set(self.features)
+        return [tag for tag, _label in self.font_feature_list() if tag in on]
+
+    def _tokenize(self, snapshot=None):
+        """The sample text's tokens: as typed (kk3_snapshot.tokenize), then set with the features switched on
+        (kk3_features.Shaper). The typed ones are kept for the Features window's note."""
+        snap = snapshot if snapshot is not None else self.snapshot
+        typed = ks.tokenize(self.editor.get(), snap)
+        self._typed_tokens = typed
+        tags = self._active_features()
+        if not tags:
+            return typed
+        status = None
+        if not self._shaper.compiled and self.w is not None:
+            # Glyphs compiles the features before the first is used (a second or so for a big font): say so
+            # first, as the window cannot draw while Glyphs compiles
+            status = self.w.status.get()
+            self._set_status("Compiling the OpenType features of %s…" % self.font.familyName)
+            try:
+                self.w.getNSWindow().displayIfNeeded()
+            except Exception:
+                pass
+        font = self.font
+
+        def is_rtl(name):
+            info = snap.glyph_info(name)
+            return bool(getattr(info, "rtl", False)) if info is not None else False
+
+        def script_of(name):
+            try:
+                glyph = font.glyphs[name]
+                return kf.script_tag(glyph.script if glyph is not None else None)
+            except Exception:
+                return None
+
+        tokens = self._shaper.shape(typed, tags, space_glyph=snap.char_map.get(" "), is_rtl=is_rtl,
+                                    script_of=script_of)
+        if status is not None:
+            self._set_status(status if not self._shaper.error else
+                             "OpenType features: %s" % self._shaper.error.splitlines()[0])
+        return tokens
+
+    def set_features(self, tags):
+        """Sets the sample text with these OpenType features (tags; those the font lacks are kept for other
+        fonts and do nothing here): the panes show the glyphs they substitute, and the preview kerns them."""
+        tags = self._valid_features(list(tags or ()))
+        if tags is None:
+            return
+        self.features = tags
+        self._save("features", json.dumps(tags))
+        self._update_features_button()
+        self._sample_changed()
+
+    def compile_features(self):
+        """Compiles the font's features again (after the feature code was edited) and sets the sample anew."""
+        self._shaper.forget()
+        self._font_features = None
+        if self._active_features():
+            self._shaper.compile()
+        self._update_features_button()
+        self._sample_changed()
+
+    def features_available(self):
+        return self._shaper.available
+
+    def features_note(self):
+        """A line for the Features window: what the features switched on do to the sample."""
+        if not self._shaper.available:
+            return ("This Glyphs has no feature composer Kinetikern3 can call: the sample text is set as typed.")
+        if not self.font_feature_list():
+            return "The font has no substitution features: the sample text is set as typed."
+        tags = self._active_features()
+        if not tags:
+            return "No feature is on: the sample text is set as typed (its characters and /name escapes)."
+        if self._shaper.error:
+            return "Set as typed: %s" % self._shaper.error.splitlines()[0]
+        typed = set(t for t in self._typed_tokens if t not in (ks.SPACE, ks.NEWLINE, ks.MISSING))
+        new = []
+        for t in self.tokens:
+            if t not in (ks.SPACE, ks.NEWLINE, ks.MISSING) and t not in typed and t not in new:
+                new.append(t)
+        if not new:
+            return "%s: no glyph of the sample text changes." % " ".join(tags)
+        shown = ", ".join(new[:8]) + (" …" if len(new) > 8 else "")
+        return ("%s: %s glyph%s of the sample text come from them (%s); Kinetikern3 spaces and kerns them as the "
+                "rest." % (" ".join(tags), _count(len(new)), "" if len(new) == 1 else "s", shown))
+
+    def _update_features_button(self):
+        group = getattr(self, "input_group", None)
+        if group is None:
+            return
+        tags = self._active_features() if self.font is not None else []
+        group.featuresButton.setTitle("Features (%d)…" % len(tags) if tags else "Features…")
+        group.featuresNote.set(" ".join(tags[:6]) + (" …" if len(tags) > 6 else ""))
+        tip = ("OpenType features: the sample text set with the font's features, as an Edit tab sets it with them "
+               "selected (small caps, old-style figures, case forms, fractions, stylistic sets…). Both panes "
+               "show the glyphs they substitute, and Kinetikern3 spaces and kerns them.")
+        if tags:
+            tip += "\nOn: " + ", ".join(tags) + "."
+        group.featuresButton.getNSButton().setToolTip_(tip)
+        if self.w is not None and getattr(self, "left_group", None) is not None:
+            self.left_group.caption.set("Font as it is — current spacing and kerning" + self._features_caption())
+            self.right_group.caption.set(self._right_caption(self.result))
+
+    def _features_caption(self):
+        tags = self._active_features() if self.font is not None else []
+        return (" · " + " ".join(tags)) if tags else ""
+
+    def openFeatures(self, sender=None):
+        if self.features_window is not None:
+            self.features_window.front()
+            return self.features_window
+        import kk3_features_window
+        self.features_window = kk3_features_window.FeaturesWindow(self)
+        return self.features_window
+
+    def features_window_closed(self):
+        self.features_window = None
 
     def _update_categories_button(self):
         if self.w is None or getattr(self.w, "categoriesButton", None) is None:
@@ -1024,7 +1259,9 @@ class KK3Window(object):
             labels = dict(kg.CATEGORIES)
             lines.append("Offsets: " + ", ".join("%s %+.2f" % (labels[k], v)
                                                 for k, v in sorted(self.category_offsets.items())))
-        lines.append("Word space: %s." % kpu.WORD_SPACE_LABELS[kpu.WORD_SPACE_MODES.index(self.word_space)].lower())
+        lines.append("Word space: %s%s." % (
+            kpu.word_space_label(self.word_space, self.word_space_value, self.word_space_unit),
+            "" if self.word_space_nbsp or self.word_space == "keep" else " (the space character alone)"))
         if self.caps_to_lower or self.lower_to_caps:
             lines.append("Capitals to lowercase %+.2f, lowercase to capitals %+.2f." % (self.caps_to_lower,
                                                                                      self.lower_to_caps))
@@ -1354,6 +1591,8 @@ class KK3Window(object):
         self._stale = set()
         self._font_metrics = {}
         self._kerning.reset()
+        self._shaper.forget()  # compiled again when a feature is next used: its code may have changed
+        self._font_features = None
         self._join_finder = None
         stem = self._stem_slant(master)
         self._reader = ks.SnapshotReader(self.font, master, along_slant=self._along_slant(master), stem_slant=stem)
@@ -1396,7 +1635,13 @@ class KK3Window(object):
                 self.harness_window.refresh()
             except Exception:
                 print(traceback.format_exc())
-        self.tokens = ks.tokenize(self.editor.get(), snapshot)
+        self.tokens = self._tokenize(snapshot)
+        self._update_features_button()  # the font's features were read again
+        if self.features_window is not None:
+            try:
+                self.features_window.refresh()
+            except Exception:
+                print(traceback.format_exc())
         self._render_left()
         self._panes_due(right=True)  # the font as it is until the first result
         if not snapshot.names:
@@ -2058,6 +2303,12 @@ class KK3Window(object):
             if self.join_check is not None and self.join_check[0]["joins"]:
                 js = self.join_check[0]
                 joined += ", %s of %s joins kept" % (_count(js["kept"]), _count(js["joins"]))
+        unreadable = getattr(snap, "unreadable", ())
+        if unreadable:
+            # Glyphs gives their contours no outline (Glyphs 4.2, some TrueType imports): left as they are
+            joined += " · %s glyph%s with contours Glyphs draws no outline for (%s): left as they are" % (
+                _count(len(unreadable)), "" if len(unreadable) == 1 else "s",
+                ", ".join(unreadable[:3]) + (" …" if len(unreadable) > 3 else ""))
         return ("%s · %s glyphs spaced, %s of the sample kerned · %s entries (%s class pairs, %s exceptions%s) · "
                 "pass 1 %.0f ms · pass 2 %.0f ms · %d threads · Phase 1 took %.1f s%s"
                 % (snap.master_name, _count(len(snap.names)), _count(st["kern_glyphs"]), _count(res.entry_count),
@@ -2270,7 +2521,7 @@ class KK3Window(object):
         if res is not None and res.ptr is not None and self._result_kind == "whole" and not (
                 mode == VIEW_TOGGLE and self._showing_font):
             caption += " (whole-font result: %s entries)" % _count(res.entry_count)
-        return caption
+        return caption + self._features_caption()
 
     def _render_right(self):
         self._right_due = False
@@ -2549,8 +2800,12 @@ class KK3Window(object):
             "stayClose": round(self.stay_close, 1),
             "categories": dict(sorted(self.category_offsets.items())),
             "wordSpace": self.word_space,
+            "wordSpaceValue": self.word_space_value,
+            "wordSpaceUnit": self.word_space_unit,
+            "wordSpaceNbsp": bool(self.word_space_nbsp),
             "capsToLowercase": self.caps_to_lower,
             "lowercaseToCaps": self.lower_to_caps,
+            "features": list(self.features),
         }
 
     @staticmethod
@@ -2562,7 +2817,8 @@ class KK3Window(object):
                 "alongSlant": True, "maxPairs": DEFAULT_MAX_PAIRS, "threads": 0, "applyTo": "sample",
                 "replaceKerning": True, "textSize": DEFAULT_SIZE, "view": "side", "overlay": "red",
                 "alignWords": True, "keepFit": False, "stayClose": 0.0, "categories": {},
-                "wordSpace": kpu.WORD_SPACE_DEFAULT, "capsToLowercase": 0.0, "lowercaseToCaps": 0.0}
+                "wordSpace": kpu.WORD_SPACE_DEFAULT, "wordSpaceValue": None, "wordSpaceUnit": "units",
+                "wordSpaceNbsp": True, "capsToLowercase": 0.0, "lowercaseToCaps": 0.0, "features": []}
 
     def apply_settings(self, d):
         """Sets the controls from a settings dict (settings()) the way a user would: each change goes through
@@ -2684,9 +2940,34 @@ class KK3Window(object):
         v = number("stayClose", 0.0, 100.0)
         if v is not None:
             self.set_stay_close(v)
-        v = choice("wordSpace", kpu.WORD_SPACE_MODES)
-        if v is not None:
-            self.set_word_space(kpu.WORD_SPACE_MODES[v])
+        mode, unit, nbsp = choice("wordSpace", kpu.WORD_SPACE_MODES), choice("wordSpaceUnit", kpu.WORD_SPACE_UNITS), \
+            flag("wordSpaceNbsp")
+        value = None
+        if "wordSpaceValue" in d:
+            v = d["wordSpaceValue"]
+            if v is None or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and v >= 0):
+                applied.append("wordSpaceValue")
+                value = v
+            else:
+                ignored.append("wordSpaceValue")
+        if mode is not None or unit is not None or nbsp is not None or "wordSpaceValue" in applied:
+            if unit is not None:
+                # the unit the value is given in: set before the value, without converting it
+                self.word_space_unit = kpu.WORD_SPACE_UNITS[unit]
+                self._save("wordSpaceUnit", self.word_space_unit)
+            if "wordSpaceValue" in applied and value is None:
+                self.word_space_value = None
+            self.set_word_space(kpu.WORD_SPACE_MODES[mode] if mode is not None else self.word_space,
+                                value=value, nbsp=nbsp)
+        if "features" in d:
+            tags = self._valid_features(d["features"])
+            if tags is None:
+                ignored.append("features")
+            else:
+                applied.append("features")
+                self.set_features(tags)
+                if self.features_window is not None:
+                    self.features_window.refresh()
         for key in self.CASE_KEYS:
             v = number(key, kg.OFFSET_RANGE[0], kg.OFFSET_RANGE[1])
             if v is not None:
@@ -3132,11 +3413,18 @@ class KK3Window(object):
 
     def textChanged(self, sender):
         self._save("sample", self.editor.get())
+        # laid out once typing pauses: a long sample takes a while to lay out
+        self._sample_changed(delay=TYPING_PAUSE)
+
+    def _sample_changed(self, delay=0.0):
+        """The sample text, or the features it is set with, changed: new tokens, the panes laid out again,
+        and a new preview when the sample has glyphs the result shown did not kern."""
         if self.snapshot is None:
             return  # rendered once the outlines are read
-        self.tokens = ks.tokenize(self.editor.get(), self.snapshot)
-        # laid out once typing pauses: a long sample takes a while to lay out
-        self._panes_due(left=True, right=True, delay=TYPING_PAUSE)
+        self.tokens = self._tokenize()
+        if self.features_window is not None:
+            self.features_window.result_ready()
+        self._panes_due(left=True, right=True, delay=delay)
         # which glyphs the result on its way (or the one shown) kerns
         if self._job is not None and self._job_kind == "preview":
             known = self._job_requested
@@ -3258,13 +3546,20 @@ class KK3Window(object):
                     "(plus the main slider)." % (what[0].upper() + what[1:], self._fitted))
         return ""
 
+    def close(self):
+        """Closes the window as its close button does: it lets go of the font, the engine and its other windows
+        first (kk3_ui.close)."""
+        kk3_ui.close(self.w)
+
     def windowClosed(self, sender):
+        if self.w is None:
+            return  # closed already
         for sub in (self.groups_window, self.pairs_window, self.harness_window, self.joins_window,
-                    self.categories_window):
+                    self.categories_window, self.features_window):
             if sub is not None:
                 sub.close()
         self.groups_window = self.pairs_window = self.harness_window = self.joins_window = None
-        self.categories_window = None
+        self.categories_window = self.features_window = None
         self._stop_timer()
         if self._timer_target is not None:
             self._timer_target.kk3_callback = None
@@ -3298,6 +3593,9 @@ class KK3Window(object):
             pane._forget()
         self.snapshot = None
         self.tokens = []
+        self._typed_tokens = []
+        self._shaper = kf.Shaper(None)
+        self._font_features = []
         self._font_metrics = {}
         self._stale = set()
         self._kerning = None
@@ -3362,7 +3660,7 @@ def open_window(resources):
         if getattr(win, "w", None) is None:
             _open_windows.remove(win)  # closed
         elif not win._font_open():
-            win.w.close()  # its font was closed
+            win.close()  # its font was closed
         elif font is not None and win.font == font:
             win.w.getNSWindow().makeKeyAndOrderFront_(None)
             return win

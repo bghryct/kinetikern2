@@ -19,6 +19,7 @@ import objc
 import vanilla
 
 import kk3_harness as kh
+import kk3_ui
 from AppKit import (NSAffineTransform, NSColor, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
                     NSGraphicsContext, NSRectFill, NSString, NSView)
 
@@ -110,7 +111,7 @@ class HarnessWindow(object):
         w.openTabButton = vanilla.Button((-150, -32, -12, 22), "Open in Edit Tab", callback=self.openTab,
                                          sizeStyle="small")
         w.bind("resize", self.resized)
-        w.bind("close", self.closed)
+        kk3_ui.on_close(w, self.closed)
         w.open()
         self.resized(None)  # the main window refreshes it once it is its harness_window
 
@@ -360,7 +361,4 @@ class HarnessWindow(object):
         self.main.harness_window_closed()
 
     def close(self):
-        try:
-            self.w.close()
-        except Exception:
-            pass
+        kk3_ui.close(self.w)
