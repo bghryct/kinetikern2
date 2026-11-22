@@ -39,6 +39,13 @@ come to the front, not a second one).
     selfTestLean     YES: Spacing QA's rule must measure that master along its
                      slant (the window's probe, then a read along it); NO:
                      upright. The preview waits for the probe's verdict either way
+    selfTestFeatures the OpenType stage must find features that change its
+                     sample (smcp, onum, case, frac…: a font that has them,
+                     e.g. Trattatello). The stage runs on every font: each of
+                     the font's features the stage knows sets its sample as an
+                     Edit tab with that feature selected sets it, and with all
+                     of them on the preview spaces and kerns the glyphs they
+                     substitute
     selfTestGroups   spacing groups — freeze the capitals, space the figures
                      looser with half the kerning force, By Category, open the
                      Spacing Groups and Pairs windows, run the whole font,
@@ -101,7 +108,12 @@ from AppKit import (NSApp, NSBitmapImageFileTypePNG, NSBitmapImageRep, NSKernAtt
 from Foundation import NSProcessInfo, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from PyObjCTools import AppHelper
 
-from GlyphsApp import FILTER_MENU, LTR, Glyphs
+from GlyphsApp import FILTER_MENU, Glyphs
+
+try:
+    from GlyphsApp import GSLTR as LTR  # Glyphs 3.2 and later, Glyphs 4
+except ImportError:
+    from GlyphsApp import LTR  # Glyphs 3 before 3.2 (Glyphs 4 has no LTR)
 
 import kk3_args
 import kk3_bridge as kb
@@ -116,6 +128,7 @@ CANCEL_KEY = PREFIX + "selfTestCancel"
 MAX_STALL_KEY = PREFIX + "selfTestMaxStall"
 GROUPS_KEY = PREFIX + "selfTestGroups"
 CONNECTED_KEY = PREFIX + "selfTestConnected"
+FEATURES_KEY = PREFIX + "selfTestFeatures"  # the OpenType stage must find features that change its sample
 # a master that leans without declaring an italic angle: the slant expected
 # (degrees, Spacing QA's) and whether it is measured along it (YES / NO)
 SLANT_KEY = PREFIX + "selfTestSlant"
@@ -144,9 +157,21 @@ GROUP_WINDOWS = "opening the groups windows"  # a user action, timed but not jud
 HARNESS = "designer harness"
 PUNCTUATION = "punctuation"
 FEATURES = "window features"
+OPENTYPE = "opentype features"
+COMPILE_FEATURES = "compiling the font's features"  # once per font, as Glyphs does for an Edit tab: timed, not judged
 CONNECTED = "connected script"
 SLIDERS = "sliders"
-JUDGED = (PREVIEW, SLIDERS, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, PUNCTUATION, CONNECTED)
+JUDGED = (PREVIEW, SLIDERS, AGAIN, CANCELLED_RUN, WHOLE_RUN, APPLY, REVERT, GROUPS, HARNESS, PUNCTUATION, CONNECTED,
+          OPENTYPE)
+# the features the OpenType stage sets its sample with, those the font has (Arabic's when it has Arabic)
+OPENTYPE_TAGS = ("smcp", "c2sc", "onum", "lnum", "pnum", "tnum", "case", "frac", "numr", "dnom", "sups", "sinf",
+                 "ordn", "zero", "liga", "dlig", "salt", "swsh", "titl", "ss01", "ss02", "init", "medi", "fina", "isol",
+                 "rlig")
+# no "/" (an Edit tab reads it as a /name escape, and glyphs typed so are not ligated there): U+2044 instead
+OPENTYPE_TEXT = ("Hamburgefonstiv office 0123456789 1\u20442 3\u20444\n"
+                 "(HELLO) [WORLD] H-O-H fi ffi ff Th st\n"
+                 "TYPE Type type 1st 2nd")
+OPENTYPE_ARABIC = "\u0628\u064a\u062a \u0644\u0627 \u0643\u062a\u0628"  # a word, lam-alef, another word
 BUSY_STATES = ("reading", "preparing", "previewing", "solving", "applying")
 
 PHASE_TEXT = re.compile(r"Phase\s*(\d+)\s*/\s*(\d+).*?\[\s*(\d+(?:\.\d+)?)\s*%\s*\]")
@@ -626,6 +651,7 @@ class SelfTest(object):
         self.cancel = kk3_args.flag(_argument(CANCEL_KEY))
         self.groups_test = kk3_args.flag(_argument(GROUPS_KEY))
         self.connected_test = kk3_args.flag(_argument(CONNECTED_KEY))
+        self.opentype_required = kk3_args.flag(_argument(FEATURES_KEY))
         # a master that leans without declaring an italic angle: the slant
         # Spacing QA measures (degrees) and its verdict (along it, or upright)
         self.expect_slant = kk3_args.number(_argument(SLANT_KEY), None)
@@ -1006,6 +1032,12 @@ class SelfTest(object):
         self.note("preview ready after %.1f s: %d spacing glyphs (outlines read in %.0f ms), %d kerned in the sample, "
                   "%d entries" % (seconds, snap_info["spacing_glyphs"], snap_info["read_ms"] or 0,
                                   info["kerned_glyphs"], info["entries"]))
+        unreadable = list(getattr(snap, "unreadable", ()))
+        if unreadable:
+            # Glyphs 4.2 gives some TrueType contours an empty layer outline (and zero bounds): outside
+            # Kinetikern3, which leaves those glyphs as Glyphs gives them
+            self.warn("Glyphs %s draws no outline for %d glyphs with contours (e.g. %s): Kinetikern3 leaves them "
+                      "as they are" % (Glyphs.versionString, len(unreadable), ", ".join(unreadable[:6])))
         covered = covered_controls(win)
         self.log("controls a click reaches", covered=covered)
         if covered:
@@ -1526,6 +1558,8 @@ class SelfTest(object):
     def _moved_freely(self, i, m1, m0):
         """Glyph i moved between m0 and m1 other than its rules move it."""
         for sd in (0, 1):
+            if m1[i][sd] != m1[i][sd] and m0[i][sd] != m0[i][sd]:
+                continue  # spaced in neither (no outline: Glyphs gives it none)
             d = m1[i][sd] - m0[i][sd]
             if abs(d) <= 1e-6:
                 continue
@@ -2023,6 +2057,9 @@ class SelfTest(object):
         self.later(0.3, self.features_step)
 
     def after_features(self):
+        self.later(0.3, self.opentype_step)
+
+    def after_opentype(self):
         self.later(0.3, self.follow_step)
 
     def after_follow(self):
@@ -2427,7 +2464,122 @@ class SelfTest(object):
                 with_it = "no blank no-break space as wide"
             self.feat_notes.append("the word space as designers set it: %s %s → %s in Kinetikern3's pane (%.2f of "
                                    "the n), %s" % (space, _num(before), _num(after), share, with_it))
-        self.features_case()
+        self.features_word_space_custom()
+
+    def _pane_space(self):
+        """The width (font units) of the first space Kinetikern3's pane shows, or None."""
+        win = self.win
+        chars = list(getattr(win.right, "chars", None) or ())
+        k = next((i for i, c in enumerate(chars) if c == " "), None)
+        if k is None:
+            return None
+        got = win.right.view.textStorage().attribute_atIndex_effectiveRange_(NSKernAttributeName, k, None)
+        got = got[0] if isinstance(got, tuple) else got
+        kp = sys.modules[type(win.right).__module__]
+        scale = float(win._point_size()) / win.snapshot.upm
+        return (float(got) + kp._SPACE_ADVANCE) / scale if got is not None else None
+
+    def features_word_space_custom(self):
+        """The word space set to a width of one's own (the Categories window's Set to a width), as a user
+        sets it: in font units, then in % of the n's advance. Kinetikern3's pane shows exactly that width;
+        Apply writes it to the space (and to a no-break space as wide unless that is switched off); Revert
+        puts it back."""
+        win = self.win
+        info = win._word_space_info() if hasattr(win, "_word_space_info") else None
+        if info is None or not hasattr(win, "word_space_value"):
+            self.feat_notes.append("the word space set to a width: no blank word space in the font; not tested")
+            self.features_case()
+            return
+        space, width, nbsp, n, n_width = info
+        self.ws_info = info
+        self.ws_units = float(int(round(width * 0.8)))  # a width of one's own, narrower than the font's
+        self.call_window(FEATURES, win.set_word_space, "custom", self.ws_units, "units")
+        self.wait(self._features_ready, self.features_word_space_units, 120.0,
+                  "the preview with the word space set to %d units" % self.ws_units)
+
+    def features_word_space_units(self):
+        win = self.win
+        space, width, nbsp, n, n_width = self.ws_info
+        ws = win.word_space_for()
+        shown = self._pane_space()
+        arg = win._word_space_apply_arg()
+        if ws is None or abs(ws[3] - self.ws_units) > 0.01 or shown is None or abs(shown - self.ws_units) > 0.01:
+            self.error("the word space set to %d units: the window makes it %s and Kinetikern3's pane shows %s"
+                       % (self.ws_units, _num(ws[3]) if ws else None, _num(shown)))
+        if not arg or arg.get("mode") != "custom" or arg.get("unit") != "units" or arg.get("value") != self.ws_units:
+            self.error("the word space set to %d units: Apply would get %s" % (self.ws_units, arg))
+        self.ws_notes = ["%d units: %s %s → %s in Kinetikern3's pane" % (self.ws_units, space, _num(width),
+                                                                          _num(shown))]
+        if n is None:
+            self.features_word_space_nbsp()
+            return
+        self.ws_percent = 30.0
+        self.call_window(FEATURES, win.set_word_space, "custom", self.ws_percent, "n")
+        self.wait(self._features_ready, self.features_word_space_percent, 120.0,
+                  "the preview with the word space set to 30 % of the n")
+
+    def features_word_space_percent(self):
+        win = self.win
+        space, width, nbsp, n, n_width = self.ws_info
+        n_after = win._n_advance(win.result, n, n_width)
+        want = float(math.floor(self.ws_percent / 100.0 * n_after + 0.5))
+        shown = self._pane_space()
+        if shown is None or abs(shown - want) > 0.01:
+            self.error("the word space set to %g %% of the n (%s): Kinetikern3's pane shows %s, not %s"
+                       % (self.ws_percent, _num(n_after), _num(shown), _num(want)))
+        self.ws_notes.append("%g %% of the n (%s): %s" % (self.ws_percent, _num(n_after), _num(shown)))
+        self.features_word_space_nbsp()
+
+    def features_word_space_nbsp(self):
+        """The no-break space switched off: the space character alone; then an Apply of the word space set
+        to a width (units) and its Revert."""
+        win = self.win
+        self.call_window(FEATURES, win.set_word_space, "custom", self.ws_units, "units", False)
+        ws, arg = win.word_space_for(), win._word_space_apply_arg()
+        if ws is None or ws[1] is not None or not arg or arg.get("nbsp") is not None:
+            self.error("the no-break space switched off still goes with the word space: %s, %s" % (ws, arg))
+        self.call_window(FEATURES, win.set_word_space, "custom", self.ws_units, "units", True)
+        self.wait(self._features_ready, self.features_word_space_apply, 120.0,
+                  "the preview with the word space set to %d units" % self.ws_units)
+
+    def features_word_space_apply(self):
+        win = self.win
+        space = self.ws_info[0]
+        mid = win.snapshot.master_id
+        layer = self.font.glyphs[space].layers[mid]
+        self.ws_before = float(layer.width)
+        previous = win.last_apply
+        if not self.call_window(FEATURES, win._apply, win.result, False):
+            raise RuntimeError("the window did not apply the preview with the word space set to a width")
+        self.wait(lambda: win.last_apply is not previous and self.window_state(
+            "during the word space Apply") != "applying", self.features_word_space_applied, 120.0,
+            "applying the word space set to a width")
+
+    def features_word_space_applied(self):
+        win = self.win
+        space = self.ws_info[0]
+        mid = win.snapshot.master_id
+        got = float(self.font.glyphs[space].layers[mid].width)
+        if abs(got - self.ws_units) > 0.01:
+            self.error("Apply set the word space to %s, not %d units" % (_num(got), self.ws_units))
+        self.ws_notes.append("Apply: %s %s → %s" % (space, _num(self.ws_before), _num(got)))
+        if not self.call_window(FEATURES, win.revert_last_apply):
+            raise RuntimeError("the window did not revert the Apply of the word space")
+        self.wait(lambda: self.window_state("during the word space Revert") != "applying",
+                  self.features_word_space_reverted, 300.0, "reverting the Apply of the word space")
+
+    def features_word_space_reverted(self):
+        win = self.win
+        space = self.ws_info[0]
+        mid = win.snapshot.master_id
+        got = float(self.font.glyphs[space].layers[mid].width)
+        if abs(got - self.ws_before) > 0.01:
+            self.error("Revert put the word space back to %s, not %s" % (_num(got), _num(self.ws_before)))
+        self.ws_notes.append("Revert %s" % _num(got))
+        self.feat_notes.append("the word space set to a width: " + ", ".join(self.ws_notes) +
+                               "; the no-break space switch leaves it out")
+        # the Apply changed the master: read it again as a user's Apply leaves it (the next stages solve anew)
+        self.wait(self._features_ready, self.features_case, 120.0, "the preview after the word space's Revert")
 
     def _case_values(self):
         """(capital–lowercase pairs, every other pair, the sides) of the sample, as the result shows them."""
@@ -2495,6 +2647,194 @@ class SelfTest(object):
             self.error("the window features stage did not put the settings back: %s" % diff)
         self.note("window features: " + "; ".join(self.feat_notes))
         self.after_features()
+
+    # --- OpenType features in the sample text -------------------------------------
+    def opentype_step(self):
+        """The sample text set with the font's OpenType features (the Features window), as a user sets it:
+        each feature of OPENTYPE_TAGS the font has, alone, must set the sample as an Edit tab with that feature
+        selected sets it, glyph for glyph; with all of them on, both panes show the glyphs they substitute and
+        the preview spaces and kerns them. The sample and the features are put back after."""
+        win = self.win
+        self.heartbeat.stage(OPENTYPE)
+        if not hasattr(win, "set_features") or not win.features_available():
+            (self.error if self.opentype_required else self.note)(
+                "OpenType features: this Glyphs has no feature composer Kinetikern3 can call; not tested")
+            self.after_opentype()
+            return
+        have = [tag for tag, _label in win.font_feature_list()]
+        self.ot_tags = [t for t in OPENTYPE_TAGS if t in have]
+        if not self.ot_tags:
+            (self.error if self.opentype_required else self.note)(
+                "OpenType features: the font has none of %s; not tested" % ", ".join(OPENTYPE_TAGS[:8]))
+            self.after_opentype()
+            return
+        cm = win.snapshot.char_map
+        text = OPENTYPE_TEXT
+        if all(cm.get(c) for c in OPENTYPE_ARABIC if c != " "):
+            text += "\n" + OPENTYPE_ARABIC
+        self.ot_text = text
+        self.ot_saved = (win.editor.get(), list(win.features))
+        # the compile Glyphs makes before the first feature sets anything (a second or so for a big font)
+        self.heartbeat.stage(COMPILE_FEATURES)
+        t = time.perf_counter()
+        compiled = self.call_window(COMPILE_FEATURES, win._shaper.compile)
+        self.ot_compile_ms = 1000.0 * (time.perf_counter() - t)
+        if not compiled:
+            self.error("OpenType features: the font's features do not compile: %s" % win._shaper.error)
+        self.heartbeat.stage(OPENTYPE)
+        self.ot_window = self.call_window(OPENTYPE, win.openFeatures)
+        win.editor.set(text)
+        self.call_window(OPENTYPE, win.textChanged, None)
+        self.call_window(OPENTYPE, win.set_features, [])
+        self.ot_typed = list(win.tokens)
+        self.ot_results = []
+        self.ot_index = 0
+        self.ot_mismatch = []
+        self.ot_script_only = []  # set otherwise than in a tab only because each run is set under its script
+        self.later(0.1, self.opentype_next)
+
+    def _tab_names(self, tags):
+        """The glyph names an Edit tab of the font shows for the stage's sample with `tags` selected (no line
+        breaks), or None when no tab can be opened. The tab gets the sample's text as it is (it has no "/")."""
+        tab = None
+        try:
+            tab = self.font.newTab(self.ot_text)
+            tab.features = list(tags)
+            names = []
+            for layer in tab.layers:
+                try:
+                    if "ControlLayer" in str(layer.className()):
+                        continue  # a line break (Glyphs 4 gives it a parent named newGlyph)
+                except Exception:
+                    pass
+                parent = getattr(layer, "parent", None)
+                name = getattr(parent, "name", None) if parent is not None else None
+                if name:
+                    names.append(str(name))
+            return names
+        except Exception:
+            self.log("edit tab", error=traceback.format_exc())
+            return None
+        finally:
+            if tab is not None:
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+
+    def _token_names(self, tokens):
+        space = self.win.snapshot.char_map.get(" ") or "space"
+        return [space if t == " " else t for t in tokens if t is not None and t != "\n"]
+
+    def opentype_next(self):
+        win = self.win
+        if self.ot_index >= len(self.ot_tags):
+            self.opentype_all()
+            return
+        tag = self.ot_tags[self.ot_index]
+        self.ot_index += 1
+        self.call_window(OPENTYPE, win.set_features, [tag])
+        shaped = self._token_names(win.tokens)
+        typed = self._token_names(self.ot_typed)
+        tab = self._tab_names([tag])
+        changed = sorted(set(shaped) - set(typed))
+        if win._shaper.error:
+            self.error("OpenType features, %s: %s" % (tag, win._shaper.error.splitlines()[0]))
+        if tab is None:
+            self.warn("OpenType features, %s: no Edit tab to compare with" % tag)
+            match = None
+        else:
+            match = tab == shaped
+            if not match:
+                # an Edit tab with no script chosen sets everything under the font's default script; Kinetikern3
+                # sets each run under its own (latn, arab…), as browsers and layout applications do. A feature
+                # the font declares under a script alone (Trattatello's liga: latn) differs only so.
+                snap = win.snapshot
+                plain = self._token_names(win._shaper.shape(
+                    self.ot_typed, [tag], space_glyph=snap.char_map.get(" "),
+                    is_rtl=lambda name: bool(getattr(snap.glyph_info(name), "rtl", False)), script_of=None))
+                if plain == tab:
+                    self.ot_script_only.append(tag)
+                    match = True
+                else:
+                    k = next((i for i, (a, b) in enumerate(zip(tab, shaped)) if a != b), min(len(tab), len(shaped)))
+                    self.ot_mismatch.append(tag)
+                    self.error("OpenType features, %s: the sample is set otherwise than in an Edit tab, from glyph "
+                               "%d: tab %s, Kinetikern3 %s" % (tag, k, tab[k:k + 6], shaped[k:k + 6]))
+        self.ot_results.append((tag, changed, match))
+        self.later(0.05, self.opentype_next)
+
+    def opentype_all(self):
+        win = self.win
+        changing = [tag for tag, changed, _m in self.ot_results if changed]
+        if not changing:
+            (self.error if self.opentype_required else self.note)(
+                "OpenType features: %s change no glyph of the sample (each as in an Edit tab: %s)"
+                % (" ".join(self.ot_tags), "yes" if not self.ot_mismatch else "no"))
+            self.opentype_done()
+            return
+        # the features that change the sample, all at once: the panes show them, the preview kerns them
+        self.ot_on = [t for t in changing if t not in ("init", "medi", "fina", "isol", "rlig")] or changing
+        # numerators and denominators and fractions compete: keep frac, the one a reader switches on
+        if "frac" in self.ot_on:
+            self.ot_on = [t for t in self.ot_on if t not in ("numr", "dnom")]
+        self.call_window(OPENTYPE, win.set_features, self.ot_on)
+        self.wait(self._features_ready, self.opentype_all_ready, 120.0,
+                  "the preview with %s" % " ".join(self.ot_on))
+
+    def opentype_all_ready(self):
+        win = self.win
+        snap = win.snapshot
+        res = win.result
+        tokens = list(win.tokens)
+        typed = set(self._token_names(self.ot_typed))
+        new = sorted(set(t for t in self._token_names(tokens) if t not in typed))
+        if win.right.tokens != tokens or (win._view() == 0 and win.left.tokens != tokens):
+            self.error("OpenType features: the panes do not show the sample as the features set it")
+        spaced = [t for t in new if snap.index.get(t) is not None]
+        requested = win._requested
+        unkerned = [t for t in spaced if requested is not None and snap.index[t] not in requested]
+        invalid = [t for t in spaced if not res.metrics[snap.index[t]].valid]
+        if unkerned or invalid:
+            self.error("OpenType features: the preview leaves out %d glyphs the features substitute (%s) and "
+                       "spaces %d not (%s)" % (len(unkerned), unkerned[:6], len(invalid), invalid[:6]))
+        # adjacent pairs of substituted glyphs the preview kerns
+        index = snap.index
+        pairs = kerned = 0
+        for a, b in zip(tokens, tokens[1:]):
+            if a in new and b in new and index.get(a) is not None and index.get(b) is not None:
+                pairs += 1
+                v = res.value(index[a], index[b])
+                kerned += int(v == v and v != 0.0)
+        note = self.ot_window.w.status.get() if self.ot_window is not None else ""
+        self.log("opentype", tags=self.ot_on, new=new[:30], pairs=pairs, kerned=kerned, note=note)
+        image = self.capture_png("features.png")
+        self.log("features image", source=image)
+        parts = []
+        for tag, changed, match in self.ot_results:
+            if changed:
+                parts.append("%s %d (%s)" % (tag, len(changed), ", ".join(changed[:3])))
+        script_only = ("" if not self.ot_script_only else
+                       " (%s under its script, where an Edit tab with no script chosen uses the default one)"
+                       % " ".join(self.ot_script_only))
+        self.note("OpenType features: %s — each set as an Edit tab sets it%s%s; with %s on, the panes show the %d "
+                  "glyphs they substitute and the preview spaces them (%d pairs between them, %d kerned); the "
+                  "features compiled in %d ms"
+                  % ("; ".join(parts), "" if not self.ot_mismatch else " except " + " ".join(self.ot_mismatch),
+                     script_only, " ".join(self.ot_on), len(new), pairs, kerned, round(self.ot_compile_ms)))
+        self.opentype_done()
+
+    def opentype_done(self):
+        win = self.win
+        text, tags = self.ot_saved
+        if self.ot_window is not None:
+            self.call_window(OPENTYPE, self.ot_window.close)
+            if win.features_window is not None:
+                self.error("the Features window stays listed after it closed")
+        win.editor.set(text)
+        self.call_window(OPENTYPE, win.textChanged, None)
+        self.call_window(OPENTYPE, win.set_features, tags)
+        self.wait(self._features_ready, self.after_opentype, 120.0, "the preview with the sample as it was")
 
     # --- connected scripts ----------------------------------------------------
 
@@ -3719,7 +4059,7 @@ class SelfTest(object):
         self.plan = None
         if win is None or self.nswindow() is None:
             return
-        self.call_window(CLOSE, win.w.close)
+        self.call_window(CLOSE, win.w.getNSWindow().performClose_, None)
         windows = len(self.open_windows())
         result_freed = _freed(getattr(win, "result", None))
         context_freed = _freed(getattr(win, "context", None))

@@ -45,6 +45,7 @@ import traceback
 import vanilla
 
 import kk3_bridge as kb
+import kk3_ui
 
 VIEWS = ["Findings (as drawn)", "Under the preview", "Drawing advice"]
 FINDINGS, PREVIEW, ADVICE = 0, 1, 2
@@ -131,7 +132,7 @@ class JoinsWindow(object):
                               doubleClickCallback=self.openProof)
         w.proof = vanilla.Button((14, -36, 140, 22), "Open Proof", callback=self.openProof, sizeStyle="small")
         w.status = vanilla.TextBox((164, -32, -14, 16), "", sizeStyle="mini")
-        w.bind("close", self._closed)
+        kk3_ui.on_close(w, self._closed)
         w.open()
         self.refresh()
 
@@ -140,7 +141,7 @@ class JoinsWindow(object):
         self.w.makeKey()
 
     def close(self):
-        self.w.close()
+        kk3_ui.close(self.w)
 
     def _closed(self, sender):
         cb = getattr(self.kw, "joins_window_closed", None)

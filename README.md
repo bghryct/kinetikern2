@@ -1,7 +1,7 @@
 # Kinetikern3
 
-A Glyphs 3 plugin that spaces and kerns a whole font with a multi-threaded
-Rust engine. It is the rebuild of *Kinetic SDF Kerning* (v1, in the folder
+A plugin for Glyphs 3 and Glyphs 4 that spaces and kerns a whole font with a
+multi-threaded Rust engine. It is the rebuild of *Kinetic SDF Kerning* (v1, in the folder
 above this one) and keeps v1's model unchanged:
 
 * **Pass 1, macro rhythm:** every glyph's sidebearings come from a kinetic
@@ -19,7 +19,9 @@ What is new is everything around the model:
   ignore threshold and a pair budget, instead of millions of glyph pairs.
 * **Apply** writes in slices, with undo registration off, and keeps its own
   **Revert Last Apply**.
-* **Live preview:** the sample text stays live while all of this happens.
+* **Live preview:** the sample text stays live while all of this happens,
+  set with the font's OpenType features if you want (small caps, old-style
+  figures, case forms, fractions, stylistic sets…).
 
 *Verification* below measures it against v1: output, speed and memory.
 
@@ -64,6 +66,9 @@ Kinetikern3/
 │   ├── kk3_groups.py,                spacing groups and their window
 │   │   kk3_groups_window.py
 │   ├── kk3_categories_window.py      tightness by category, the font's fit, the word space
+│   ├── kk3_features.py,              the sample text set with OpenType features (Glyphs'
+│   │   kk3_features_window.py        own feature composer) and the Features window
+│   ├── kk3_ui.py                     closing windows the same way in Glyphs 3 and 4
 │   ├── kk3_pairs_window.py           the Pairs window
 │   ├── kk3_harness.py,               the designer harness, its learned table
 │   │   kk3_harness.json,             and its window
@@ -107,19 +112,66 @@ spacing groups while the font has none of its own.
 | [#4](https://github.com/bghryct/kinetikern2/issues/4) Apache license | Apache License 2.0 (see *License*). |
 | [#1](https://github.com/bghryct/kinetikern2/issues/1) Automation | [Spacing QA](https://bghryct.github.io/KKQA/) checks the spacing of existing fonts (all of Google Fonts) with this engine. |
 
-The ports of [#3](https://github.com/bghryct/kinetikern2/issues/3) to FontLab, Sinter and Glyphs 4 are not part of this
-release. RoboFont has its port ([RobofontPlugin](RobofontPlugin/README.md)).
+Since this release, the same bundle runs in **Glyphs 4** (see *Glyphs 4*
+below). The ports of [#3](https://github.com/bghryct/kinetikern2/issues/3)
+to FontLab and Sinter are not part of this release. RoboFont has its port
+([RobofontPlugin](RobofontPlugin/README.md)).
+
+Added with the Glyphs 4 port:
+
+| Request | In Kinetikern3 |
+|---|---|
+| OpenType feature toggles in the preview | **Features…** beside the sample text: the sample is set with the font's features as an Edit tab sets it (Glyphs' own feature composer), so both panes show small caps, old-style figures, case forms, fractions or a stylistic set, and the preview spaces and kerns those glyphs (see *OpenType features*). |
+| Set the word space, or the space character alone, as you want | **Word space ▸ Set to a width** in the Categories window: a width in font units or as a percentage of the n's advance; **The no-break space too** off changes the space character alone (see *The word space*). |
+
+## Glyphs 4
+
+One bundle runs in Glyphs 3 (3.5, Python 3.11, PyObjC 10) and Glyphs 4 (4.2,
+Python 3.14, PyObjC 12), with the same engine, window and tools. Three
+things changed underneath and are handled:
+
+- **Quadratic outlines.** Glyphs 4 keeps a TrueType outline's quadratic
+  curves in a layer's `completeBezierPath`; Glyphs 3 handed them over as
+  cubic curves. PyObjC (10.2 and 12.2 alike) returns only the control point
+  of a quadratic element, so the outline reader calls
+  `elementAtIndex:associatedPoints:` through the Objective-C runtime for
+  those elements (`kk3_snapshot._quad_points`, under a microsecond each).
+  Before that, Glyphs 4 read 595 of Arial's 2,674 spacing glyphs: every
+  glyph with a curve was left out.
+- **No `LTR`.** Glyphs 4 has `GSLTR` (0, as in Glyphs 3) and no longer
+  `LTR`; the kerning calls use `GSLTR`.
+- **Closing a window.** In Glyphs 4, `NSWindow.close` does not always post
+  `NSWindowWillCloseNotification`, so a vanilla window's close callback did
+  not run and the window kept its engine result. Every Kinetikern3 window
+  now runs its close handler once, on "should close" (the close button,
+  Command-W) or "close", and closes itself through it (`kk3_ui`).
+
+Glyphs 4 also reads some fonts differently from Glyphs 3, outside
+Kinetikern3, so a whole-font run can differ by a few entries (Arial: 29,942
+in Glyphs 4, 29,938 in Glyphs 3, from the quadratic outlines):
+
+- On importing a TrueType font it marks composites as auto-aligned (401 in
+  Trattatello; none in Glyphs 3), and its glyph data puts a few glyphs in
+  other categories (Trattatello's `ff.alt` and `st.swash` become ligatures):
+  1,505 spacing glyphs there against 1,502.
+- Glyphs 4.2 gives some TrueType contours an empty layer outline and zero
+  bounds although each path draws (12 glyphs of Trattatello: `circumflex`,
+  `Upsilon`, `I.alt2`, `commainferior`…). Kinetikern3 leaves them as Glyphs
+  gives them (blank: not spaced, not written by Apply), and the status line
+  names them.
 
 ## Install
 
 Requirements:
-- macOS 11 or later.
-- Glyphs 3, with the *Python* and *Vanilla* modules from Plugin Manager ▸ Modules.
+- macOS 11 or later (Glyphs 4: macOS 12 or later).
+- Glyphs 3 or Glyphs 4, with the *Python* and *Vanilla* modules from Plugin
+  Manager ▸ Modules.
 - Rust 1.74 or later, for building the engine.
 
 ```bash
 cd Kinetikern3
-./build.sh --test --install
+./build.sh --test --install              # Glyphs 3
+./build.sh --install --glyphs 4          # Glyphs 4 (the same bundle)
 ```
 
 Then restart Glyphs, open a font and choose **Filter ▸ Kinetikern3…**.
@@ -131,8 +183,10 @@ preference key has a name of its own.
 | *(none)* | Builds the native library (arm64 on Apple Silicon) and puts it into the bundle. |
 | `--test` | Runs the engine's unit tests first (`cargo test --release`). |
 | `--universal` | Builds arm64 + x86_64. Needs `rustup target add x86_64-apple-darwin`. |
-| `--install` | Links the bundle into `~/Library/Application Support/Glyphs 3/Plugins/`. |
-| `--verify [font]` | Runs the in-Glyphs self-test in a temporary second Glyphs 3 (default font: Arial). |
+| `--glyphs 4` | `--install` and `--verify` use Glyphs 4 instead of Glyphs 3. |
+| `--install` | Links the bundle into `~/Library/Application Support/Glyphs 3/Plugins/` (with `--glyphs 4`: `Glyphs 4/Plugins/`). |
+| `--verify [font]` | Runs the in-Glyphs self-test in a temporary second Glyphs 3 or 4 (default font: Arial). |
+| `--verify FONT --features` | The OpenType stage must find features that change its sample (FONT with smcp, onum, case or frac, e.g. Trattatello in macOS). |
 
 The library is replaced **atomically**: the script builds into a staging file
 of its own, sets the install name to `@rpath/libkinetikern3.dylib`, signs it
@@ -183,7 +237,8 @@ other two.
 | **Replace existing kerning** | On by default. Removes the master's existing entries between the glyphs and groups that get new kerning. Existing pairs across scripts, which the engine never evaluates, are kept. Off: existing glyph pairs stay and keep overriding new class pairs (the dialog counts them). |
 | **Apply to Font** | Plans the writes, asks once in a dialog that lists what will change, then writes in slices with a progress bar. |
 | **Revert Last Apply** | Puts the kerning, groups and sidebearings back as they were before the last Apply. |
-| **Categories…** | Opens *Tightness by Category* (see below): a Looseness for each category, capitals to lowercase (and lowercase to capitals), Keep the font's fit, Stay close to the font's spacing, the word space. Its title counts the adjustments in use: *Categories (2)…*. |
+| **Categories…** | Opens *Tightness by Category* (see below): a Looseness for each category, capitals to lowercase (and lowercase to capitals), Keep the font's fit, Stay close to the font's spacing, the word space (also set to a width of your own). Its title counts the adjustments in use: *Categories (2)…*. |
+| **Features…** | Beside the sample text: the OpenType features the sample is set with (see *OpenType features* below). The tags switched on show beside it and in the panes' captions; its title counts them: *Features (2)…*. |
 | **⋯** | Copy Settings, Paste Settings, Save Settings…, Load Settings…, Reset Settings (see *Settings* below). |
 | **Spacing Groups…** | Opens the group picker (see *Spacing groups* below): freeze parts of the font, or space them with their own Looseness and kerning force. |
 | **Pairs…** | Opens the Pairs window (see *Pairs, loosest to tightest* below). |
@@ -224,6 +279,44 @@ word stays where it is when you switch. In Overlay, **Align words** (on by
 default) starts each of the font's words where Kinetikern3's starts: what
 differs inside a word is then its spacing and kerning alone, not what built
 up before it on the line.
+
+### OpenType features
+
+**Features…**, beside the sample text, lists the font's substitution
+features, each with a switch: small caps, old-style or tabular figures,
+case-sensitive forms, fractions, superscripts, ordinals, ligatures,
+stylistic sets (by their names in the font), Arabic's positional forms.
+Switching one on sets the sample text again with it, as an Edit tab with
+that feature selected sets it:
+
+- **Glyphs sets the text.** Glyphs' own feature composer, the one the Edit
+  view uses, runs the font's compiled features over each paragraph, script
+  run by script run (an Arabic word under `arab`, a Latin one under `latn`),
+  as browsers and layout applications do. An Edit tab with no script chosen
+  uses the font's default script instead, so a feature the font declares
+  under one script alone can differ there: Trattatello's `liga` is declared
+  under `latn` only, and Kinetikern3 shows its ffi and T_h where such a tab
+  does not. The features are compiled when the first one is switched on (34
+  ms for Trattatello, about a second for Arial, whose `mark` feature is
+  large; the status line says so meanwhile), and again after **↻** or
+  **Compile Again** (after you edit the feature code).
+- **Both panes show the result.** The font as it is on the left, with its own
+  spacing and kerning; Kinetikern3 on the right. The preview solves the
+  glyphs the features substitute like the rest of the sample, so `a.sc`,
+  `one.osf` or `parenleft.case` are spaced (by convention where there is
+  one: small caps, old-style figures, case forms) and kerned with their
+  neighbours, and **Apply to Glyphs in sample text** writes them.
+- **Only substitutions.** Positioning features (kern, mark, cpsp…) are left
+  out: the panes show the font's kerning on the left and Kinetikern3's on
+  the right. `aalt` is left out too.
+
+**None** switches every feature off: the sample as it is typed (characters
+by the cmap, `/name` escapes). **Text defaults** adds what browsers and
+layout applications apply to running text (ccmp, locl, rlig, rclt, calt,
+clig, liga, rvrn). The window's note names the glyphs that the features
+switched on bring into the sample. The features on are kept with the
+window's settings (a tag the font lacks does nothing there), and in Copy and
+Save Settings.
 
 ### Settings
 
@@ -625,7 +718,15 @@ apart or together. **Word space**, in the Categories window:
 - **As designers set it:** the share of the n's advance that designers of
   well-rated fonts of its kind give it (the **Conventions** menu picks the
   kind): 0.42 for text faces.
+- **Set to a width:** the width you type, in **units** (font units: the
+  space gets exactly that), or in **% of the n** (that share of the n's
+  advance as Kinetikern3 spaces it). Choosing it starts from the width the
+  space has now; switching the unit keeps the width.
 - **As it is:** left alone, as Kinetikern2 left it.
+
+**The no-break space too** (on by default): a blank no-break space as wide as
+the word space gets its new width with it. Off, the space character alone
+changes and the no-break space keeps its width.
 
 Kinetikern3's pane shows the new word space at once, without solving again.
 Apply sets it in whole units, from the n's advance as Apply leaves it, and
@@ -1482,15 +1583,42 @@ in Glyphs' import):
      sidebearings;
    - the word space as designers set it must show in Kinetikern3's pane at
      once;
+   - the word space set to a width: 0.8 of the font's in units, then 30 % of
+     the n, must show in Kinetikern3's pane exactly; with the no-break space
+     switched off, Apply must leave it out; Apply must set the space to the
+     width in units, and Revert put it back;
    - capitals to lowercase at −0.6: the sample's capital–lowercase pairs must
      kern tighter, and every other pair and every sidebearing stay exactly.
-9. Tests spacing groups that follow a glyph: the double quote like the single
+9. Tests the OpenType features (the Features window), on every font: each
+   feature of a list (smcp, c2sc, onum, lnum, pnum, tnum, case, frac, numr,
+   dnom, sups, sinf, ordn, zero, liga, dlig, salt, swsh, titl, ss01, ss02, and
+   Arabic's init, medi, fina, isol, rlig) that the font has must set the
+   stage's sample (with an Arabic line when the font has Arabic) glyph for
+   glyph as an Edit tab with that feature selected sets it. Then, with those
+   that change it on together, both panes must show the substituted glyphs
+   and the preview must space and kern them. With `--features` the font must
+   have features that change the sample. It saves `features.png`.
+10. Tests spacing groups that follow a glyph: the double quote like the single
    quote, and a letter's right side like another letter's (two whose classes
    differ). The preview must space and kern each exactly as its glyph with
    every glyph of the sample; after Apply the font must give it that glyph's
    sidebearings, kerning groups and kerning (the effective value of every pair
    with the sample's glyphs); Revert must put the font back exactly.
-10. Saves `window.png` and `selftest.json`, then quits.
+11. Saves `window.png` and `selftest.json`, then quits.
+
+Results of the Glyphs 4 port (22 November 2026, macOS 26, 13 threads):
+**PASSED** in Glyphs 4.2 (4205) and in Glyphs 3.5.1 (3536):
+
+| Font | Glyphs 4.2 | Glyphs 3.5.1 |
+|---|---|---|
+| Arial | 2,674 spacing glyphs; whole font 2.9 s, 29,942 entries; Apply 0 mismatches; Revert exact; Arabic init, medi, fina as an Edit tab sets them; longest stall 151 ms | 2,674; 2.9 s, 29,938 entries; Apply 0 mismatches; Revert exact; the same; 91 ms |
+| Trattatello, `--features` | 1,505 spacing glyphs (6 that Glyphs 4 draws no outline for left alone); smcp, onum, tnum, case, frac, numr, dnom, sups, sinf, zero, liga, dlig, swsh, titl each as an Edit tab sets them (liga under latn); with them on, the preview spaces the 35 glyphs they substitute; longest stall 176 ms | 1,502; the same features, the same 35 glyphs; 76 ms |
+
+The word space set to a width (in both, on Arial): 455 units shows as 455 in
+Kinetikern3's pane, 30 % of the n (1145.5) as 344; Apply sets the space
+569 → 455 and Revert puts back 569. Compiling the features takes 34–49 ms
+for Trattatello and 0.8–0.9 s for Arial. `tools/kk3_ui_smoke_test.py`: 146
+passed, 0 failed.
 
 `./build.sh --verify FONT --connected` adds a connected-script stage after
 the harness (FONT must be a connected script; an OFL script from Google

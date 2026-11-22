@@ -334,9 +334,15 @@ WORD_SPACE_KIND = {"text": "text faces", "display": "display faces", "handwritin
 # with the n (the share of the n's advance it has now), or set it as designers of the font's kind do
 # (WORD_SPACE's median). A blank no-break space as wide as the word space follows it (it is as wide in 96 % of
 # 1,517 Google Fonts families).
-WORD_SPACE_MODES = ("keep", "step", "convention")
-WORD_SPACE_LABELS = ("As it is", "In step with the n", "As designers set it")
+# Or set it to a width of one's own ("custom"): in font units, or as a percentage of the n's advance as the
+# result spaces the n (WORD_SPACE_UNITS).
+WORD_SPACE_MODES = ("keep", "step", "convention", "custom")
+WORD_SPACE_LABELS = ("As it is", "In step with the n", "As designers set it", "Set to a width")
 WORD_SPACE_DEFAULT = "step"
+WORD_SPACE_UNITS = ("units", "n")  # font units; percent of the n's advance
+WORD_SPACE_UNIT_LABELS = ("units", "% of the n")
+WORD_SPACE_MAX_UNITS = 4.0  # a width of one's own: at most 4 em (font units: this times the UPM)
+WORD_SPACE_MAX_SHARE = 400.0  # ...or 400 % of the n's advance
 
 
 def _positive(v):
@@ -347,15 +353,43 @@ def _positive(v):
     return v - v == 0.0 and v > 0.0
 
 
-def word_space_target(mode, space, n_before, n_after, style):
+def _nonnegative(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return False
+    return v - v == 0.0 and v >= 0.0
+
+
+def word_space_target(mode, space, n_before, n_after, style, value=None, unit="units"):
     """(share of the n's advance, the word space) that `mode` gives a word
     space of `space` when the n's advance goes from `n_before` to `n_after`
     (font units, whole); None: the space stays as it is (mode "keep", or no
-    space or n to measure)."""
+    space or n to measure).
+
+    Mode "custom" sets it to `value`: font units (unit "units"; the share is
+    then None, and no n is needed), or a percentage of the n's advance as the
+    result spaces it (unit "n")."""
+    if mode == "custom":
+        if not (_positive(space) and _nonnegative(value)):
+            return None
+        if unit == "n":
+            if not _positive(n_after):
+                return None
+            share = float(value) / 100.0
+            return share, float(math.floor(share * float(n_after) + 0.5))
+        return None, float(math.floor(float(value) + 0.5))
     if mode not in ("step", "convention") or not (_positive(space) and _positive(n_before) and _positive(n_after)):
         return None
     share = float(space) / float(n_before) if mode == "step" else WORD_SPACE.get(style, WORD_SPACE["text"])[0]
     return share, float(math.floor(share * float(n_after) + 0.5))
+
+
+def word_space_label(mode, value=None, unit="units"):
+    """The setting in words, for the window's tooltip and the status line."""
+    if mode == "custom" and value is not None:
+        return ("set to %g%% of the n" % value) if unit == "n" else ("set to %g units" % value)
+    return WORD_SPACE_LABELS[WORD_SPACE_MODES.index(mode)].lower() if mode in WORD_SPACE_MODES else mode
 
 
 def word_space_note(space, n_advance, style, new_space=None, mode="keep"):
@@ -371,8 +405,9 @@ def word_space_note(space, n_advance, style, new_space=None, mode="keep"):
     span = "most %d–%d" % (round(lo * n), round(hi * n))
     text = "word space %d" % round(space)
     shown = float(space)
-    if new_space is not None and _positive(new_space) and abs(new_space - space) >= 0.5:
-        text += " → %d%s" % (round(new_space), " in step with the n" if mode == "step" else "")
+    if new_space is not None and _nonnegative(new_space) and abs(new_space - space) >= 0.5:
+        text += " → %d%s" % (round(new_space), " in step with the n" if mode == "step" else
+                             " as set" if mode == "custom" else "")
         shown = float(new_space)
     if lo * n - 0.5 <= shown <= hi * n + 0.5:
         return "%s, as %s designers set it for an n this wide (%s)" % (text, who, span)

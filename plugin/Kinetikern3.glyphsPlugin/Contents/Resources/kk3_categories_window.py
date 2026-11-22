@@ -22,8 +22,10 @@ capital's own sides, the capitals among themselves and the lowercase among
 itself stay as they are.
 
 Word space: as it is, in step with the n (its share of the n's advance),
-or as designers of the font's kind set it (kk3_punctuation.WORD_SPACE). The
-preview shows it; Apply sets it, and a no-break space as wide follows.
+as designers of the font's kind set it (kk3_punctuation.WORD_SPACE), or set
+to a width of one's own, in font units or as a percentage of the n's advance.
+The preview shows it; Apply sets it, and a no-break space as wide follows
+unless the space character alone is to change.
 
 The window holds no state of its own: the main window keeps the settings
 (saved with its others, and in Copy and Save Settings) and runs the preview.
@@ -35,10 +37,11 @@ import vanilla
 
 import kk3_groups as kg
 import kk3_punctuation as kpu
+import kk3_ui
 
 OFFSET_MIN, OFFSET_MAX = kg.OFFSET_RANGE  # a category's Looseness offset, slider units
 ROW_TOP, ROW_HEIGHT = 186, 30
-WORD_SPACE_HEIGHT = 96  # the word space's line, pop-up and note under the rows
+WORD_SPACE_HEIGHT = 124  # the word space's line, pop-up, width, no-break space and note under the rows
 CASE_HEIGHT = 2 * ROW_HEIGHT + 50  # capitals to lowercase and back: a line, a note, two rows
 CASE_ROWS = (("capsToLowercase", "Capitals to lowercase", "Ha To Wo"),
              ("lowercaseToCaps", "Lowercase to capitals", "aH oT"))
@@ -147,11 +150,25 @@ class CategoriesWindow(object):
         w.wordSpace.getNSPopUpButton().setToolTip_(
             "The word space has no outline for Kinetikern3 to read. As it is: left alone. In step with the n: it "
             "keeps its share of the n's advance as the n is spaced again. As designers set it: the share that "
-            "designers of well-rated fonts of its kind give it. The preview shows it; Apply sets it, and a "
-            "no-break space as wide follows it.")
-        w.wordSpaceNote = vanilla.TextBox((14, y + 42, -14, 44), "", sizeStyle="small")
+            "designers of well-rated fonts of its kind give it. Set to a width: the width you type, in font "
+            "units or as a percentage of the n's advance. The preview shows it; Apply sets it, and a no-break "
+            "space as wide follows it unless the no-break space is switched off below.")
+        # set to a width: the value, in font units or % of the n's advance
+        w.wordSpaceValue = vanilla.EditText((334, y + 12, 64, 21), "", callback=self.wordSpaceValueChanged,
+                                            continuous=False, sizeStyle="small")
+        w.wordSpaceValue.getNSTextField().setToolTip_(
+            "The word space's width: in font units, or as a percentage of the n's advance as Kinetikern3 spaces "
+            "the n (press Return).")
+        w.wordSpaceUnit = vanilla.PopUpButton((404, y + 12, 104, 22), list(kpu.WORD_SPACE_UNIT_LABELS),
+                                              callback=self.wordSpaceUnitChanged, sizeStyle="small")
+        w.wordSpaceNbsp = vanilla.CheckBox((124, y + 40, -14, 18), "The no-break space too",
+                                           callback=self.wordSpaceNbspChanged, sizeStyle="small")
+        w.wordSpaceNbsp.getNSButton().setToolTip_(
+            "On: a blank no-break space as wide as the word space gets the same width (it is as wide in 96 % of "
+            "Google Fonts families). Off: the space character alone changes; the no-break space keeps its width.")
+        w.wordSpaceNote = vanilla.TextBox((14, y + 66, -14, 44), "", sizeStyle="small")
         w.resetAll = vanilla.Button((14, -34, 150, 22), "All categories to 0", callback=self.resetAll)
-        w.bind("close", self.closed)
+        kk3_ui.on_close(w, self.closed)
         w.open()
         self.refresh()
 
@@ -172,6 +189,14 @@ class CategoriesWindow(object):
             field.set("%+.2f" % v)
         w.keepFitNote.set(main.font_fit_note())
         w.wordSpace.set(kpu.WORD_SPACE_MODES.index(main.word_space))
+        custom = main.word_space == "custom"
+        value = main.word_space_value
+        w.wordSpaceValue.set("" if value is None else "%g" % value)
+        w.wordSpaceUnit.set(kpu.WORD_SPACE_UNITS.index(main.word_space_unit))
+        for c in (w.wordSpaceValue, w.wordSpaceUnit):
+            c.show(custom)
+        w.wordSpaceNbsp.set(bool(main.word_space_nbsp))
+        w.wordSpaceNbsp.enable(main.word_space != "keep")
         w.wordSpaceNote.set(self._word_space_text())
         able = main.case_pairs_available()
         for key, slider, field, reset in self._case_rows:
@@ -235,6 +260,20 @@ class CategoriesWindow(object):
         self.main.set_word_space(kpu.WORD_SPACE_MODES[max(0, int(self.w.wordSpace.get()))])
         self.refresh()
 
+    def wordSpaceValueChanged(self, sender):
+        v = _number(self.w.wordSpaceValue.get())
+        if v is not None and v >= 0:
+            self.main.set_word_space("custom", value=v)
+        self.refresh()
+
+    def wordSpaceUnitChanged(self, sender):
+        self.main.set_word_space("custom", unit=kpu.WORD_SPACE_UNITS[max(0, int(self.w.wordSpaceUnit.get()))])
+        self.refresh()
+
+    def wordSpaceNbspChanged(self, sender):
+        self.main.set_word_space(self.main.word_space, nbsp=bool(self.w.wordSpaceNbsp.get()))
+        self.refresh()
+
     def _row(self, key):
         return next((r for r in self._rows if r[0] == key), None)
 
@@ -270,7 +309,4 @@ class CategoriesWindow(object):
         self.main.categories_window_closed()
 
     def close(self):
-        try:
-            self.w.close()
-        except Exception:
-            pass
+        kk3_ui.close(self.w)

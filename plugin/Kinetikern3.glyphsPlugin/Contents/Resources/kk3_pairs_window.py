@@ -30,6 +30,7 @@ from AppKit import (NSAffineTransform, NSColor, NSFont, NSFontAttributeName, NSF
 from PyObjCTools import AppHelper
 
 import kk3_bridge as kb
+import kk3_ui
 
 SCOPES = ["Glyphs in the sample text", "The whole font", "One section"]
 COUNTS = ["50", "100", "250", "500"]
@@ -181,7 +182,7 @@ class PairsWindow(object):
         w.openTabButton = vanilla.Button((-150, -32, -12, 22), "Open in Edit Tab", callback=self.openTab,
                                          sizeStyle="small")
         w.bind("resize", self.resized)
-        w.bind("close", self.closed)
+        kk3_ui.on_close(w, self.closed)
         w.open()
         self._fill_sections()
         self.scopeChanged(None)
@@ -437,7 +438,4 @@ class PairsWindow(object):
         self.main.pairs_window_closed()
 
     def close(self):
-        try:
-            self.w.close()
-        except Exception:
-            pass
+        kk3_ui.close(self.w)
